@@ -8,6 +8,7 @@ import { canOpenExercise, getExerciseAvailability } from '../../utils/exerciseRu
 import {
   generateExercisePlanIfEligible,
   completePeerMarkingAssignment,
+  getAssignedSubjectsForStudent,
   getPeerMarkingAssignmentsForStudent,
   getStudentAccessState,
   getTodayExercise,
@@ -138,9 +139,11 @@ export const StudentDashboardPage = () => {
         setLoadError('');
         const loadedExercises = [];
         const readiness = [];
+        const assignedSubjects = await getAssignedSubjectsForStudent(profile.uid);
+        const subjectsToCheck = availableSubjects.filter((subject) => assignedSubjects.includes(subject));
         let anyPaidSubject = false;
 
-        for (const subject of availableSubjects) {
+        for (const subject of subjectsToCheck) {
           const access = await getStudentAccessState(profile, subject);
           anyPaidSubject = anyPaidSubject || Boolean(access.paymentCompleted);
 
@@ -149,19 +152,19 @@ export const StudentDashboardPage = () => {
           const shouldGenerate = access.paymentCompleted && ((mode === 'initial' && access.initialGenerationReady) || (mode === 'weekly' && access.weeklyGenerationReady));
           if (shouldGenerate) {
             const result = await runGeneratePlan(subject, mode);
-            if (!result?.generated) {
-              const resultStatus = result?.criteria?.[mode] ?? modeStatus;
+            if (!result?.generated && !access.hasInitialGeneration) {
+              const resultStatus = result?.criteria?.initial ?? access.generationStatus?.initial ?? modeStatus;
               readiness.push({
                 subject,
-                mode,
-                checks: resultStatus?.checks ?? modeStatus?.checks ?? {},
+                mode: 'initial',
+                checks: resultStatus?.checks ?? access.generationStatus?.initial?.checks ?? {},
                 availablePaperCount: result?.criteria?.analyzedPaperCount ?? access.matchingQuestionPapers?.length ?? 0,
                 completedLessonCount: access.completedLessons?.length ?? 0,
                 reason: result?.reason ?? 'Generation did not complete.',
               });
             }
-          } else if (!modeStatus?.ready) {
-            readiness.push({ subject, mode, checks: modeStatus?.checks ?? {}, availablePaperCount: access.matchingQuestionPapers?.length ?? 0, completedLessonCount: access.completedLessons?.length ?? 0 });
+          } else if (!access.hasInitialGeneration && !access.generationStatus?.initial?.ready) {
+            readiness.push({ subject, mode: 'initial', checks: access.generationStatus?.initial?.checks ?? {}, availablePaperCount: access.matchingQuestionPapers?.length ?? 0, completedLessonCount: access.completedLessons?.length ?? 0 });
           }
 
           const today = await getTodayExercise(profile.uid, subject);

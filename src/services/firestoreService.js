@@ -1427,6 +1427,23 @@ export const subscribeToUnassignedStudents = (callback, subject = DEFAULT_SUBJEC
 };
 
 
+
+export const getAssignedSubjectsForStudent = async (studentId) => {
+  if (!studentId) return [];
+  if (!isFirebaseConfigured) {
+    return [...new Set(mockStudentAssignments
+      .filter((assignment) => assignment.studentId === studentId && assignment.active !== false)
+      .map((assignment) => assignment.subject ?? DEFAULT_SUBJECT))];
+  }
+  ensureDb();
+  const snapshot = await getDocs(query(
+    collection(db, collections.tutorStudentAssignments),
+    where('studentId', '==', studentId),
+    where('active', '==', true),
+  ));
+  return [...new Set(snapshot.docs.map((item) => item.data().subject ?? DEFAULT_SUBJECT).filter(Boolean))];
+};
+
 export const getTutorAssignedStudentContexts = async (tutorId) => {
   if (!tutorId) return [];
   if (!isFirebaseConfigured) {
