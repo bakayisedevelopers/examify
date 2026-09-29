@@ -56,6 +56,7 @@ export const uploadSubmissionImage = async ({ file, studentId, exerciseId }) => 
       submittedImageUrl: upload.url,
       submittedFileName: upload.fileName,
       updatedAt: serverTimestamp(),
+      submittedAt: serverTimestamp(),
       submitted: "Yes",
       peerReviewed: "No",
       peerReviewStatus: "pending",

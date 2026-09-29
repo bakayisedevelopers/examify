@@ -1087,6 +1087,49 @@ export const saveQuestionPaper = async (paper) => {
   return { id: ref.id, ...payload };
 };
 
+
+export const getPeerMarkingAssignmentsForStudent = async (reviewerId) => {
+  if (!reviewerId) return [];
+  if (!isFirebaseConfigured) return [];
+  ensureDb();
+  const snapshot = await getDocs(query(
+    collection(db, collections.peerMarkingAssignments),
+    where('reviewerId', '==', reviewerId),
+  ));
+  return snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .filter((item) => item.status !== 'completed')
+    .sort((left, right) => String(right.assignmentDate ?? '').localeCompare(String(left.assignmentDate ?? '')));
+};
+
+export const completePeerMarkingAssignment = async ({ assignmentId, reviewImageUrl, reviewFileName }) => {
+  if (!assignmentId) throw new Error('Peer marking assignment id is required.');
+  if (!isFirebaseConfigured) return { id: assignmentId, reviewImageUrl, reviewFileName, status: 'completed' };
+  ensureDb();
+  const assignmentRef = doc(db, collections.peerMarkingAssignments, assignmentId);
+  const assignmentSnap = await getDoc(assignmentRef);
+  if (!assignmentSnap.exists()) throw new Error('Peer marking assignment not found.');
+  const assignment = assignmentSnap.data();
+  await updateDoc(assignmentRef, {
+    reviewImageUrl,
+    reviewFileName,
+    status: 'completed',
+    completedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  if (assignment.exerciseId) {
+    await updateDoc(doc(db, collections.dailyExerciseAssignments, assignment.exerciseId), {
+      peerReviewed: 'Yes',
+      peerReviewStatus: 'completed',
+      peerReviewDate: serverTimestamp(),
+      submittedReviewImageUrl: reviewImageUrl,
+      submittedReviewFileName: reviewFileName,
+      peerReviewerId: assignment.reviewerId,
+    });
+  }
+  return { id: assignmentId, reviewImageUrl, reviewFileName, status: 'completed' };
+};
+
 export const savePeerReview = async (payload) => {
   if (!isFirebaseConfigured) return { id: 'mock-peer-review', ...payload };
   ensureDb();

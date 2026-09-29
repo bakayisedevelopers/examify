@@ -11,6 +11,7 @@ export const collections = {
   dailyExerciseAssignments: 'dailyExerciseAssignments',
   submissions: 'submissions',
   peerReviews: 'peerReviews',
+  peerMarkingAssignments: 'peerMarkingAssignments',
   tutorReports: 'tutorReports',
   tutorMarksDocuments: 'tutorMarksDocuments',
   questionPapers: 'questionPapers',

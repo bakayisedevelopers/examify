@@ -1,14 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
+import { MarkingCanvas as ImageEditor } from '../../components/canvas/pictureEditorCanvas';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
 import { canOpenExercise, getExerciseAvailability } from '../../utils/exerciseRules';
 import {
   generateExercisePlanIfEligible,
+  completePeerMarkingAssignment,
+  getPeerMarkingAssignmentsForStudent,
   getStudentAccessState,
   getTodayExercise,
 } from '../../services/firestoreService';
+import { uploadPeerReviewImage } from '../../services/storageService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 import { getUserSubjects } from '../../utils/tutorSubjects';
 
@@ -46,6 +50,10 @@ export const StudentDashboardPage = () => {
     return subjects.length ? subjects : [DEFAULT_SUBJECT];
   }, [profile]);
   const [todayExercises, setTodayExercises] = useState([]);
+  const [peerAssignments, setPeerAssignments] = useState([]);
+  const [activeTab, setActiveTab] = useState('exercises');
+  const [markSubjectFilter, setMarkSubjectFilter] = useState('all');
+  const [reviewingAssignment, setReviewingAssignment] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [paymentLocked, setPaymentLocked] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -100,6 +108,7 @@ export const StudentDashboardPage = () => {
         if (!active) return;
         setPaymentLocked(!anyPaidSubject);
         setTodayExercises(loadedExercises.sort((left, right) => String(left.subject).localeCompare(String(right.subject))));
+        setPeerAssignments(await getPeerMarkingAssignmentsForStudent(profile.uid));
         setGenerationProgress(100);
       } catch (error) {
         if (!active) return;
@@ -113,6 +122,19 @@ export const StudentDashboardPage = () => {
     load();
     return () => { active = false; };
   }, [availableSubjects, profile]);
+
+  const markSubjects = [...new Set(peerAssignments.map((assignment) => assignment.subject).filter(Boolean))];
+  const visiblePeerAssignments = peerAssignments.filter((assignment) => markSubjectFilter === 'all' || assignment.subject === markSubjectFilter);
+
+  const handleSavePeerMarking = async (file) => {
+    if (!reviewingAssignment) return;
+    const reviewFileName = (reviewingAssignment.submittedFileName || 'submission.png').replace(/\.[^/.]+$/, '-peer-review.png');
+    const renamedFile = new File([file], reviewFileName, { type: file.type });
+    const upload = await uploadPeerReviewImage({ file: renamedFile, studentId: profile.uid, exerciseId: reviewingAssignment.exerciseId });
+    await completePeerMarkingAssignment({ assignmentId: reviewingAssignment.id, reviewImageUrl: upload.url, reviewFileName: upload.fileName });
+    setPeerAssignments(await getPeerMarkingAssignmentsForStudent(profile.uid));
+    setReviewingAssignment(null);
+  };
 
   return (
     <AppShell
@@ -133,25 +155,65 @@ export const StudentDashboardPage = () => {
         </div>
       ) : null}
 
-      <SectionHeader
-        eyebrow="Exercises"
-        title="Due today"
-        description="Each card shows the subject and opens the exercise details page for uploads and paper links."
-      />
+      <div className="panel mx-auto flex w-fit justify-center gap-2 p-2">
+        <button type="button" className={activeTab === 'exercises' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('exercises')}>Exercises</button>
+        <button type="button" className={activeTab === 'mark' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('mark')}>Mark</button>
+      </div>
 
-      <section className="grid gap-4 lg:grid-cols-2">
-        {!paymentLocked && todayExercises.length ? todayExercises.map((exercise) => (
-          <TodayExerciseCard
-            key={exercise.id}
-            exercise={exercise}
-            onOpen={() => navigate(`/student/exercises/${exercise.id}`)}
+      {activeTab === 'exercises' ? (
+        <>
+          <SectionHeader
+            eyebrow="Exercises"
+            title="Due today"
+            description="Each card shows the subject and opens the exercise details page for uploads and paper links."
           />
-        )) : (
-          <div className="panel col-span-full flex min-h-72 items-center justify-center p-6 text-center text-sm text-slate-500">
-            {paymentLocked ? 'Exercises are locked until payment is complete.' : 'No exercises have been assigned for today yet.'}
+          <section className="grid gap-4 lg:grid-cols-2">
+            {!paymentLocked && todayExercises.length ? todayExercises.map((exercise) => (
+              <TodayExerciseCard
+                key={exercise.id}
+                exercise={exercise}
+                onOpen={() => navigate(`/student/exercises/${exercise.id}`)}
+              />
+            )) : (
+              <div className="panel col-span-full flex min-h-72 items-center justify-center p-6 text-center text-sm text-slate-500">
+                {paymentLocked ? 'Exercises are locked until payment is complete.' : 'No exercises have been assigned for today yet.'}
+              </div>
+            )}
+          </section>
+        </>
+      ) : (
+        <>
+          <SectionHeader eyebrow="Peer marking" title="Work to mark" description="Mark submitted work from learners in your grade and subject." />
+          <div className="panel flex flex-wrap items-center justify-between gap-3 p-4">
+            <p className="text-sm font-semibold text-slate-950">Filter marking work</p>
+            <select className="input max-w-xs" value={markSubjectFilter} onChange={(event) => setMarkSubjectFilter(event.target.value)}>
+              <option value="all">All subjects</option>
+              {markSubjects.map((subject) => <option key={subject}>{subject}</option>)}
+            </select>
           </div>
-        )}
-      </section>
+          <section className="grid gap-4">
+            {visiblePeerAssignments.map((assignment) => (
+              <div key={assignment.id} className="panel p-5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-slate-950">{assignment.title || 'Exercise submission'}</p>
+                    <p className="mt-1 text-sm text-slate-500">{assignment.subject} • {assignment.grade} • {assignment.assignmentDate}</p>
+                    <p className="mt-2 text-sm text-slate-600">{assignment.topic}</p>
+                  </div>
+                  <button type="button" className="btn-primary" onClick={() => setReviewingAssignment(assignment)}>Mark</button>
+                </div>
+                {reviewingAssignment?.id === assignment.id ? (
+                  <div className="mt-4">
+                    <ImageEditor imageUrl={assignment.submittedImageUrl} onSave={handleSavePeerMarking} />
+                    <button type="button" className="btn-secondary mt-2" onClick={() => setReviewingAssignment(null)}>Cancel</button>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+            {!visiblePeerAssignments.length ? <div className="panel p-5 text-sm text-slate-500">No one to mark for yet. When learners in your grade and subject submit, marking work will appear here.</div> : null}
+          </section>
+        </>
+      )}
     </AppShell>
   );
 };

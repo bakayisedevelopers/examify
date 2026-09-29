@@ -8,7 +8,7 @@ import { collection, query, where, orderBy, onSnapshot, doc, updateDoc, serverTi
 import { db } from '../../firebase/config';
 import { MarkingCanvas as ImageEditor } from '../canvas/pictureEditorCanvas';
 
-export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId, showQuestionLinks = false, viewerRole = 'student' }) => {
+export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId, showQuestionLinks = false, viewerRole = 'student', showPeerMarking = false }) => {
   const navigate = useNavigate();
   const [openingPapers, setOpeningPapers] = useState(false);
   const [unreviewedExercises, setUnreviewedExercises] = useState([]);
@@ -169,7 +169,7 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
           </span>
         )}
       </div>
-      <div className="panel space-y-4 p-6 w-full">
+      {showPeerMarking ? <div className="panel space-y-4 p-6 w-full">
         <h3 className="text-xl font-semibold text-slate-950">Mark for Others</h3>
         {unreviewedExercises.length > 0 && (
           <div className="mt-4 space-y-3">
@@ -216,7 +216,7 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
             </button>
           </div>
         )}
-      </div>
+      </div> : null}
     </div>
   );
 };
