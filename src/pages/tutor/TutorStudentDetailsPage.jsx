@@ -1,0 +1,153 @@
+import { useEffect, useState } from 'react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { AppShell } from '../../components/common/AppShell';
+import { SectionHeader } from '../../components/common/SectionHeader';
+import { useAuth } from '../../hooks/useAuth';
+import {
+  generateExercisePlanIfEligible,
+  getQuestionPapers,
+  getTutorAssignedStudentContexts,
+  getTutorExercisesForAssignedStudents,
+  getTutorLessonsForAssignedStudents,
+  getTutorReportsForAssignedStudents,
+  saveCompletedLesson,
+  saveTutorReport,
+} from '../../services/firestoreService';
+import { DEFAULT_SUBJECT } from '../../lib/constants';
+
+const emptyLessonForm = { selectedTopic: '', topicUnderstandingScores: [], topicReport: '' };
+
+export const TutorStudentDetailsPage = () => {
+  const { studentId } = useParams();
+  const [searchParams] = useSearchParams();
+  const subject = searchParams.get('subject') || DEFAULT_SUBJECT;
+  const { profile, logout } = useAuth();
+  const navigate = useNavigate();
+  const [student, setStudent] = useState(null);
+  const [reports, setReports] = useState([]);
+  const [exercises, setExercises] = useState([]);
+  const [lessons, setLessons] = useState([]);
+  const [topicOptions, setTopicOptions] = useState([]);
+  const [reportNote, setReportNote] = useState('');
+  const [lessonForm, setLessonForm] = useState(emptyLessonForm);
+  const [status, setStatus] = useState('');
+
+  const load = async () => {
+    if (!profile?.uid) return;
+    const [contexts, reportRows, exerciseRows, lessonRows, papers] = await Promise.all([
+      getTutorAssignedStudentContexts(profile.uid),
+      getTutorReportsForAssignedStudents(profile.uid),
+      getTutorExercisesForAssignedStudents(profile.uid),
+      getTutorLessonsForAssignedStudents(profile.uid),
+      getQuestionPapers({ subject }),
+    ]);
+    setStudent(contexts.find((item) => item.studentId === studentId && item.subject === subject) ?? null);
+    setReports(reportRows.filter((item) => item.studentId === studentId && item.subject === subject));
+    setExercises(exerciseRows.filter((item) => item.studentId === studentId && item.subject === subject));
+    setLessons(lessonRows.filter((item) => item.studentId === studentId && item.subject === subject));
+    setTopicOptions([...new Set(papers.flatMap((paper) => paper.topics ?? []).filter(Boolean))].sort());
+  };
+
+  useEffect(() => {
+    load().catch((error) => setStatus(error.message || 'Could not load student details.'));
+  }, [profile?.uid, studentId, subject]);
+
+  const latestReport = student?.latestReportsBySubject?.[subject] || reports[0]?.note || (subject === DEFAULT_SUBJECT ? student?.latestReport : '') || '';
+  const hasInitialReport = Boolean(latestReport.trim());
+
+  const addTopic = () => {
+    if (!lessonForm.selectedTopic || lessonForm.topicUnderstandingScores.some((entry) => entry.topic === lessonForm.selectedTopic)) return;
+    setLessonForm((current) => ({ ...current, selectedTopic: '', topicUnderstandingScores: [...current.topicUnderstandingScores, { topic: current.selectedTopic, understandingLevel: 5 }] }));
+  };
+  const updateScore = (topic, value) => setLessonForm((current) => ({ ...current, topicUnderstandingScores: current.topicUnderstandingScores.map((entry) => entry.topic === topic ? { ...entry, understandingLevel: Number(value) } : entry) }));
+  const removeTopic = (topic) => setLessonForm((current) => ({ ...current, topicUnderstandingScores: current.topicUnderstandingScores.filter((entry) => entry.topic !== topic) }));
+
+  const saveInitialReport = async () => {
+    if (!reportNote.trim()) return;
+    await saveTutorReport({ tutorId: profile.uid, studentId, subject, reportType: 'initial', note: reportNote, studentName: student?.displayName || student?.name || 'Student' });
+    setReportNote('');
+    setStatus('Initial report saved.');
+    await load();
+  };
+
+  const completeLesson = async () => {
+    if (!lessonForm.topicUnderstandingScores.length || !lessonForm.topicReport.trim()) {
+      setStatus('Choose at least one analyzed topic and enter the lesson report.');
+      return;
+    }
+    const topics = lessonForm.topicUnderstandingScores.map((entry) => entry.topic);
+    const understandingLevel = Math.round(lessonForm.topicUnderstandingScores.reduce((sum, entry) => sum + Number(entry.understandingLevel ?? 5), 0) / topics.length);
+    const topicScoresText = lessonForm.topicUnderstandingScores.map((entry) => `${entry.topic}: ${entry.understandingLevel}/10`).join('\n');
+    const report = [`--- ${topics.join(' | ')} ---`, 'Topics completed:', topicScoresText, 'Tutor report:', lessonForm.topicReport, `Date: ${new Date().toLocaleString()}`].join('\n');
+
+    await saveTutorReport({ tutorId: profile.uid, studentId, subject, reportType: 'lesson', note: report, studentName: student?.displayName || student?.name || 'Student' });
+    const lesson = await saveCompletedLesson({
+      tutorId: profile.uid,
+      studentId,
+      subject,
+      topic: topics[0],
+      topics,
+      topicUnderstandingScores: lessonForm.topicUnderstandingScores.map((entry) => ({ ...entry, topicReport: lessonForm.topicReport })),
+      topicReport: lessonForm.topicReport,
+      understandingLevel,
+      studentName: student?.displayName || student?.name || 'Student',
+    });
+    const generation = await generateExercisePlanIfEligible({
+      student: { uid: studentId, grade: student?.grade, province: student?.province, paymentCompleted: student?.paymentCompleted },
+      subject,
+      mode: 'weekly',
+      completedLesson: lesson,
+      understandingLevel,
+      onProgress: setStatus,
+    });
+    setLessonForm(emptyLessonForm);
+    setStatus(generation.generated ? 'Lesson completed and exercises generated.' : 'Lesson completed and saved for future AI generation.');
+    await load();
+  };
+
+  return (
+    <AppShell title={student?.displayName || student?.name || 'Student'} subtitle={`${subject} learner details, reports, exercises, and lessons.`} role="tutor" user={profile} onLogout={logout}>
+      {status ? <div className="panel p-4 text-sm text-slate-700">{status}</div> : null}
+      <Link to="/tutor" className="btn-secondary inline-flex w-fit">Back to students</Link>
+
+      <section className="panel p-5">
+        <h2 className="text-xl font-semibold text-slate-950">Student details</h2>
+        <p className="mt-2 text-sm text-slate-500">{student?.grade || '?'} • {student?.province || '?'} • {subject} • {student?.paymentCompleted ? 'Paid' : 'Unpaid'}</p>
+        <p className="mt-4 whitespace-pre-wrap rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">{latestReport || 'No initial report for this subject yet.'}</p>
+      </section>
+
+      {!hasInitialReport ? (
+        <section className="panel space-y-4 p-5">
+          <SectionHeader eyebrow="Initial report" title="Create subject report" description="This unlocks subject-specific lesson completion and AI context." />
+          <textarea className="input min-h-36" value={reportNote} onChange={(event) => setReportNote(event.target.value)} placeholder="Initial report for this student and subject" />
+          <button type="button" className="btn-primary" onClick={saveInitialReport} disabled={!reportNote.trim()}>Save initial report</button>
+        </section>
+      ) : (
+        <section className="panel space-y-4 p-5">
+          <SectionHeader eyebrow="Lesson complete" title="Save completed topics" description="Choose topics from analyzed papers, add scores, and save the lesson for AI generation." />
+          <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
+            <select className="input" value={lessonForm.selectedTopic} onChange={(event) => setLessonForm((current) => ({ ...current, selectedTopic: event.target.value }))} disabled={!topicOptions.length}>
+              <option value="">{topicOptions.length ? 'Choose analyzed topic' : 'No analyzed topics available'}</option>
+              {topicOptions.map((topic) => <option key={topic}>{topic}</option>)}
+            </select>
+            <button type="button" className="btn-secondary" onClick={addTopic} disabled={!lessonForm.selectedTopic}>Add topic</button>
+          </div>
+          {lessonForm.topicUnderstandingScores.map((entry) => (
+            <div key={entry.topic} className="grid gap-3 rounded-2xl bg-slate-50 p-3 md:grid-cols-[1fr_160px_auto] md:items-center">
+              <p className="font-semibold text-slate-900">{entry.topic}</p>
+              <input type="number" min="0" max="10" className="input" value={entry.understandingLevel} onChange={(event) => updateScore(entry.topic, event.target.value)} />
+              <button type="button" className="btn-secondary" onClick={() => removeTopic(entry.topic)}>Remove</button>
+            </div>
+          ))}
+          <textarea className="input min-h-32" value={lessonForm.topicReport} onChange={(event) => setLessonForm((current) => ({ ...current, topicReport: event.target.value }))} placeholder="Lesson report" />
+          <button type="button" className="btn-primary" onClick={completeLesson} disabled={!lessonForm.topicUnderstandingScores.length || !lessonForm.topicReport.trim()}>Lesson completed</button>
+        </section>
+      )}
+
+      <section className="grid gap-6 xl:grid-cols-2">
+        <div className="panel p-5"><SectionHeader eyebrow="Exercises" title="Assigned exercises" description="Click an exercise to view details and paper links." /><div className="space-y-3">{exercises.map((exercise) => <button key={exercise.id} type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}`)} className="block w-full rounded-2xl bg-slate-50 p-4 text-left"><p className="font-semibold text-slate-950">{exercise.title}</p><p className="text-sm text-slate-500">{exercise.subject} • {exercise.assignmentDate}</p></button>)}{!exercises.length ? <p className="text-sm text-slate-500">No exercises yet.</p> : null}</div></div>
+        <div className="panel p-5"><SectionHeader eyebrow="Lessons" title="Completed lessons" description="These completed topics feed AI exercise generation." /><div className="space-y-3">{lessons.map((lesson) => <Link key={lesson.id} to={`/tutor/lessons/${lesson.id}`} className="block rounded-2xl bg-slate-50 p-4"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><p className="text-sm text-slate-500">{lesson.completedOn}</p></Link>)}{!lessons.length ? <p className="text-sm text-slate-500">No completed lessons yet.</p> : null}</div></div>
+      </section>
+    </AppShell>
+  );
+};

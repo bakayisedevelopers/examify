@@ -8,7 +8,7 @@ import { collection, query, where, orderBy, onSnapshot, doc, updateDoc, serverTi
 import { db } from '../../firebase/config';
 import { MarkingCanvas as ImageEditor } from '../canvas/pictureEditorCanvas';
 
-export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId, showQuestionLinks = false }) => {
+export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId, showQuestionLinks = false, viewerRole = 'student' }) => {
   const navigate = useNavigate();
   const [openingPapers, setOpeningPapers] = useState(false);
   const [unreviewedExercises, setUnreviewedExercises] = useState([]);
@@ -20,7 +20,7 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
       const page = Math.max(1, Number(firstLink.pageNumber ?? 1) || 1);
       const params = new URLSearchParams({ page: String(page) });
       if (firstLink.questionReference) params.set('question', firstLink.questionReference);
-      navigate(`/student/papers/${firstLink.paperId}?${params.toString()}`);
+      navigate(`/${viewerRole}/papers/${firstLink.paperId}?${params.toString()}`);
       return;
     }
 
@@ -30,7 +30,7 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
       const papers = await getQuestionPapersByIds(targetExercise.paperIds);
       const firstPaper = papers[0];
       if (firstPaper?.id) {
-        navigate(`/student/papers/${firstPaper.id}?page=1`);
+        navigate(`/${viewerRole}/papers/${firstPaper.id}?page=1`);
       }
     } catch (error) {
       console.error('Failed to open papers:', error);
@@ -122,7 +122,7 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
                 <button
                   key={`${link.paperId}-${link.questionReference}-${index}`}
                   type="button"
-                  onClick={() => navigate(`/student/papers/${link.paperId}?${params.toString()}`)}
+                  onClick={() => navigate(`/${viewerRole}/papers/${link.paperId}?${params.toString()}`)}
                   className="btn-secondary px-3 py-2 text-sm"
                 >
                   {link.questionReference || `Question ${index + 1}`} • page {page}

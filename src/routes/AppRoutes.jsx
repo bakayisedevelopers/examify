@@ -6,6 +6,8 @@ import { LoginPage } from '../pages/auth/LoginPage';
 import { SignupPage } from '../pages/auth/SignupPage';
 import { StudentDashboardPage } from '../pages/student/StudentDashboardPage';
 import { StudentExercisesPage } from '../pages/student/StudentExercisesPage';
+import { StudentLessonsPage } from '../pages/student/StudentLessonsPage';
+import { StudentLessonDetailsPage } from '../pages/student/StudentLessonDetailsPage';
 import { StudentExerciseDetailsPage } from '../pages/student/StudentExerciseDetailsPage';
 import { StudentPeerReviewsPage } from '../pages/student/StudentPeerReviewsPage';
 import { StudentBillingPage } from '../pages/student/StudentBillingPage';
@@ -13,6 +15,11 @@ import { StudentProfilePage } from '../pages/student/StudentProfilePage';
 import { TutorDashboardPage } from '../pages/tutor/TutorDashboardPage';
 import { TutorStudentsPage } from '../pages/tutor/TutorStudentsPage';
 import { TutorReportsPage } from '../pages/tutor/TutorReportsPage';
+import { TutorStudentDetailsPage } from '../pages/tutor/TutorStudentDetailsPage';
+import { TutorExercisesPage } from '../pages/tutor/TutorExercisesPage';
+import { TutorExerciseDetailsPage } from '../pages/tutor/TutorExerciseDetailsPage';
+import { TutorLessonsPage } from '../pages/tutor/TutorLessonsPage';
+import { TutorLessonDetailsPage } from '../pages/tutor/TutorLessonDetailsPage';
 import { AdminDashboardPage } from '../pages/admin/AdminDashboardPage';
 import { AdminUsersPage } from '../pages/admin/AdminUsersPage';
 import { AdminPaymentsPage } from '../pages/admin/AdminPaymentsPage';
@@ -44,6 +51,8 @@ export const AppRoutes = () => (
       <Route path="/student" element={<StudentDashboardPage />} />
       <Route path="/student/exercises" element={<StudentExercisesPage />} />
       <Route path="/student/exercises/:exerciseId" element={<StudentExerciseDetailsPage />} />
+      <Route path="/student/lessons" element={<StudentLessonsPage />} />
+      <Route path="/student/lessons/:lessonId" element={<StudentLessonDetailsPage />} />
       <Route path="/student/peer-reviews" element={<StudentPeerReviewsPage />} />
       <Route path="/student/billing" element={<StudentBillingPage />} />
       <Route path="/student/profile" element={<ProfileHubPage role={ROLES.STUDENT} />} />
@@ -72,6 +81,11 @@ export const AppRoutes = () => (
     <Route element={<ProtectedRoute allowedRoles={[ROLES.TUTOR]} />}>
       <Route path="/tutor" element={<TutorDashboardPage />} />
       <Route path="/tutor/students" element={<TutorStudentsPage />} />
+      <Route path="/tutor/students/:studentId" element={<TutorStudentDetailsPage />} />
+      <Route path="/tutor/exercises" element={<TutorExercisesPage />} />
+      <Route path="/tutor/exercises/:exerciseId" element={<TutorExerciseDetailsPage />} />
+      <Route path="/tutor/lessons" element={<TutorLessonsPage />} />
+      <Route path="/tutor/lessons/:lessonId" element={<TutorLessonDetailsPage />} />
       <Route path="/tutor/papers" element={<PastExamPapersPage />} />
       <Route path="/tutor/papers/:paperId" element={<PaperReaderPage />} />
       <Route path="/tutor/reports" element={<TutorReportsPage />} />

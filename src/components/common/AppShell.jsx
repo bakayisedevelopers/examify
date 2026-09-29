@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, BookOpen, ClipboardCheck, CreditCard, FileText, LogOut, Users, ShieldCheck, Menu, X, ChevronLeft } from 'lucide-react';
+import { LayoutDashboard, BookOpen, ClipboardCheck, CreditCard, FileText, LogOut, Users, ShieldCheck, Menu, X, ChevronLeft, GraduationCap } from 'lucide-react';
 import { Logo } from './Logo';
 import { ROLES } from '../../lib/constants';
 
@@ -8,12 +8,15 @@ const navigationByRole = {
   [ROLES.STUDENT]: [
     { to: '/student', label: 'Overview', icon: LayoutDashboard },
     // { to: '/student/exercises', label: 'Exercises', icon: BookOpen },
+    { to: '/student/lessons', label: 'Lessons', icon: GraduationCap },
     { to: '/student/papers', label: 'Past papers', icon: BookOpen },
     { to: '/student/peer-reviews', label: 'Peer reviews', icon: ClipboardCheck },
     { to: '/student/guide', label: 'Examifying Guide', icon: ClipboardCheck },
   ],
   [ROLES.TUTOR]: [
     { to: '/tutor', label: 'Overview', icon: LayoutDashboard },
+    { to: '/tutor/exercises', label: 'Exercises', icon: ClipboardCheck },
+    { to: '/tutor/lessons', label: 'Lessons', icon: GraduationCap },
     { to: '/tutor/papers', label: 'Past papers', icon: BookOpen },
     { to: '/tutor/reports', label: 'Reports', icon: FileText },
     { to: '/tutor/guide', label: 'Examifying Guide', icon: ClipboardCheck },

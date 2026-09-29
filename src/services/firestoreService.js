@@ -804,9 +804,7 @@ export const saveTutorReport = async ({ reportId, studentId, tutorId, note, stud
   };
 
   const studentReportUpdate = {
-    latestReportsBySubject: {
-      [subject]: note,
-    },
+    [`latestReportsBySubject.${subject}`]: note,
     updatedAt: serverTimestamp(),
   };
   if (subject === DEFAULT_SUBJECT) {
@@ -815,12 +813,12 @@ export const saveTutorReport = async ({ reportId, studentId, tutorId, note, stud
 
   if (reportId) {
     await updateDoc(doc(db, collections.tutorReports, reportId), payload);
-    await setDoc(doc(db, collections.users, studentId), studentReportUpdate, { merge: true });
+    await updateDoc(doc(db, collections.users, studentId), studentReportUpdate);
     return { id: reportId, ...payload };
   }
 
   const ref = await addDoc(collection(db, collections.tutorReports), payload);
-  await setDoc(doc(db, collections.users, studentId), studentReportUpdate, { merge: true });
+  await updateDoc(doc(db, collections.users, studentId), studentReportUpdate);
   return { id: ref.id, ...payload };
 };
 
@@ -1349,6 +1347,106 @@ export const subscribeToUnassignedStudents = (callback, subject = DEFAULT_SUBJEC
     const assignedIds = new Set(assignmentsSnapshot.docs.map((item) => item.data().studentId));
     callback(snapshot.docs.map(item => item.data()).filter(student => !assignedIds.has(student.uid)));
   }, (error) => console.error('[Examifying][Firestore] subscribeToUnassignedStudents error', error));
+};
+
+
+export const getTutorAssignedStudentContexts = async (tutorId) => {
+  if (!tutorId) return [];
+  if (!isFirebaseConfigured) {
+    return mockStudentAssignments
+      .filter((assignment) => assignment.tutorId === tutorId && assignment.active !== false)
+      .map((assignment) => {
+        const student = demoUsers.find((user) => user.uid === assignment.studentId) ?? {};
+        return { ...student, studentId: assignment.studentId, subject: assignment.subject ?? DEFAULT_SUBJECT, assignmentId: assignment.id };
+      });
+  }
+
+  ensureDb();
+  const assignmentsSnapshot = await getDocs(query(
+    collection(db, collections.tutorStudentAssignments),
+    where('tutorId', '==', tutorId),
+    where('active', '==', true),
+  ));
+  const assignments = assignmentsSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  const studentSnapshots = await Promise.all(assignments.map((assignment) => getDoc(doc(db, collections.users, assignment.studentId))));
+  return assignments.map((assignment, index) => ({
+    ...(studentSnapshots[index].exists() ? studentSnapshots[index].data() : {}),
+    studentId: assignment.studentId,
+    uid: assignment.studentId,
+    subject: assignment.subject ?? DEFAULT_SUBJECT,
+    assignmentId: assignment.id,
+  }));
+};
+
+export const getTutorReportsForAssignedStudents = async (tutorId) => {
+  if (!tutorId) return [];
+  if (!isFirebaseConfigured) return mockTutorReports.filter((report) => report.tutorId === tutorId);
+  ensureDb();
+  const snapshot = await getDocs(query(collection(db, collections.tutorReports), where('tutorId', '==', tutorId)));
+  return snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .sort((left, right) => new Date(right.updatedAt?.toDate?.() ?? right.updatedAt ?? right.createdAt?.toDate?.() ?? right.createdAt ?? 0) - new Date(left.updatedAt?.toDate?.() ?? left.updatedAt ?? left.createdAt?.toDate?.() ?? left.createdAt ?? 0));
+};
+
+export const getTutorExercisesForAssignedStudents = async (tutorId) => {
+  const contexts = await getTutorAssignedStudentContexts(tutorId);
+  if (!contexts.length) return [];
+  if (!isFirebaseConfigured) {
+    const keys = new Set(contexts.map((item) => `${item.studentId}-${item.subject}`));
+    return (mockDashboardData.student.exerciseHistory ?? []).filter((exercise) => keys.has(`${exercise.studentId}-${exercise.subject ?? DEFAULT_SUBJECT}`));
+  }
+  ensureDb();
+  const results = await Promise.all(contexts.map(async (context) => {
+    const snapshot = await getDocs(query(
+      collection(db, collections.dailyExerciseAssignments),
+      where('studentId', '==', context.studentId),
+      where('subject', '==', context.subject),
+      limit(40),
+    ));
+    return snapshot.docs.map((item) => ({ id: item.id, ...item.data(), studentName: context.displayName || context.name || 'Student' }));
+  }));
+  return results.flat().sort((left, right) => String(right.assignmentDate).localeCompare(String(left.assignmentDate)));
+};
+
+export const getTutorLessonsForAssignedStudents = async (tutorId) => {
+  if (!tutorId) return [];
+  if (!isFirebaseConfigured) return mockCompletedLessons.filter((lesson) => lesson.tutorId === tutorId);
+  ensureDb();
+  const snapshot = await getDocs(query(collection(db, collections.coveredTopics), where('tutorId', '==', tutorId)));
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() })).sort((left, right) => String(right.completedOn ?? '').localeCompare(String(left.completedOn ?? '')));
+};
+
+export const getLessonsForStudent = async (studentId) => {
+  if (!studentId) return [];
+  if (!isFirebaseConfigured) return mockCompletedLessons.filter((lesson) => lesson.studentId === studentId);
+  ensureDb();
+  const snapshot = await getDocs(query(collection(db, collections.coveredTopics), where('studentId', '==', studentId)));
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() })).sort((left, right) => String(right.completedOn ?? '').localeCompare(String(left.completedOn ?? '')));
+};
+
+export const getLessonById = async (lessonId) => {
+  if (!lessonId) return null;
+  if (!isFirebaseConfigured) return mockCompletedLessons.find((lesson) => lesson.id === lessonId) ?? null;
+  ensureDb();
+  const snapshot = await getDoc(doc(db, collections.coveredTopics, lessonId));
+  return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
+};
+
+export const updateCompletedLesson = async ({ lessonId, topicReport, topicUnderstandingScores = [], topics = [], understandingLevel }) => {
+  if (!lessonId) throw new Error('Lesson id is required.');
+  if (!isFirebaseConfigured) return { id: lessonId, topicReport, topicUnderstandingScores, topics, understandingLevel };
+  ensureDb();
+  const payload = {
+    topicReport,
+    note: topicReport,
+    topicUnderstandingScores,
+    topics,
+    topic: topics[0] ?? '',
+    understandingLevel,
+    updatedAt: serverTimestamp(),
+  };
+  await updateDoc(doc(db, collections.coveredTopics, lessonId), payload);
+  return { id: lessonId, ...payload };
 };
 
 export const subscribeToAssignedTutorForStudent = (studentId, callback, subject = DEFAULT_SUBJECT) => {
