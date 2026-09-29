@@ -5,7 +5,7 @@ const kiloBaseUrl = () => process.env.KILO_BASE_URL?.trim() || 'https://api.kilo
 const kiloTextModel = () => process.env.KILO_TEXT_MODEL?.trim() || 'thinkingmachines/inkling-small:free';
 const kiloFallbackTextModel = () => process.env.KILO_FALLBACK_TEXT_MODEL?.trim() || 'kilo-auto/free';
 const kiloVisionModel = () => process.env.KILO_VISION_MODEL?.trim() || 'dots-studio/dots-3-note-preview:free';
-const kiloFallbackVisionModels = () => (process.env.KILO_FALLBACK_VISION_MODELS?.trim() || 'qwen/qwen3.8-27b:free,stepfun/step-3.7-flash:free,openrouter/free')
+const kiloFallbackVisionModels = () => (process.env.KILO_FALLBACK_VISION_MODELS?.trim() || 'qwen/qwen3.8-27b:free,stepfun/step-3.7-flash:free')
   .split(',')
   .map((model) => model.trim())
   .filter(Boolean);

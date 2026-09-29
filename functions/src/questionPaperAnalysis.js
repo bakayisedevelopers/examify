@@ -363,13 +363,15 @@ export const analyzeQuestionPaper = onDocumentWritten(
       logger.info('Question paper analysis completed', { paperId, questionCount: analysis.questions.length });
     } catch (error) {
       logger.error('Question paper analysis failed', { paperId, message: error?.message, stack: error?.stack });
+      const latestSnapshot = await paperRef.get().catch(() => null);
+      const latestPaper = latestSnapshot?.exists ? latestSnapshot.data() : paper;
       await paperRef.set({
         analysisStatus: FAILED,
         availableForGeneration: false,
         analysisError: error?.message ?? String(error),
         analysisProgressMessage: 'Analysis failed. Upload a clearer PDF or retry later.',
-        analysisProgressCurrent: paper.analysisProgressCurrent ?? 0,
-        analysisProgressTotal: paper.analysisProgressTotal ?? 1,
+        analysisProgressCurrent: latestPaper?.analysisProgressCurrent ?? paper.analysisProgressCurrent ?? 0,
+        analysisProgressTotal: latestPaper?.analysisProgressTotal ?? paper.analysisProgressTotal ?? 1,
         updatedAt: new Date(),
       }, { merge: true });
     }
