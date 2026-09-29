@@ -29,6 +29,14 @@ const defaultPaperForm = (profile) => ({
 const normalizeFileName = (name = '') => String(name).toLowerCase().replace(/\.[^.]+$/, '').replace(/memo|memorandum|marking|guideline|answers|answer|question|paper|qp/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
 const isMemoFile = (file) => /memo|memorandum|marking|guideline|answers|answer/i.test(file?.name ?? '');
 const fileTokens = (file) => new Set(normalizeFileName(file?.name).split(' ').filter((token) => token.length > 1));
+
+const openLocalFilePreview = (file) => {
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  window.open(url, '_blank', 'noopener,noreferrer');
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+};
+
 const overlapScore = (leftFile, rightFile) => {
   const left = fileTokens(leftFile);
   const right = fileTokens(rightFile);
@@ -351,6 +359,7 @@ export const PastExamPapersPage = () => {
                         <th className="min-w-40 px-4 py-3 font-semibold">Month</th>
                         <th className="min-w-40 px-4 py-3 font-semibold">Paper</th>
                         <th className="min-w-64 px-4 py-3 font-semibold">Notes</th>
+                        <th className="min-w-48 px-4 py-3 font-semibold">Preview</th>
                         <th className="min-w-28 px-4 py-3 font-semibold">Action</th>
                       </tr>
                     </thead>
@@ -372,6 +381,12 @@ export const PastExamPapersPage = () => {
                           <td className="px-4 py-3"><select className="input min-w-36" value={row.month} onChange={(event) => updateBulkRow(row.id, { month: event.target.value })}>{PAPER_MONTHS.map((month) => <option key={month}>{month}</option>)}</select></td>
                           <td className="px-4 py-3"><select className="input min-w-36" value={row.paperNumber} onChange={(event) => updateBulkRow(row.id, { paperNumber: event.target.value })}>{PAPER_NUMBERS.map((paperNumber) => <option key={paperNumber}>{paperNumber}</option>)}</select></td>
                           <td className="px-4 py-3"><input className="input min-w-60" value={row.notes} onChange={(event) => updateBulkRow(row.id, { notes: event.target.value })} placeholder="Optional notes" /></td>
+                          <td className="px-4 py-3">
+                            <div className="flex min-w-44 flex-wrap gap-2">
+                              <button type="button" className="btn-secondary text-xs" onClick={() => openLocalFilePreview(row.paperFile)}>Open paper</button>
+                              <button type="button" className="btn-secondary text-xs" onClick={() => openLocalFilePreview(row.memoFile)} disabled={!row.memoFile}>Open memo</button>
+                            </div>
+                          </td>
                           <td className="px-4 py-3"><button type="button" className="btn-secondary text-sm" onClick={() => removeBulkRow(row.id)}>Remove</button></td>
                         </tr>
                       ))}
