@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { UploadCloud } from 'lucide-react';
 
-export const SubmissionUpload = ({ exerciseId, onSubmit, exercise }) => {
+export const SubmissionUpload = ({ exerciseId, onSubmit }) => {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');

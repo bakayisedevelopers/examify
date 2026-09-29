@@ -6,7 +6,7 @@ import { BookOpen, BrainCircuit, ShieldCheck, Users } from 'lucide-react';
 
 const features = [
   {
-    title: 'Daily Maths exercises that unlock progressively',
+    title: 'Daily subject exercises that unlock progressively',
     icon: BookOpen,
   },
   {
@@ -45,8 +45,8 @@ export const LoginPage = () => {
     <main className="mx-auto flex min-h-[calc(100vh-88px)] max-w-7xl items-center px-4 py-16 lg:px-6">
       <div className="grid w-full gap-8 lg:grid-cols-[0.95fr_1.05fr]">
         <div className="panel-dark p-8 text-white">
-          <p className="text-sm font-semibold uppercase tracking-[0.3em] text-brand-200">Access Examify</p>
-          <h1 className="mt-4 text-4xl font-bold">Welcome to Examify.</h1>
+          <p className="text-sm font-semibold uppercase tracking-[0.3em] text-brand-200">Access Examifying</p>
+          <h1 className="mt-4 text-4xl font-bold">Welcome to Examifying.</h1>
           <div className="mt-8 space-y-3">
             {features.map(({ title, icon: Icon }) => (
               <div key={title} className="panel p-6 hover:-translate-y-2 transition">
@@ -73,7 +73,7 @@ export const LoginPage = () => {
           </label>
           <div className="md:col-span-2 flex items-start gap-3 text-sm text-slate-600">
             <p>
-              By login in you agree to Examify {' '}
+              By login in you agree to Examifying {' '}
               <Link to="/policies#terms" className="font-semibold text-brand-700">
                 Terms of Service
               </Link>,{' '}

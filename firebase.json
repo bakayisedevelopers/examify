@@ -4,7 +4,6 @@
     "runtime": "nodejs22"
   },
   "hosting": {
-    "target": "examify",
     "public": "dist",
     "ignore": [
       "firebase.json",
@@ -16,10 +15,11 @@
         "source": "**",
         "destination": "/index.html"
       }
-    ]
+    ],
+    "site": "examifying"
   },
   "firestore": {
-    "database": "tutoring",
+    "database": "(default)",
     "location": "us-central1",
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
@@ -32,7 +32,7 @@
       "anonymous": true,
       "emailPassword": true,
       "googleSignIn": {
-        "oAuthBrandDisplayName": "Examify",
+        "oAuthBrandDisplayName": "Examifying",
         "supportEmail": "bakayise.developers@gmail.com"
       }
     }

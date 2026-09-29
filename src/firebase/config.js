@@ -1,5 +1,4 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAI, GoogleAIBackend } from 'firebase/ai';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
@@ -14,8 +13,7 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-export const firestoreDatabaseId = 'tutoring';
-export const firebaseAiModel = import.meta.env.VITE_FIREBASE_AI_MODEL?.trim() || 'gemini-2.5-flash';
+export const firestoreDatabaseId = import.meta.env.VITE_FIRESTORE_DATABASE_ID?.trim() || '(default)';
 
 export const isFirebaseConfigured = Boolean(
   firebaseConfig.apiKey && firebaseConfig.authDomain && firebaseConfig.projectId,
@@ -27,11 +25,8 @@ try {
 } catch (error) {
   console.warn('Firebase initialization failed:', error);
 }
-const aiBackend = app ? new GoogleAIBackend() : null;
-
 export const firebaseApp = app;
 export const auth = app ? getAuth(app) : null;
 export const db = app ? (firestoreDatabaseId === '(default)' ? getFirestore(app) : getFirestore(app, firestoreDatabaseId)) : null;
 export const storage = app ? getStorage(app) : null;
 export const functions = app ? getFunctions(app) : null;
-export const ai = app ? getAI(app, { backend: aiBackend }) : null;

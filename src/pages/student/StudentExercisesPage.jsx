@@ -1,29 +1,48 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
 import { getExerciseHistory, getStudentAccessState, getTodayExercise } from '../../services/firestoreService';
 import { getExerciseAvailability } from '../../utils/exerciseRules';
+import { DEFAULT_SUBJECT } from '../../lib/constants';
+import { getUserSubjects } from '../../utils/tutorSubjects';
 
 export const StudentExercisesPage = () => {
   const { profile, logout } = useAuth();
   const [todayExercise, setTodayExercise] = useState(null);
   const [history, setHistory] = useState([]);
   const [paymentCompleted, setPaymentCompleted] = useState(false);
+  const availableSubjects = useMemo(() => getUserSubjects(profile), [profile]);
+  const [selectedSubject, setSelectedSubject] = useState(availableSubjects[0] ?? DEFAULT_SUBJECT);
+
+  useEffect(() => {
+    if (availableSubjects.length && !availableSubjects.includes(selectedSubject)) {
+      setSelectedSubject(availableSubjects[0]);
+    }
+  }, [availableSubjects, selectedSubject]);
 
   useEffect(() => {
     const load = async () => {
-      const access = await getStudentAccessState(profile);
+      const access = await getStudentAccessState(profile, selectedSubject);
       setPaymentCompleted(access.paymentCompleted);
       if (!access.paymentCompleted) return;
-      getTodayExercise(profile?.uid).then(setTodayExercise);
-      getExerciseHistory(profile?.uid).then(setHistory);
+      getTodayExercise(profile?.uid, selectedSubject).then(setTodayExercise);
+      getExerciseHistory(profile?.uid, selectedSubject).then(setHistory);
     };
     load();
-  }, [profile]);
+  }, [profile, selectedSubject]);
 
   return (
-    <AppShell title="Exercises" subtitle="Review today’s task and browse your Maths assignment timeline." role="student" user={profile} onLogout={logout}>
+    <AppShell title="Exercises" subtitle="Review today’s task and browse your subject assignment timeline." role="student" user={profile} onLogout={logout}>
+      <div className="panel flex flex-wrap items-center justify-between gap-3 p-4">
+        <div>
+          <p className="text-sm font-semibold text-slate-950">Subject</p>
+          <p className="text-xs text-slate-500">Today’s task and history are scoped to this subject.</p>
+        </div>
+        <select className="input max-w-xs" value={selectedSubject} onChange={(event) => setSelectedSubject(event.target.value)} disabled={!availableSubjects.length}>
+          {availableSubjects.map((subject) => <option key={subject}>{subject}</option>)}
+        </select>
+      </div>
       {!paymentCompleted ? <div className="panel p-5 text-sm text-amber-700">Payment is required before exercises unlock.</div> : null}
       <SectionHeader eyebrow="Today" title={todayExercise?.title ?? 'Waiting for today\'s assignment'} description={todayExercise?.instruction ?? 'Once payment and generation criteria are complete, today’s exercise will appear here.'} />
       <div className="grid gap-4">

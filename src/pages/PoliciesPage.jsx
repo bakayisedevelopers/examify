@@ -2,6 +2,9 @@ import { useNavigate } from 'react-router-dom';
 
 export const PoliciesPage = () => {
   const navigate = useNavigate();
+  const scrollToSection = (id) => {
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   return (
     <main className="mx-auto min-h-screen max-w-4xl px-4 py-12 lg:px-6 scroll-smooth">
@@ -16,9 +19,9 @@ export const PoliciesPage = () => {
 
       {/* HEADER */}
       <div className="mb-10">
-        <h1 className="text-4xl font-bold text-white">Examify Policies</h1>
+        <h1 className="text-4xl font-bold text-white">Examifying Policies</h1>
         <p className="mt-3 text-slate-400">
-          Please review our terms, policies, and conditions before using Examify.
+          Please review our terms, policies, and conditions before using Examifying.
         </p>
       </div>
 
@@ -26,10 +29,10 @@ export const PoliciesPage = () => {
 
         {/* NAV */}
         <div className="flex flex-wrap gap-4 text-sm font-medium">
-          <a href="#terms" className="text-brand-700 hover:underline">Terms of Service</a>
-          <a href="#refunds" className="text-brand-700 hover:underline">Refund & Cancellation</a>
-          <a href="#privacy" className="text-brand-700 hover:underline">Privacy Policy</a>
-          <a href="#contact" className="text-brand-700 hover:underline">Contact Info</a>
+          <button type="button" onClick={() => scrollToSection('terms')} className="text-brand-700 hover:underline">Terms of Service</button>
+          <button type="button" onClick={() => scrollToSection('refunds')} className="text-brand-700 hover:underline">Refund & Cancellation</button>
+          <button type="button" onClick={() => scrollToSection('privacy')} className="text-brand-700 hover:underline">Privacy Policy</button>
+          <button type="button" onClick={() => scrollToSection('contact')} className="text-brand-700 hover:underline">Contact Info</button>
         </div>
 
         {/* ================= TERMS ================= */}
@@ -37,8 +40,8 @@ export const PoliciesPage = () => {
           <h2 className="text-2xl font-bold text-slate-950">Terms of Service</h2>
 
           <p className="text-slate-600">
-            By accessing or using Examify, you agree to these Terms of Service.
-            Examify is an educational platform supporting students, tutors, and administrators
+            By accessing or using Examifying, you agree to these Terms of Service.
+            Examifying is an educational platform supporting students, tutors, and administrators
             with academic tools, session management, and performance tracking.
           </p>
 
@@ -92,13 +95,13 @@ export const PoliciesPage = () => {
 
           <h3 className="font-semibold text-slate-900">8. Educational Disclaimer</h3>
           <p className="text-slate-600">
-            Examify provides academic support tools and recommendations but does not guarantee
+            Examifying provides academic support tools and recommendations but does not guarantee
             academic performance improvements.
           </p>
 
           <h3 className="font-semibold text-slate-900">9. Payments</h3>
           <p className="text-slate-600">
-            Payments are processed via third-party providers such as Paystack. Examify does not
+            Payments are processed via third-party providers such as Paystack. Examifying does not
             store sensitive payment details.
           </p>
 
@@ -109,7 +112,7 @@ export const PoliciesPage = () => {
 
           <h3 className="font-semibold text-slate-900">11. Limitation of Liability</h3>
           <p className="text-slate-600">
-            Examify is not liable for any indirect or consequential damages arising from use of the platform.
+            Examifying is not liable for any indirect or consequential damages arising from use of the platform.
           </p>
         </section>
 
@@ -118,7 +121,7 @@ export const PoliciesPage = () => {
           <h2 className="text-2xl font-bold text-slate-950">Refund & Cancellation Policy</h2>
 
           <p className="text-slate-600">
-            Examify operates on a subscription-based billing model.
+            Examifying operates on a subscription-based billing model.
           </p>
 
           <ul className="list-disc pl-5 space-y-2 text-slate-600">
@@ -174,7 +177,7 @@ export const PoliciesPage = () => {
 
           <div className="space-y-2 text-slate-700">
             <p><strong>Email:</strong> bakayise.developers@gmail.com</p>
-            <p><strong>Business Name:</strong> Examify</p>
+            <p><strong>Business Name:</strong> Examifying</p>
             <p><strong>Country:</strong> South Africa</p>
           </div>
         </section>

@@ -9,7 +9,7 @@ import {
   initializeSubscriptionPayment,
   verifySubscriptionPayment,
 } from '../../services/paymentsService';
-import { SESSION_TYPE_LABELS } from '../../lib/constants';
+import { DEFAULT_SUBJECT, SESSION_TYPE_LABELS } from '../../lib/constants';
 
 export const StudentBillingPage = () => {
   const { profile, logout, refreshProfile, isDemoMode } = useAuth();
@@ -33,7 +33,7 @@ export const StudentBillingPage = () => {
   );
 
   const refreshAccess = async () => {
-    const snapshot = await getStudentAccessState(profile);
+    const snapshot = await getStudentAccessState(profile, DEFAULT_SUBJECT);
     setAccessState(snapshot);
     return snapshot;
   };
@@ -68,6 +68,7 @@ export const StudentBillingPage = () => {
           latestPaymentReference: reference,
         },
         mode: 'initial',
+        subject: DEFAULT_SUBJECT,
       });
 
       setStatus(
@@ -90,6 +91,7 @@ export const StudentBillingPage = () => {
         studentId: profile?.uid,
         latestMark:  profile?.previousYearMark ?? 0,
         sessionType: profile?.sessionType ?? 'online',
+        callbackUrl: `${window.location.origin}${location.pathname}`,
       });
 
       if (!result?.authorizationUrl) {
@@ -120,14 +122,14 @@ export const StudentBillingPage = () => {
         setIsVerifyingPayment(true);
         setStatus('Verifying your payment...');
 
-        console.log('[Examify][Billing] payment:verify:start', {
+        console.log('[Examifying][Billing] payment:verify:start', {
           studentId: profile?.uid,
           reference,
         });
 
         const verification = await verifySubscriptionPayment(reference);
 
-        console.log('[Examify][Billing] payment:verify:result', verification);
+        console.log('[Examifying][Billing] payment:verify:result', verification);
 
         if (verification?.status !== 'success') {
           setStatus(`Payment verification returned status: ${verification?.status ?? 'unknown'}`);
@@ -138,7 +140,7 @@ export const StudentBillingPage = () => {
 
         navigate(location.pathname, { replace: true });
       } catch (error) {
-        console.error('[Examify][Billing] payment:verify:error', error);
+        console.error('[Examifying][Billing] payment:verify:error', error);
         setStatus(error?.message || 'Payment verification failed.');
       } finally {
         setIsVerifyingPayment(false);
@@ -159,7 +161,7 @@ export const StudentBillingPage = () => {
       <SectionHeader
         eyebrow="Subscription"
         title="Current recommendation"
-        description="Examify calculates the monthly amount from the student-entered previous year mark until fresh learning data is available."
+        description="Examifying calculates the monthly amount from the student-entered previous year mark until fresh learning data is available."
       />
 
       <div className="grid gap-4 md:grid-cols-4">

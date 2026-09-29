@@ -1,0 +1,308 @@
+import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { logger } from 'firebase-functions';
+
+const kiloBaseUrl = () => process.env.KILO_BASE_URL?.trim() || 'https://api.kilo.ai/api/openrouter';
+const kiloTextModel = () => process.env.KILO_TEXT_MODEL?.trim() || 'thinkingmachines/inkling-small:free';
+const kiloFallbackTextModel = () => process.env.KILO_FALLBACK_TEXT_MODEL?.trim() || 'kilo-auto/free';
+const kiloVisionModel = () => process.env.KILO_VISION_MODEL?.trim() || 'dots-studio/dots-3-note-preview:free';
+const kiloFallbackVisionModels = () => (process.env.KILO_FALLBACK_VISION_MODELS?.trim() || 'qwen/qwen3.8-27b:free,stepfun/step-3.7-flash:free,openrouter/free')
+  .split(',')
+  .map((model) => model.trim())
+  .filter(Boolean);
+
+export const normalizeMessages = ({ system, prompt, messages = [] }) => {
+  const normalized = [];
+
+  if (system) {
+    normalized.push({ role: 'system', content: String(system) });
+  }
+
+  if (Array.isArray(messages) && messages.length) {
+    messages.forEach((message) => {
+      if (message?.role && message?.content) {
+        normalized.push({
+          role: message.role,
+          content: message.content,
+        });
+      }
+    });
+  }
+
+  if (prompt) {
+    normalized.push({ role: 'user', content: String(prompt) });
+  }
+
+  if (!normalized.length) {
+    throw new HttpsError('invalid-argument', 'A prompt or messages array is required.');
+  }
+
+  return normalized;
+};
+
+const parseKiloResponse = (data) => {
+  const content = data?.choices?.[0]?.message?.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => part?.text ?? '')
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+  return '';
+};
+
+export const callKiloChat = async ({
+  model,
+  messages,
+  maxTokens = 2000,
+  temperature = 0.2,
+  responseFormat,
+  mode,
+}) => {
+  const response = await fetch(`${kiloBaseUrl()}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(mode ? { 'x-kilocode-mode': mode } : {}),
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      max_tokens: maxTokens,
+      temperature,
+      ...(responseFormat ? { response_format: responseFormat } : {}),
+    }),
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    logger.error('Kilo request failed', {
+      status: response.status,
+      error: data?.error,
+      model,
+    });
+    throw new HttpsError(
+      'unavailable',
+      data?.error?.message || `Kilo request failed with status ${response.status}.`
+    );
+  }
+
+  return {
+    text: parseKiloResponse(data),
+    model: data?.model ?? model,
+    usage: data?.usage ?? null,
+    raw: data,
+  };
+};
+
+const isUsefulVisionText = (text = '') => {
+  const normalized = String(text ?? '').trim();
+  if (normalized.length < 40) return false;
+  if (/^```(?:json)?\s*\{\s*"?subjects"?\s*:\s*\[\s*\]\s*\}\s*```?$/i.test(normalized)) return false;
+  if (/^\{\s*"?subjects"?\s*:\s*\[\s*\]\s*\}$/i.test(normalized)) return false;
+  return true;
+};
+
+export const callKiloVisionWithFallback = async ({ messages, maxTokens, temperature, responseFormat, mode }) => {
+  const models = [kiloVisionModel(), ...kiloFallbackVisionModels()].filter((model, index, list) => model && list.indexOf(model) === index);
+  let lastError = null;
+
+  for (const model of models) {
+    try {
+      const result = await callKiloChat({ model, messages, maxTokens, temperature, responseFormat, mode });
+      const responseText = String(result?.text ?? '').trim();
+      const textLength = responseText.length;
+      const useful = isUsefulVisionText(responseText);
+      logger.info('Kilo vision request completed', { model, textLength, useful, preview: responseText.slice(0, 80) });
+
+      if (useful) {
+        return model === models[0]
+          ? result
+          : { ...result, fallbackUsed: true, fallbackFrom: models[0] };
+      }
+
+      lastError = new HttpsError('unavailable', `Kilo vision model ${model} returned an unusable response.`);
+      logger.warn('Kilo vision model returned unusable response, trying next model', { model, textLength });
+    } catch (error) {
+      lastError = error;
+      logger.warn('Kilo vision model failed, trying next model', { model, message: error?.message });
+    }
+  }
+
+  throw lastError ?? new HttpsError('unavailable', 'Kilo vision extraction failed.');
+};
+
+const buildVisionContent = ({ prompt, url, imageUrls = [] }) => {
+  if (!prompt) {
+    throw new HttpsError('invalid-argument', 'prompt is required.');
+  }
+
+  const urls = [url, ...imageUrls].filter(Boolean);
+  if (!urls.length) {
+    throw new HttpsError('invalid-argument', 'A URL, data URL, or image list is required.');
+  }
+
+  return [
+    { type: 'text', text: String(prompt) },
+    ...urls.map((imageUrl) => ({ type: 'image_url', image_url: { url: imageUrl } })),
+  ];
+};
+
+
+export const callKiloTextWithFallback = async ({ messages, maxTokens = 3000, temperature = 0.2, responseFormat } = {}) => {
+  const primaryModel = kiloTextModel();
+  const fallbackModel = kiloFallbackTextModel();
+
+  try {
+    return await callKiloChat({
+      model: primaryModel,
+      messages,
+      maxTokens,
+      temperature,
+      responseFormat,
+      mode: 'general',
+    });
+  } catch (error) {
+    if (primaryModel === fallbackModel) throw error;
+
+    logger.warn('Kilo text model failed, retrying fallback text model', {
+      primaryModel,
+      fallbackModel,
+      message: error?.message,
+    });
+
+    const fallbackResult = await callKiloChat({
+      model: fallbackModel,
+      messages,
+      maxTokens,
+      temperature,
+      responseFormat,
+      mode: 'general',
+    });
+
+    return {
+      ...fallbackResult,
+      fallbackUsed: true,
+      fallbackFrom: primaryModel,
+    };
+  }
+};
+
+export const callKiloText = onCall(async (request) => {
+  const {
+    system,
+    prompt,
+    messages,
+    maxTokens,
+    temperature,
+    responseFormat,
+  } = request.data ?? {};
+
+  const normalizedMessages = normalizeMessages({ system, prompt, messages });
+  return callKiloTextWithFallback({
+    messages: normalizedMessages,
+    maxTokens,
+    temperature,
+    responseFormat,
+  });
+});
+
+export const callKiloImage = onCall(async (request) => {
+  const {
+    prompt,
+    imageUrl,
+    imageDataUrl,
+    imageUrls,
+    maxTokens,
+    temperature,
+    responseFormat,
+  } = request.data ?? {};
+
+  const result = await callKiloVisionWithFallback({
+    messages: [
+      {
+        role: 'user',
+        content: buildVisionContent({
+          prompt,
+          url: imageDataUrl || imageUrl,
+          imageUrls,
+        }),
+      },
+    ],
+    maxTokens,
+    temperature,
+    responseFormat,
+    mode: 'general',
+  });
+
+  return result;
+});
+
+export const callKiloDocument = onCall(async (request) => {
+  const {
+    prompt,
+    documentUrl,
+    documentDataUrl,
+    documentImages,
+    documentMimeType,
+    fileName,
+    extractedText,
+    maxTokens,
+    temperature,
+    responseFormat,
+  } = request.data ?? {};
+
+  const url = documentDataUrl || documentUrl;
+  const imageList = Array.isArray(documentImages) ? documentImages.filter(Boolean) : [];
+  const content = [];
+
+  if (!prompt) {
+    throw new HttpsError('invalid-argument', 'prompt is required.');
+  }
+
+  content.push({ type: 'text', text: String(prompt) });
+
+  if (extractedText) {
+    content.push({
+      type: 'text',
+      text: `Extracted document text, if available:\n${String(extractedText)}`,
+    });
+  }
+
+  imageList.forEach((imageUrl) => {
+    content.push({ type: 'image_url', image_url: { url: imageUrl } });
+  });
+
+  if (url) {
+    const mimeType = String(documentMimeType || '').toLowerCase();
+    const isPdf = mimeType.includes('pdf') || String(fileName || documentUrl || documentDataUrl || '').toLowerCase().includes('.pdf') || String(url).startsWith('data:application/pdf');
+
+    if (isPdf && String(url).startsWith('data:') && !imageList.length) {
+      content.push({
+        type: 'file',
+        file: {
+          filename: fileName || 'document.pdf',
+          file_data: url,
+        },
+      });
+    } else if (!isPdf) {
+      content.push({ type: 'image_url', image_url: { url } });
+    }
+  }
+
+  if (!url && !imageList.length && !extractedText) {
+    throw new HttpsError('invalid-argument', 'documentUrl, documentDataUrl, documentImages, or extractedText is required.');
+  }
+
+  const result = await callKiloVisionWithFallback({
+    messages: [{ role: 'user', content }],
+    maxTokens,
+    temperature,
+    responseFormat,
+    mode: 'general',
+  });
+
+  return result;
+});

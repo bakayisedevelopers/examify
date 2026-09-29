@@ -1,28 +1,37 @@
 import { CalendarDays, Lock, FileText } from 'lucide-react';
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { SubmissionUpload } from './SubmissionUpload';
 import { uploadSubmissionImage, uploadPeerReviewImage } from '../../services/storageService';
-import { canSubmitPeerReview } from '../../utils/exerciseRules';
 import { getQuestionPapersByIds } from '../../services/firestoreService';
 import { collection, query, where, orderBy, onSnapshot, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { MarkingCanvas as ImageEditor } from '../canvas/pictureEditorCanvas';
 
-export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId, dashboard }) => {
+export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId, showQuestionLinks = false }) => {
+  const navigate = useNavigate();
   const [openingPapers, setOpeningPapers] = useState(false);
   const [unreviewedExercises, setUnreviewedExercises] = useState([]);
   const [reviewingItem, setReviewingItem] = useState(null);
   
-  const handleOpenPapers = async () => {
-    if (!exercise?.paperIds?.length) return;
+  const handleOpenPapers = async (targetExercise = exercise) => {
+    const firstLink = Array.isArray(targetExercise?.questionLinks) ? targetExercise.questionLinks[0] : null;
+    if (firstLink?.paperId) {
+      const page = Math.max(1, Number(firstLink.pageNumber ?? 1) || 1);
+      const params = new URLSearchParams({ page: String(page) });
+      if (firstLink.questionReference) params.set('question', firstLink.questionReference);
+      navigate(`/student/papers/${firstLink.paperId}?${params.toString()}`);
+      return;
+    }
+
+    if (!targetExercise?.paperIds?.length) return;
     setOpeningPapers(true);
     try {
-      const papers = await getQuestionPapersByIds(exercise.paperIds);
-      papers.forEach((paper) => {
-        if (paper.paperUrl) {
-          window.open(paper.paperUrl, '_blank');
-        }
-      });
+      const papers = await getQuestionPapersByIds(targetExercise.paperIds);
+      const firstPaper = papers[0];
+      if (firstPaper?.id) {
+        navigate(`/student/papers/${firstPaper.id}?page=1`);
+      }
     } catch (error) {
       console.error('Failed to open papers:', error);
     } finally {
@@ -70,6 +79,7 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
     const q = query(
       collection(db, "dailyExerciseAssignments"),
       where("assignmentDate", "==", todayLocal),
+      where("subject", "==", exercise.subject),
       where("submittedImageUrl", "!=", ""),
       orderBy("assignmentDate", "asc"),
     );
@@ -85,7 +95,7 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
     });
 
     return unsubscribe;
-  }, [exercise.submittedImageUrl, studentId]);
+  }, [exercise.submittedImageUrl, exercise.subject, studentId]);
 
   return (
     <div className="panel p-6 w-full">
@@ -100,11 +110,33 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
       <p className="mt-2 text-sm font-semibold text-accent">{exercise.topic}</p>
       <p className="mt-3 text-sm text-slate-500">{exercise.sourceLabel}</p>
       <p className="mt-4 text-sm leading-7 text-slate-600">{exercise.instruction}</p>
+      {showQuestionLinks && Array.isArray(exercise?.questionLinks) && exercise.questionLinks.length > 0 && (
+        <div className="mt-4 rounded-2xl bg-slate-50 p-4">
+          <p className="text-sm font-semibold text-slate-800">Question pages</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {exercise.questionLinks.map((link, index) => {
+              const page = Math.max(1, Number(link.pageNumber ?? 1) || 1);
+              const params = new URLSearchParams({ page: String(page) });
+              if (link.questionReference) params.set('question', link.questionReference);
+              return (
+                <button
+                  key={`${link.paperId}-${link.questionReference}-${index}`}
+                  type="button"
+                  onClick={() => navigate(`/student/papers/${link.paperId}?${params.toString()}`)}
+                  className="btn-secondary px-3 py-2 text-sm"
+                >
+                  {link.questionReference || `Question ${index + 1}`} • page {page}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {exercise?.paperIds?.length > 0 && (
         <div className="mt-4">
           <button
             type="button"
-            onClick={handleOpenPapers}
+            onClick={() => handleOpenPapers(exercise)}
             disabled={openingPapers}
             className="btn-secondary inline-flex items-center gap-2"
           >
@@ -150,7 +182,7 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
                   <div className="mt-4">
                     <button
                       type="button"
-                      onClick={handleOpenPapers}
+                      onClick={() => handleOpenPapers(item)}
                       disabled={openingPapers}
                       className="btn-secondary inline-flex items-center gap-2"
                     >

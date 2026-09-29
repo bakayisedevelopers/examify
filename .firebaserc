@@ -1,15 +1,7 @@
 {
   "projects": {
-    "default": "tutoring-e68f8"
+    "default": "examifying"
   },
-  "targets": {
-    "tutoring-e68f8": {
-      "hosting": {
-        "examify": [
-          "bakayise-examify"
-        ]
-      }
-    }
-  },
+  "targets": {},
   "etags": {}
 }

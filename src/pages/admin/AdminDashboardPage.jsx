@@ -16,7 +16,7 @@ export const AdminDashboardPage = () => {
   if (!dashboard) return null;
 
   return (
-    <AppShell title="Admin dashboard" subtitle="Monitor users, tutors, papers, subscriptions, and overall platform activity across Examify." role="admin" user={profile} onLogout={logout}>
+    <AppShell title="Admin dashboard" subtitle="Monitor users, tutors, papers, subscriptions, and overall platform activity across Examifying." role="admin" user={profile} onLogout={logout}>
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {(dashboard.stats ?? []).map((item) => <StatCard key={item.label} {...item} />)}
       </section>

@@ -1,5 +1,7 @@
 import {
   addDoc,
+  arrayRemove,
+  arrayUnion,
   collection,
   doc,
   getDoc,
@@ -21,11 +23,13 @@ import {
   mockCompletedLessons,
   mockDashboardData,
   mockQuestionPapers,
+  mockStudentAssignments,
   mockTutorReports,
   mockUsers,
   mockGuideQuizResults,
 } from '../data/mockData';
-import { MAX_AI_SOURCE_PAPERS, MAX_DAILY_EXERCISES, SUBJECT, WEEKLY_EXERCISE_DAYS } from '../lib/constants';
+import { DEFAULT_SUBJECT, MAX_AI_SOURCE_PAPERS, MAX_DAILY_EXERCISES, WEEKLY_EXERCISE_DAYS } from '../lib/constants';
+import { getApprovedTutorSubjects, getUserSubjects } from '../utils/tutorSubjects';
 
 const emptyDashboardData = {
   student: {
@@ -61,6 +65,8 @@ const demoUsers = Object.values(mockUsers);
 const demoGuideQuizResults = [...mockGuideQuizResults];
 
 const GENERATION_HISTORY_LIMIT = 40;
+
+const buildTutorAssignmentId = ({ studentId, tutorId, subject }) => `${studentId}_${tutorId}_${subject}`;
 
 const normalizeQuestionReferenceTitle = (references = []) =>
   references
@@ -106,7 +112,7 @@ const buildStudentGenerationStatus = ({
   };
 };
 
-const filterQuestionPapers = (papers, { grade, region, subject = SUBJECT, allowNational = true }) =>
+const filterQuestionPapers = (papers, { grade, region, subject = DEFAULT_SUBJECT, allowNational = true }) =>
   papers.filter((paper) => {
     const subjectMatches = paper.subject === subject;
     const gradeMatches = !paper.grade || !grade || paper.grade === grade;
@@ -199,9 +205,19 @@ const getGenerationNumber = (history = [], mode) => {
   return batches.size + 1;
 };
 
-const buildTutorDashboard = () => {
-  const assignedStudents = demoUsers.filter((user) => user.role === 'student' && user.tutorId === 'mock-tutor-1');
-  const unassignedStudents = demoUsers.filter((user) => user.role === 'student' && !user.tutorId);
+const buildTutorDashboard = ({ tutorId = 'mock-tutor-1', subject = DEFAULT_SUBJECT } = {}) => {
+  const assignedStudentIds = new Set(
+    (mockStudentAssignments ?? [])
+      .filter((assignment) => assignment.tutorId === tutorId && assignment.active !== false && (assignment.subject ?? DEFAULT_SUBJECT) === subject)
+      .map((assignment) => assignment.studentId),
+  );
+  const subjectAssignedStudentIds = new Set(
+    (mockStudentAssignments ?? [])
+      .filter((assignment) => assignment.active !== false && (assignment.subject ?? DEFAULT_SUBJECT) === subject)
+      .map((assignment) => assignment.studentId),
+  );
+  const assignedStudents = demoUsers.filter((user) => user.role === 'student' && assignedStudentIds.has(user.uid));
+  const unassignedStudents = demoUsers.filter((user) => user.role === 'student' && !subjectAssignedStudentIds.has(user.uid));
 
   return {
     ...mockDashboardData.tutor,
@@ -221,11 +237,11 @@ const buildTutorDashboard = () => {
       province: student.province,
       paymentCompleted: student.paymentCompleted,
     })),
-    reports: mockTutorReports,
-    completedTopics: mockCompletedLessons,
-    questionPapers: mockQuestionPapers,
+    reports: mockTutorReports.filter((report) => (report.subject ?? DEFAULT_SUBJECT) === subject),
+    completedTopics: mockCompletedLessons.filter((lesson) => (lesson.subject ?? DEFAULT_SUBJECT) === subject),
+    questionPapers: mockQuestionPapers.filter((paper) => paper.subject === subject),
     stats: [
-      { label: 'Assigned students', value: String(assignedStudents.length), detail: 'All Maths only' },
+      { label: 'Assigned students', value: String(assignedStudents.length), detail: subject },
       { label: 'Unassigned students', value: String(unassignedStudents.length), detail: 'Ready to add' },
       { label: 'Question papers', value: String(mockQuestionPapers.length), detail: 'Published' },
       { label: 'Reports', value: String(mockTutorReports.length), detail: 'Latest editable notes' },
@@ -233,17 +249,17 @@ const buildTutorDashboard = () => {
   };
 };
 
-const buildStudentDashboard = (studentId) => {
+const buildStudentDashboard = (studentId, subject = DEFAULT_SUBJECT) => {
   const student = demoUsers.find((user) => user.uid === studentId) ?? demoUsers.find((user) => user.role === 'student');
-  const availablePapers = filterQuestionPapers(mockQuestionPapers, { grade: student?.grade, region: student?.province });
-  const latestReport = student?.latestReport || getLatestTutorReportFromList(student?.uid, mockTutorReports)?.note || '';
-  const assignmentHistory = mockDashboardData.student.exerciseHistory ?? [];
+  const availablePapers = filterQuestionPapers(mockQuestionPapers, { grade: student?.grade, region: student?.province, subject });
+  const latestReport = student?.latestReport || getLatestTutorReportFromList(student?.uid, mockTutorReports.filter((report) => (report.subject ?? DEFAULT_SUBJECT) === subject))?.note || '';
+  const assignmentHistory = (mockDashboardData.student.exerciseHistory ?? []).filter((assignment) => (assignment.subject ?? DEFAULT_SUBJECT) === subject);
   const generationStatus = buildStudentGenerationStatus({
     student,
     latestReport,
     availablePapers,
     paymentCompleted: Boolean(student?.paymentCompleted),
-    completedLessons: mockCompletedLessons.filter((lesson) => lesson.studentId === student?.uid),
+    completedLessons: mockCompletedLessons.filter((lesson) => lesson.studentId === student?.uid && (lesson.subject ?? DEFAULT_SUBJECT) === subject),
     hasInitialGeneration: assignmentHistory.some((assignment) => assignment?.generationMode === 'initial'),
   });
 
@@ -254,7 +270,7 @@ const buildStudentDashboard = (studentId) => {
     stats: [
       { label: 'Average mark', value: `${student?.latestMark ?? 0}%`, detail: 'Current learning signal' },
       { label: 'Previous year mark', value: `${student?.previousYearMark ?? 0}%`, detail: 'Entered by student' },
-      { label: 'Completed topics', value: String(mockCompletedLessons.filter((lesson) => lesson.studentId === student?.uid).length), detail: 'Tutor confirmed' },
+      { label: 'Completed topics', value: String(mockCompletedLessons.filter((lesson) => lesson.studentId === student?.uid && (lesson.subject ?? DEFAULT_SUBJECT) === subject).length), detail: subject },
       { label: 'Subscription', value: student?.paymentCompleted ? 'Active' : 'Pending', detail: student?.paymentCompleted ? 'Paid and unlocked' : 'Payment required' },
     ],
   };
@@ -262,20 +278,21 @@ const buildStudentDashboard = (studentId) => {
 
 export const getRoleDashboardData = async (role, options = {}) => {
   if (!isFirebaseConfigured) {
-    if (role === 'student') return buildStudentDashboard(options.studentId ?? 'mock-student-1');
-    if (role === 'tutor') return buildTutorDashboard();
+    if (role === 'student') return buildStudentDashboard(options.studentId ?? 'mock-student-1', options.subject ?? DEFAULT_SUBJECT);
+    if (role === 'tutor') return buildTutorDashboard({ tutorId: options.tutorId, subject: options.subject ?? DEFAULT_SUBJECT });
     return mockDashboardData[role];
   }
   return emptyDashboardData[role] ?? { stats: [] };
 };
 
-export const getTodayExercise = async (studentId) => {
-  if (!isFirebaseConfigured) return buildStudentDashboard(studentId).todayExercise;
+export const getTodayExercise = async (studentId, subject = DEFAULT_SUBJECT) => {
+  if (!isFirebaseConfigured) return buildStudentDashboard(studentId, subject).todayExercise;
   ensureDb();
   const today = new Date().toISOString().slice(0, 10);
   const q = query(
     collection(db, collections.dailyExerciseAssignments),
     where('studentId', '==', studentId),
+    where('subject', '==', subject),
     where('assignmentDate', '==', today),
     limit(1),
   );
@@ -283,8 +300,8 @@ export const getTodayExercise = async (studentId) => {
   return snapshot.docs[0] ? { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } : null;
 };
 
-export const getExerciseHistory = async (studentId) => {
-  if (!isFirebaseConfigured) return buildStudentDashboard(studentId).exerciseHistory;
+export const getExerciseHistory = async (studentId, subject = DEFAULT_SUBJECT) => {
+  if (!isFirebaseConfigured) return buildStudentDashboard(studentId, subject).exerciseHistory;
   
   ensureDb();
 
@@ -300,6 +317,7 @@ export const getExerciseHistory = async (studentId) => {
   const q = query(
     collection(db, "dailyExerciseAssignments"),
     where('studentId', '==', studentId),
+    where('subject', '==', subject),
     where('assignmentDate', '<', todayLocal), // Strictly less than TODAY
     orderBy('assignmentDate', 'desc'),        // Changed to 'desc' so newest history is first
     limit(20)
@@ -309,9 +327,9 @@ export const getExerciseHistory = async (studentId) => {
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 };
 
-export const getCurrentWeekExercises = async (studentId) => {
+export const getCurrentWeekExercises = async (studentId, subject = DEFAULT_SUBJECT) => {
   if (!isFirebaseConfigured) {
-    const all = buildStudentDashboard(studentId).exerciseHistory ?? [];
+    const all = buildStudentDashboard(studentId, subject).exerciseHistory ?? [];
     const today = new Date().toISOString().slice(0, 10);
     return all.filter((ex) => ex.assignmentDate >= today).slice(0, 7);
   }
@@ -320,6 +338,7 @@ export const getCurrentWeekExercises = async (studentId) => {
   const q = query(
     collection(db, collections.dailyExerciseAssignments),
     where('studentId', '==', studentId),
+    where('subject', '==', subject),
     where('assignmentDate', '>=', today),
     orderBy('assignmentDate', 'asc'),
     limit(7),
@@ -328,9 +347,9 @@ export const getCurrentWeekExercises = async (studentId) => {
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 };
 
-export const getFutureExercises = async (studentId) => {
+export const getFutureExercises = async (studentId, subject = DEFAULT_SUBJECT) => {
   if (!isFirebaseConfigured) {
-    const all = buildStudentDashboard(studentId).exerciseHistory ?? [];
+    const all = buildStudentDashboard(studentId, subject).exerciseHistory ?? [];
     const weekFromToday = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     return all.filter((ex) => ex.assignmentDate > weekFromToday);
   }
@@ -339,6 +358,7 @@ export const getFutureExercises = async (studentId) => {
   const q = query(
     collection(db, collections.dailyExerciseAssignments),
     where('studentId', '==', studentId),
+    where('subject', '==', subject),
     where('assignmentDate', '>', weekFromToday),
     orderBy('assignmentDate', 'asc'),
     limit(20),
@@ -347,14 +367,15 @@ export const getFutureExercises = async (studentId) => {
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 };
 
-const getAssignmentHistory = async (studentId, maxRecords = GENERATION_HISTORY_LIMIT) => {
+const getAssignmentHistory = async (studentId, subject = DEFAULT_SUBJECT, maxRecords = GENERATION_HISTORY_LIMIT) => {
   if (!studentId) return [];
-  if (!isFirebaseConfigured) return buildStudentDashboard(studentId).exerciseHistory ?? [];
+  if (!isFirebaseConfigured) return buildStudentDashboard(studentId, subject).exerciseHistory ?? [];
 
   ensureDb();
   const q = query(
     collection(db, collections.dailyExerciseAssignments),
     where('studentId', '==', studentId),
+    where('subject', '==', subject),
     orderBy('assignmentDate', 'desc'),
     limit(maxRecords),
   );
@@ -429,6 +450,26 @@ const getRecentGenerationSummaries = (history = [], count = 2) =>
       assignmentDates: group.assignments.map((assignment) => assignment?.assignmentDate).filter(Boolean),
     }));
 
+const isAnalyzedQuestionPaper = (paper = {}) =>
+  paper.analysisStatus === 'Analyzed' && paper.availableForGeneration !== false && Array.isArray(paper.questions) && paper.questions.length > 0;
+
+const summarizePaperQuestions = (paper = {}) =>
+  (Array.isArray(paper.questions) ? paper.questions : [])
+    .slice(0, 80)
+    .map((question) => ({
+      paperId: question.paperId ?? paper.id,
+      questionReference: question.questionReference,
+      subject: question.subject ?? paper.subject,
+      topic: question.topic,
+      pageNumber: question.pageNumber,
+      marks: question.marks ?? 0,
+      section: question.section ?? '',
+      instruction: question.instruction ?? '',
+      memoSummary: question.memoSummary ?? '',
+    }))
+    .filter((question) => question.questionReference && question.pageNumber);
+
+
 const selectSourcePapers = ({ papers = [], assignmentHistory = [] }) => {
   const recentPaperIds = new Set(getRecentGenerationSummaries(assignmentHistory, 2).flatMap((group) => group.paperIds));
   const eligiblePapers = papers.filter((paper) => !recentPaperIds.has(paper.id));
@@ -492,6 +533,7 @@ const buildAssignmentsFromAiRecommendations = ({
   selectedPapers = [],
   generationBatchId,
   mode,
+  subject = DEFAULT_SUBJECT,
   topicSummaries = [],
   maxQuestionsPerDay = MAX_DAILY_EXERCISES,
   grade,
@@ -501,14 +543,14 @@ const buildAssignmentsFromAiRecommendations = ({
       ? recommendation.topicBreakdown
       : (Array.isArray(recommendation?.questionReferences) ? recommendation.questionReferences : [])
           .map((reference, referenceIndex) => ({
-            topic: topicSummaries[referenceIndex]?.topic ?? recommendation?.topic ?? 'Mathematics topic',
+            topic: topicSummaries[referenceIndex]?.topic ?? recommendation?.topic ?? 'Subject topic',
             questionReference: reference,
           }));
 
     const seenTopics = new Set();
     topicBreakdown = topicBreakdown
       .map((entry) => ({
-        topic: String(entry?.topic || 'Mathematics topic').trim(),
+        topic: String(entry?.topic || 'Subject topic').trim(),
         questionReference: String(entry?.questionReference || entry?.reference || '').trim(),
       }))
       .filter((entry) => entry.questionReference)
@@ -526,15 +568,25 @@ const buildAssignmentsFromAiRecommendations = ({
       .slice(0, Math.min(MAX_DAILY_EXERCISES, maxQuestionsPerDay));
 
     const questionReferences = topicBreakdown.map((entry) => entry.questionReference).filter(Boolean);
+    const questionLinks = Array.isArray(recommendation?.questionLinks)
+      ? recommendation.questionLinks
+          .map((link) => ({
+            paperId: String(link?.paperId || link?.id || '').trim(),
+            pageNumber: Number(link?.pageNumber ?? link?.page ?? 1) || 1,
+            questionReference: String(link?.questionReference || link?.reference || '').trim(),
+            topic: String(link?.topic || '').trim(),
+          }))
+          .filter((link) => link.paperId && link.pageNumber)
+      : [];
 
     return {
       studentId: student.uid,
       assignmentDate: recommendation.assignmentDate,
       title: normalizeQuestionReferenceTitle(questionReferences) || `Question set ${index + 1}`,
-      topic: topicBreakdown.map((entry) => entry.topic).filter(Boolean).join(' | ') || recommendation.topic || 'Mathematics topic',
+      topic: topicBreakdown.map((entry) => entry.topic).filter(Boolean).join(' | ') || recommendation.topic || 'Subject topic',
       sourceLabel: recommendation.sourceLabel || selectedPapers.map((paper) => `${paper.year} ${paper.region} ${paper.month} paper`).join('; '),
       instruction: recommendation.instruction || recommendation.reason || 'Answer the referenced question number(s) only.',
-      subject: SUBJECT,
+      subject,
       grade,
       generatedBy: 'frontend-ai-service',
       generationMode: mode,
@@ -548,6 +600,7 @@ const buildAssignmentsFromAiRecommendations = ({
         return match ? `${entry.topic}: ${match.reportSnippet}` : entry.topic;
       }).filter(Boolean).join('\n'),
       questionReferences,
+      questionLinks,
       topicBreakdown,
       submittedImageUrl: "",
       submittedFileName: "",
@@ -559,7 +612,7 @@ const buildAssignmentsFromAiRecommendations = ({
     };
   });
 
-export const getStudentAccessState = async (student) => {
+export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT) => {
   if (!student) {
     return {
       paymentCompleted: false,
@@ -569,16 +622,18 @@ export const getStudentAccessState = async (student) => {
       matchingQuestionPapers: [],
       latestTutorReport: null,
       completedLessons: [],
+      tutorReports: [],
       latestGeneratedAssignments: [],
       hasInitialGeneration: false,
     };
   }
 
   if (!isFirebaseConfigured) {
-    const matchingQuestionPapers = filterQuestionPapers(mockQuestionPapers, { grade: student.grade, region: student.province });
-    const latestTutorReport = student.latestReport || getLatestTutorReportFromList(student.uid, mockTutorReports)?.note || '';
-    const completedLessons = mockCompletedLessons.filter((lesson) => lesson.studentId === student.uid);
-    const assignmentHistory = await getAssignmentHistory(student.uid);
+    const matchingQuestionPapers = filterQuestionPapers(mockQuestionPapers, { grade: student.grade, region: student.province, subject });
+    const subjectReports = mockTutorReports.filter((report) => (!student.uid || report.studentId === student.uid) && (report.subject ?? DEFAULT_SUBJECT) === subject);
+    const latestTutorReport = student.latestReportsBySubject?.[subject] || getLatestTutorReportFromList(student.uid, subjectReports)?.note || (subject === DEFAULT_SUBJECT ? student.latestReport : '') || '';
+    const completedLessons = mockCompletedLessons.filter((lesson) => lesson.studentId === student.uid && (lesson.subject ?? DEFAULT_SUBJECT) === subject);
+    const assignmentHistory = await getAssignmentHistory(student.uid, subject);
     const generationStatus = buildStudentGenerationStatus({
       student,
       latestReport: latestTutorReport,
@@ -597,6 +652,7 @@ export const getStudentAccessState = async (student) => {
       matchingQuestionPapers: matchingQuestionPapers.slice(0, MAX_AI_SOURCE_PAPERS),
       latestTutorReport,
       completedLessons,
+      tutorReports: subjectReports,
       latestGeneratedAssignments: assignmentHistory,
       hasInitialGeneration: assignmentHistory.some((assignment) => assignment?.generationMode === 'initial'),
     };
@@ -606,11 +662,12 @@ export const getStudentAccessState = async (student) => {
   const studentSnapshot = await getDoc(doc(db, collections.users, student.uid));
   const subscriptionSnapshot = await getDoc(doc(db, collections.subscriptions, student.uid));
   const paymentCompleted = subscriptionSnapshot.exists() ? subscriptionSnapshot.data().status === 'active' : Boolean(student.paymentCompleted);
-  const papers = await getQuestionPapers({ grade: student.grade, region: student.province, subject: SUBJECT });
-  const reports = await getTutorReports(student.uid);
-  const lessons = await getCompletedLessons(student.uid);
-  const assignmentHistory = await getAssignmentHistory(student.uid);
-  const latestTutorReport = studentSnapshot.exists() ? (studentSnapshot.data().latestReport || '') : (student.latestReport || reports[0]?.note || '');
+  const papers = await getQuestionPapers({ grade: student.grade, region: student.province, subject });
+  const reports = await getTutorReports(student.uid, subject);
+  const lessons = await getCompletedLessons(student.uid, subject);
+  const assignmentHistory = await getAssignmentHistory(student.uid, subject);
+  const studentData = studentSnapshot.exists() ? studentSnapshot.data() : student;
+  const latestTutorReport = studentData?.latestReportsBySubject?.[subject] || reports[0]?.note || (subject === DEFAULT_SUBJECT ? (studentData?.latestReport || '') : '');
   const generationStatus = buildStudentGenerationStatus({
     student,
     latestReport: latestTutorReport,
@@ -629,56 +686,84 @@ export const getStudentAccessState = async (student) => {
     matchingQuestionPapers: papers.slice(0, MAX_AI_SOURCE_PAPERS),
     latestTutorReport,
     completedLessons: lessons,
+    tutorReports: reports,
     latestGeneratedAssignments: assignmentHistory,
     hasInitialGeneration: assignmentHistory.some((assignment) => assignment?.generationMode === 'initial'),
   };
 };
 
-export const getUnassignedStudents = async () => {
+export const getUnassignedStudents = async (subject = DEFAULT_SUBJECT) => {
   if (!isFirebaseConfigured) {
-    return demoUsers.filter((user) => user.role === 'student' && !user.tutorId);
+    const assignedIds = new Set(
+      mockStudentAssignments
+        .filter((assignment) => assignment.active !== false && (assignment.subject ?? DEFAULT_SUBJECT) === subject)
+        .map((assignment) => assignment.studentId),
+    );
+    return demoUsers.filter((user) => user.role === 'student' && !assignedIds.has(user.uid));
   }
 
   ensureDb();
-  const snapshot = await getDocs(query(collection(db, collections.users), where('role', '==', 'student')));
-  return snapshot.docs
+  const [usersSnapshot, assignmentsSnapshot] = await Promise.all([
+    getDocs(query(collection(db, collections.users), where('role', '==', 'student'))),
+    getDocs(query(
+      collection(db, collections.tutorStudentAssignments),
+      where('subject', '==', subject),
+      where('active', '==', true),
+    )),
+  ]);
+  const assignedIds = new Set(assignmentsSnapshot.docs.map((item) => item.data().studentId));
+  return usersSnapshot.docs
     .map((item) => item.data())
-    .filter((student) => !student.tutorId);
+    .filter((student) => !assignedIds.has(student.uid));
 };
 
-export const getAssignedStudentsForTutor = async (tutorId) => {
+export const getAssignedStudentsForTutor = async (tutorId, subject = DEFAULT_SUBJECT) => {
   if (!isFirebaseConfigured) {
-    return demoUsers.filter((user) => user.role === 'student' && user.tutorId === tutorId);
+    const assignedIds = new Set(
+      mockStudentAssignments
+        .filter((assignment) => assignment.tutorId === tutorId && assignment.active !== false && (assignment.subject ?? DEFAULT_SUBJECT) === subject)
+        .map((assignment) => assignment.studentId),
+    );
+    return demoUsers.filter((user) => user.role === 'student' && assignedIds.has(user.uid));
   }
 
   ensureDb();
-  const snapshot = await getDocs(query(collection(db, collections.users), where('tutorId', '==', tutorId)));
-  return snapshot.docs.map((item) => item.data());
+  const assignmentsSnapshot = await getDocs(query(
+    collection(db, collections.tutorStudentAssignments),
+    where('tutorId', '==', tutorId),
+    where('subject', '==', subject),
+    where('active', '==', true),
+  ));
+  const studentIds = assignmentsSnapshot.docs.map((item) => item.data().studentId).filter(Boolean);
+  const students = await Promise.all(studentIds.map((studentId) => getDoc(doc(db, collections.users, studentId))));
+  return students.filter((snapshot) => snapshot.exists()).map((snapshot) => snapshot.data());
 };
 
-export const getTutorReports = async (studentId) => {
+export const getTutorReports = async (studentId, subject = DEFAULT_SUBJECT) => {
   if (!isFirebaseConfigured) {
     return mockTutorReports
-      .filter((report) => !studentId || report.studentId === studentId)
+      .filter((report) => (!studentId || report.studentId === studentId) && (report.subject ?? DEFAULT_SUBJECT) === subject)
       .sort((left, right) => new Date(right.updatedAt ?? 0) - new Date(left.updatedAt ?? 0));
   }
 
   ensureDb();
   const q = studentId
-    ? query(collection(db, collections.tutorReports), where('studentId', '==', studentId), orderBy('updatedAt', 'desc'))
-    : query(collection(db, collections.tutorReports), orderBy('updatedAt', 'desc'));
+    ? query(collection(db, collections.tutorReports), where('studentId', '==', studentId), where('subject', '==', subject), orderBy('updatedAt', 'desc'))
+    : query(collection(db, collections.tutorReports), where('subject', '==', subject), orderBy('updatedAt', 'desc'));
   const snapshot = await getDocs(q);
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 };
 
-export const saveTutorReport = async ({ reportId, studentId, tutorId, note, studentName }) => {
+export const saveTutorReport = async ({ reportId, studentId, tutorId, note, studentName, subject = DEFAULT_SUBJECT, reportType = 'general' }) => {
   if (!isFirebaseConfigured) {
     return {
       id: reportId ?? `mock-report-${Date.now()}`,
       studentId,
       tutorId,
+      subject,
       note,
       studentName,
+      reportType,
       updatedAt: new Date().toISOString(),
     };
   }
@@ -687,40 +772,55 @@ export const saveTutorReport = async ({ reportId, studentId, tutorId, note, stud
   const payload = {
     studentId,
     tutorId,
+    subject,
     note,
     studentName,
+    reportType,
     updatedAt: serverTimestamp(),
     createdAt: serverTimestamp(),
   };
 
+  const studentReportUpdate = {
+    latestReportsBySubject: {
+      [subject]: note,
+    },
+    updatedAt: serverTimestamp(),
+  };
+  if (subject === DEFAULT_SUBJECT) {
+    studentReportUpdate.latestReport = note;
+  }
+
   if (reportId) {
     await updateDoc(doc(db, collections.tutorReports, reportId), payload);
+    await setDoc(doc(db, collections.users, studentId), studentReportUpdate, { merge: true });
     return { id: reportId, ...payload };
   }
 
   const ref = await addDoc(collection(db, collections.tutorReports), payload);
+  await setDoc(doc(db, collections.users, studentId), studentReportUpdate, { merge: true });
   return { id: ref.id, ...payload };
 };
 
-export const getCompletedLessons = async (studentId) => {
+export const getCompletedLessons = async (studentId, subject = DEFAULT_SUBJECT) => {
   if (!isFirebaseConfigured) {
-    return mockCompletedLessons.filter((lesson) => !studentId || lesson.studentId === studentId);
+    return mockCompletedLessons.filter((lesson) => (!studentId || lesson.studentId === studentId) && (lesson.subject ?? DEFAULT_SUBJECT) === subject);
   }
 
   ensureDb();
   const q = studentId
-    ? query(collection(db, collections.coveredTopics), where('studentId', '==', studentId), orderBy('completedOn', 'desc'))
-    : query(collection(db, collections.coveredTopics), orderBy('completedOn', 'desc'));
+    ? query(collection(db, collections.coveredTopics), where('studentId', '==', studentId), where('subject', '==', subject), orderBy('completedOn', 'desc'))
+    : query(collection(db, collections.coveredTopics), where('subject', '==', subject), orderBy('completedOn', 'desc'));
   const snapshot = await getDocs(q);
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 };
 
-export const saveCompletedLesson = async ({ studentId, tutorId, topic, topicReport, understandingLevel, studentName }) => {
+export const saveCompletedLesson = async ({ studentId, tutorId, topic, topicReport, understandingLevel, studentName, subject = DEFAULT_SUBJECT }) => {
   if (!isFirebaseConfigured) {
     return {
       id: `mock-lesson-${Date.now()}`,
       studentId,
       tutorId,
+      subject,
       topic,
       topicReport,
       understandingLevel,
@@ -733,6 +833,7 @@ export const saveCompletedLesson = async ({ studentId, tutorId, topic, topicRepo
   const ref = await addDoc(collection(db, collections.coveredTopics), {
     studentId,
     tutorId,
+    subject,
     topic,
     note: topicReport,
     topicReport,
@@ -741,37 +842,110 @@ export const saveCompletedLesson = async ({ studentId, tutorId, topic, topicRepo
     completedOn: new Date().toISOString().slice(0, 10),
     createdAt: serverTimestamp(),
   });
-  return { id: ref.id, studentId, tutorId, topic, topicReport, understandingLevel, studentName };
+  return { id: ref.id, studentId, tutorId, subject, topic, topicReport, understandingLevel, studentName };
 };
 
-export const assignStudentToTutor = async ({ studentId, tutorId }) => {
+export const assignStudentToTutor = async ({ studentId, tutorId, subject = DEFAULT_SUBJECT }) => {
   if (!isFirebaseConfigured) {
-    return { id: 'mock-assignment', studentId, tutorId };
+    return { id: 'mock-assignment', studentId, tutorId, subject };
   }
   ensureDb();
 
   const existing = await getDocs(
-    query(collection(db, collections.tutorStudentAssignments), where('studentId', '==', studentId), where('active', '==', true), limit(1)),
+    query(
+      collection(db, collections.tutorStudentAssignments),
+      where('studentId', '==', studentId),
+      where('subject', '==', subject),
+      where('active', '==', true),
+      limit(1),
+    ),
   );
 
   if (!existing.empty) {
-    throw new Error('This student already has an active Maths tutor assignment.');
+    throw new Error(`This student already has an active ${subject} tutor assignment.`);
   }
 
-  const ref = doc(collection(db, collections.tutorStudentAssignments));
+  const assignmentId = buildTutorAssignmentId({ studentId, tutorId, subject });
+  const ref = doc(db, collections.tutorStudentAssignments, assignmentId);
   await setDoc(ref, {
     studentId,
     tutorId,
-    subject: SUBJECT,
+    subject,
     active: true,
     assignedAt: serverTimestamp(),
   });
 
-  await updateDoc(doc(db, collections.users, studentId), { tutorId });
-  return { id: ref.id, studentId, tutorId };
+  await updateDoc(doc(db, collections.users, studentId), {
+    assignedTutorIds: arrayUnion(tutorId),
+    assignedSubjects: arrayUnion(subject),
+    updatedAt: serverTimestamp(),
+  });
+
+  return { id: ref.id, studentId, tutorId, subject };
 };
 
-export const getQuestionPapers = async ({ grade, region, subject = SUBJECT } = {}) => {
+export const getAdminSubjectAssignmentData = async (subject = DEFAULT_SUBJECT) => {
+  if (!isFirebaseConfigured) {
+    const students = demoUsers.filter((user) => user.role === 'student' && getUserSubjects(user).includes(subject));
+    const tutors = demoUsers.filter((user) => user.role === 'tutor' && getApprovedTutorSubjects(user).includes(subject));
+    const assignments = mockStudentAssignments
+      .filter((assignment) => assignment.active !== false && (assignment.subject ?? DEFAULT_SUBJECT) === subject)
+      .map((assignment) => {
+        const student = students.find((item) => item.uid === assignment.studentId);
+        const tutor = tutors.find((item) => item.uid === assignment.tutorId);
+        return {
+          ...assignment,
+          id: `${assignment.studentId}-${assignment.tutorId}-${subject}`,
+          studentName: student?.displayName ?? student?.email ?? 'Student',
+          tutorName: tutor?.displayName ?? tutor?.email ?? 'Tutor',
+        };
+      });
+    const assignedStudentIds = new Set(assignments.map((assignment) => assignment.studentId));
+
+    return {
+      students,
+      tutors,
+      assignments,
+      unassignedStudents: students.filter((student) => !assignedStudentIds.has(student.uid)),
+    };
+  }
+
+  ensureDb();
+  const [usersSnapshot, assignmentsSnapshot] = await Promise.all([
+    getDocs(collection(db, collections.users)),
+    getDocs(query(
+      collection(db, collections.tutorStudentAssignments),
+      where('subject', '==', subject),
+      where('active', '==', true),
+    )),
+  ]);
+
+  const users = usersSnapshot.docs.map((item) => item.data());
+  const students = users.filter((user) => user.role === 'student' && getUserSubjects(user).includes(subject));
+  const tutors = users.filter((user) => user.role === 'tutor' && getApprovedTutorSubjects(user).includes(subject));
+  const studentMap = new Map(students.map((student) => [student.uid, student]));
+  const tutorMap = new Map(tutors.map((tutor) => [tutor.uid, tutor]));
+  const assignments = assignmentsSnapshot.docs.map((item) => {
+    const assignment = { id: item.id, ...item.data() };
+    const student = studentMap.get(assignment.studentId);
+    const tutor = tutorMap.get(assignment.tutorId);
+    return {
+      ...assignment,
+      studentName: student?.displayName ?? student?.email ?? 'Student',
+      tutorName: tutor?.displayName ?? tutor?.email ?? 'Tutor',
+    };
+  });
+  const assignedStudentIds = new Set(assignments.map((assignment) => assignment.studentId));
+
+  return {
+    students,
+    tutors,
+    assignments,
+    unassignedStudents: students.filter((student) => !assignedStudentIds.has(student.uid)),
+  };
+};
+
+export const getQuestionPapers = async ({ grade, region, subject = DEFAULT_SUBJECT } = {}) => {
   if (!isFirebaseConfigured) {
     return filterQuestionPapers(mockQuestionPapers, { grade, region, subject, allowNational: true });
   }
@@ -779,7 +953,7 @@ export const getQuestionPapers = async ({ grade, region, subject = SUBJECT } = {
   ensureDb();
   const snapshot = await getDocs(query(collection(db, collections.questionPapers), where('subject', '==', subject)));
   return filterQuestionPapers(
-    snapshot.docs.map((item) => ({ id: item.id, ...item.data() })),
+    snapshot.docs.map((item) => ({ id: item.id, ...item.data() })).filter(isAnalyzedQuestionPaper),
     { grade, region, subject, allowNational: true },
   );
 };
@@ -805,40 +979,87 @@ export const getQuestionPapersByIds = async (ids) => {
   return snapshots.filter((snap) => snap.exists()).map((snap) => ({ id: snap.id, ...snap.data() }));
 };
 
+export const getQuestionPaperById = async (id) => {
+  if (!id) return null;
+  if (!isFirebaseConfigured) return mockQuestionPapers.find((paper) => paper.id === id) ?? null;
+  ensureDb();
+  const snapshot = await getDoc(doc(db, collections.questionPapers, id));
+  return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
+};
+
+export const subscribeQuestionPapers = (callback) => {
+  if (!isFirebaseConfigured) {
+    callback(mockQuestionPapers);
+    return () => {};
+  }
+  ensureDb();
+  return onSnapshot(query(collection(db, collections.questionPapers), orderBy('year', 'desc')), (snapshot) => {
+    callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
+  });
+};
+
+const getQuestionPaperDuplicateFields = (paper = {}) => ({
+  grade: paper.grade ?? '',
+  region: paper.region ?? '',
+  subject: paper.subject ?? DEFAULT_SUBJECT,
+  year: Number(paper.year),
+  month: paper.month ?? '',
+  paperNumber: paper.paperNumber ?? 'Paper 1',
+});
+
+const getQuestionPaperDisplayName = ({ subject, grade, region, month, year, paperNumber, copyNumber }) => {
+  const base = [subject, grade, region, month, year, paperNumber].filter(Boolean).join(' • ');
+  return copyNumber > 0 ? `${base} (${copyNumber})` : base;
+};
+
 export const saveQuestionPaper = async (paper) => {
-  const existsInDemo = mockQuestionPapers.some((item) =>
-    item.region === paper.region && item.subject === paper.subject && item.year === Number(paper.year) && item.month === paper.month,
-  );
+  const duplicateFields = getQuestionPaperDuplicateFields(paper);
+  const demoMatches = mockQuestionPapers.filter((item) => {
+    const itemFields = getQuestionPaperDuplicateFields(item);
+    return itemFields.region === duplicateFields.region &&
+      itemFields.subject === duplicateFields.subject &&
+      itemFields.grade === duplicateFields.grade &&
+      itemFields.year === duplicateFields.year &&
+      itemFields.month === duplicateFields.month &&
+      itemFields.paperNumber === duplicateFields.paperNumber;
+  });
 
   if (!isFirebaseConfigured) {
-    if (existsInDemo) {
-      throw new Error('This past exam paper already exists for the same region, subject, year, and month.');
-    }
-    return { id: `mock-paper-${Date.now()}`, ...paper };
+    const copyNumber = demoMatches.length;
+    const payload = {
+      ...paper,
+      ...duplicateFields,
+      copyNumber,
+      copySuffix: copyNumber > 0 ? `(${copyNumber})` : '',
+      displayName: getQuestionPaperDisplayName({ ...duplicateFields, copyNumber }),
+    };
+    return { id: `mock-paper-${Date.now()}`, ...payload };
   }
 
   ensureDb();
   const duplicateSnapshot = await getDocs(
     query(
       collection(db, collections.questionPapers),
-      where('region', '==', paper.region),
-      where('subject', '==', paper.subject),
-      where('year', '==', Number(paper.year)),
-      where('month', '==', paper.month),
-      limit(1),
+      where('region', '==', duplicateFields.region),
+      where('subject', '==', duplicateFields.subject),
+      where('grade', '==', duplicateFields.grade),
+      where('year', '==', duplicateFields.year),
+      where('month', '==', duplicateFields.month),
+      where('paperNumber', '==', duplicateFields.paperNumber),
     ),
   );
-
-  if (!duplicateSnapshot.empty) {
-    throw new Error('This past exam paper already exists for the same region, subject, year, and month.');
-  }
-
-  const ref = await addDoc(collection(db, collections.questionPapers), {
+  const copyNumber = duplicateSnapshot.size;
+  const payload = {
     ...paper,
-    year: Number(paper.year),
+    ...duplicateFields,
+    copyNumber,
+    copySuffix: copyNumber > 0 ? `(${copyNumber})` : '',
+    displayName: getQuestionPaperDisplayName({ ...duplicateFields, copyNumber }),
     createdAt: serverTimestamp(),
-  });
-  return { id: ref.id, ...paper };
+  };
+
+  const ref = await addDoc(collection(db, collections.questionPapers), payload);
+  return { id: ref.id, ...payload };
 };
 
 export const savePeerReview = async (payload) => {
@@ -862,6 +1083,17 @@ export const getSubmissionById = async (submissionId) => {
   return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
 };
 
+export const getExerciseAssignmentById = async (exerciseId) => {
+  if (!exerciseId) return null;
+  if (!isFirebaseConfigured) {
+    const all = Object.values(mockDashboardData.student.exerciseHistory ?? {});
+    return all.find((exercise) => exercise.id === exerciseId) ?? null;
+  }
+  ensureDb();
+  const snapshot = await getDoc(doc(db, collections.dailyExerciseAssignments, exerciseId));
+  return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
+};
+
 export const getSubmissionForExercise = async (exerciseId) => {
   if (!isFirebaseConfigured) {
     // Mock: assume no submission for demo
@@ -872,17 +1104,25 @@ export const getSubmissionForExercise = async (exerciseId) => {
   return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
 };
 
-export const generateExercisePlanIfEligible = async ({ student, mode, latestTutorReport, completedLesson, understandingLevel, availablePapers }) => {
-  const studentState = await getStudentAccessState(student);
+export const generateExercisePlanIfEligible = async ({ student, mode, subject = DEFAULT_SUBJECT, latestTutorReport, completedLesson, understandingLevel, availablePapers, onProgress }) => {
+  const studentState = await getStudentAccessState(student, subject);
   const papers = availablePapers ?? studentState.matchingQuestionPapers;
   const completedLessons = completedLesson
-    ? [...studentState.completedLessons, {
-      ...completedLesson,
-      topicReport: completedLesson.topicReport ?? latestTutorReport ?? studentState.latestTutorReport,
-      understandingLevel: completedLesson.understandingLevel ?? understandingLevel ?? 5,
-    }]
+    ? [
+      ...studentState.completedLessons.filter((lesson) => !completedLesson.id || lesson.id !== completedLesson.id),
+      {
+        ...completedLesson,
+        subject,
+        topicReport: completedLesson.topicReport ?? latestTutorReport ?? studentState.latestTutorReport,
+        understandingLevel: completedLesson.understandingLevel ?? understandingLevel ?? 5,
+      },
+    ]
     : studentState.completedLessons;
-  const assignmentHistory = await getAssignmentHistory(student?.uid);
+  const subjectTutorReports = [
+    ...(Array.isArray(studentState.tutorReports) ? studentState.tutorReports.map((report) => report?.note).filter(Boolean) : []),
+    latestTutorReport ?? studentState.latestTutorReport ?? '',
+  ].filter(Boolean);
+  const assignmentHistory = await getAssignmentHistory(student?.uid, subject);
   const ready = mode === 'initial'
     ? Boolean(studentState.initialGenerationReady && !studentState.hasInitialGeneration)
     : Boolean(studentState.weeklyGenerationReady && studentState.hasInitialGeneration);
@@ -896,18 +1136,22 @@ export const generateExercisePlanIfEligible = async ({ student, mode, latestTuto
     };
   }
 
-  const { selectedPapers, recentPaperIds } = selectSourcePapers({ papers, assignmentHistory });
+  const { selectedPapers: rawSelectedPapers, recentPaperIds } = selectSourcePapers({ papers, assignmentHistory });
+  const selectedPapers = rawSelectedPapers.filter(isAnalyzedQuestionPaper);
   if (selectedPapers.length < MAX_AI_SOURCE_PAPERS) {
     return {
       generated: false,
-      reason: 'At least two eligible past papers are required for generation.',
+      reason: 'At least two analyzed past papers are required for generation.',
       criteria: {
         ...studentState.generationStatus,
         excludedRecentPaperIds: recentPaperIds,
+        analyzedPaperCount: selectedPapers.length,
       },
       assignments: [],
     };
   }
+
+  onProgress?.(`Using ${selectedPapers.length} analyzed question papers [Generating exercises]`);
 
   const topicSummaries = getTopicSummary(completedLessons);
   const generationNumber = mode === 'weekly' ? getGenerationNumber(assignmentHistory, 'weekly') : 1;
@@ -922,10 +1166,14 @@ export const generateExercisePlanIfEligible = async ({ student, mode, latestTuto
   const aiResponse = await recommendExercises({
     grade: student?.grade,
     region: student?.province,
+    subject,
     mode,
     assignmentDates,
     completedTopics: topicSummaries.map((item) => item.topic),
-    tutorReports: completedLessons.map((lesson) => lesson.topicReport ?? lesson.note).filter(Boolean),
+    tutorReports: [...new Set([
+      ...subjectTutorReports,
+      ...completedLessons.map((lesson) => lesson.topicReport ?? lesson.note).filter(Boolean),
+    ])],
     tutorNotes: latestTutorReport ?? studentState.latestTutorReport ?? '',
     pastMarks: [student?.latestMark, student?.previousYearMark].filter((value) => value !== undefined && value !== null),
     questionPaperMetadata: selectedPapers.map((paper) => ({
@@ -935,6 +1183,13 @@ export const generateExercisePlanIfEligible = async ({ student, mode, latestTuto
       region: paper.region,
       subject: paper.subject,
       grade: paper.grade,
+      paperNumber: paper.paperNumber ?? 'Paper 1',
+      copySuffix: paper.copySuffix ?? '',
+      displayName: paper.displayName ?? '',
+      paperDocumentAnalysisPageCount: paper.paperDocumentAnalysisPageCount ?? 0,
+      memoDocumentAnalysisPageCount: paper.memoDocumentAnalysisPageCount ?? 0,
+      questionCount: paper.questionCount ?? paper.questions?.length ?? 0,
+      topics: paper.topics ?? [],
     })),
     selectedPapers: selectedPapers.map((paper) => ({
       id: paper.id,
@@ -942,6 +1197,14 @@ export const generateExercisePlanIfEligible = async ({ student, mode, latestTuto
       month: paper.month,
       region: paper.region,
       grade: paper.grade,
+      paperNumber: paper.paperNumber ?? 'Paper 1',
+      copySuffix: paper.copySuffix ?? '',
+      displayName: paper.displayName ?? '',
+      paperMetadata: paper.paperMetadata ?? {},
+      topics: paper.topics ?? [],
+      questions: summarizePaperQuestions(paper),
+      paperDocumentAnalysis: paper.paperAnalysisSummary ?? paper.paperDocumentAnalysis ?? '',
+      memoDocumentAnalysis: paper.memoDocumentAnalysis ? String(paper.memoDocumentAnalysis).slice(0, 2500) : '',
     })),
     selectedPaperIds: selectedPapers.map((paper) => paper.id),
     maxQuestionsPerDay: Math.min(aiPlan.maxQuestionsPerDay, topicSummaries.length || 1),
@@ -966,6 +1229,7 @@ export const generateExercisePlanIfEligible = async ({ student, mode, latestTuto
     selectedPapers,
     generationBatchId,
     mode,
+    subject,
     topicSummaries,
     maxQuestionsPerDay: aiPlan.maxQuestionsPerDay,
     grade: student?.grade,
@@ -994,7 +1258,7 @@ export const generateExercisePlanIfEligible = async ({ student, mode, latestTuto
     ));
 
     if (!existingForDay.empty) {
-      console.log('[Examify][Firestore] generateExercisePlanIfEligible:skip-existing', assignment);
+      console.log('[Examifying][Firestore] generateExercisePlanIfEligible:skip-existing', assignment);
       continue;
     }
 
@@ -1008,28 +1272,92 @@ export const generateExercisePlanIfEligible = async ({ student, mode, latestTuto
   return { generated: createdAssignments.length > 0, reason: `${mode} generation complete`, assignments: createdAssignments, criteria: studentState.generationStatus };
 };
 
-export const subscribeToAssignedStudentsForTutor = (tutorId, callback) => {
+export const subscribeToAssignedStudentsForTutor = (tutorId, callback, subject = DEFAULT_SUBJECT) => {
   if (!isFirebaseConfigured) {
-    const demoStudents = demoUsers.filter((user) => user.role === 'student' && user.tutorId === tutorId);
+    const assignedIds = new Set(
+      mockStudentAssignments
+        .filter((assignment) => assignment.tutorId === tutorId && assignment.active !== false && (assignment.subject ?? DEFAULT_SUBJECT) === subject)
+        .map((assignment) => assignment.studentId),
+    );
+    const demoStudents = demoUsers.filter((user) => user.role === 'student' && assignedIds.has(user.uid));
     callback(demoStudents);
     return () => {};
   }
-  const q = query(collection(db, collections.users), where('tutorId', '==', tutorId));
-  return onSnapshot(q, (snapshot) => {
-    callback(snapshot.docs.map(item => item.data()));
-  }, (error) => console.error('[Examify][Firestore] subscribeToAssignedStudents error', error));
+  const q = query(
+    collection(db, collections.tutorStudentAssignments),
+    where('tutorId', '==', tutorId),
+    where('subject', '==', subject),
+    where('active', '==', true),
+  );
+  return onSnapshot(q, async (snapshot) => {
+    const studentSnapshots = await Promise.all(
+      snapshot.docs
+        .map((item) => item.data().studentId)
+        .filter(Boolean)
+        .map((studentId) => getDoc(doc(db, collections.users, studentId))),
+    );
+    callback(studentSnapshots.filter((item) => item.exists()).map((item) => item.data()));
+  }, (error) => console.error('[Examifying][Firestore] subscribeToAssignedStudents error', error));
 };
 
-export const subscribeToUnassignedStudents = (callback) => {
+export const subscribeToUnassignedStudents = (callback, subject = DEFAULT_SUBJECT) => {
   if (!isFirebaseConfigured) {
-    const demoStudents = demoUsers.filter((user) => user.role === 'student' && !user.tutorId);
+    const assignedIds = new Set(
+      mockStudentAssignments
+        .filter((assignment) => assignment.active !== false && (assignment.subject ?? DEFAULT_SUBJECT) === subject)
+        .map((assignment) => assignment.studentId),
+    );
+    const demoStudents = demoUsers.filter((user) => user.role === 'student' && !assignedIds.has(user.uid));
     callback(demoStudents);
     return () => {};
   }
-  const q = query(collection(db, collections.users), where('role', '==', 'student'));
-  return onSnapshot(q, (snapshot) => {
-    callback(snapshot.docs.map(item => item.data()).filter(student => !student.tutorId));
-  }, (error) => console.error('[Examify][Firestore] subscribeToUnassignedStudents error', error));
+  const usersQuery = query(collection(db, collections.users), where('role', '==', 'student'));
+  return onSnapshot(usersQuery, async (snapshot) => {
+    const assignmentsSnapshot = await getDocs(query(
+      collection(db, collections.tutorStudentAssignments),
+      where('subject', '==', subject),
+      where('active', '==', true),
+    ));
+    const assignedIds = new Set(assignmentsSnapshot.docs.map((item) => item.data().studentId));
+    callback(snapshot.docs.map(item => item.data()).filter(student => !assignedIds.has(student.uid)));
+  }, (error) => console.error('[Examifying][Firestore] subscribeToUnassignedStudents error', error));
+};
+
+export const subscribeToAssignedTutorForStudent = (studentId, callback, subject = DEFAULT_SUBJECT) => {
+  if (!studentId) {
+    callback(null);
+    return () => {};
+  }
+
+  if (!isFirebaseConfigured) {
+    const assignment = mockStudentAssignments.find((item) =>
+      item.studentId === studentId &&
+      item.active !== false &&
+      (item.subject ?? DEFAULT_SUBJECT) === subject
+    );
+    const tutor = assignment ? demoUsers.find((user) => user.uid === assignment.tutorId) : null;
+    callback(tutor ?? null);
+    return () => {};
+  }
+
+  const q = query(
+    collection(db, collections.tutorStudentAssignments),
+    where('studentId', '==', studentId),
+    where('subject', '==', subject),
+    where('active', '==', true),
+    limit(1),
+  );
+
+  return onSnapshot(q, async (snapshot) => {
+    const assignment = snapshot.docs[0]?.data();
+    if (!assignment?.tutorId) {
+      callback(null);
+      return;
+    }
+
+    const tutorSnapshot = await getDoc(doc(db, collections.users, assignment.tutorId));
+    callback(tutorSnapshot.exists() ? tutorSnapshot.data() : null);
+  }, (error) => console.error('[Examifying][Firestore] subscribeToAssignedTutorForStudent error', error));
 };
 
 export const subscribeToUserProfile = (uid, callback) => {
@@ -1040,7 +1368,7 @@ export const subscribeToUserProfile = (uid, callback) => {
   }
   return onSnapshot(doc(db, collections.users, uid), (snapshot) => {
     callback(snapshot.exists() ? snapshot.data() : null);
-  }, (error) => console.error('[Examify][Firestore] subscribeToUserProfile error', error));
+  }, (error) => console.error('[Examifying][Firestore] subscribeToUserProfile error', error));
 };
 
 
@@ -1221,4 +1549,149 @@ export const updateStudentProfileByParent = async ({ parentId, studentId, update
 
   await updateDoc(studentRef, payload);
   return { success: true, studentId, ...payload };
+};
+
+
+export const addStudentSubjects = async ({ studentId, subjects }) => {
+  const cleanSubjects = [...new Set((subjects ?? []).filter(Boolean))];
+  if (!cleanSubjects.length) throw new Error('Choose at least one subject to add.');
+
+  if (!isFirebaseConfigured) {
+    return { studentId, subjects: cleanSubjects };
+  }
+
+  ensureDb();
+  await updateDoc(doc(db, collections.users, studentId), {
+    subjects: arrayUnion(...cleanSubjects),
+    subject: DEFAULT_SUBJECT,
+    updatedAt: serverTimestamp(),
+  });
+  return { studentId, subjects: cleanSubjects };
+};
+
+export const addStudentSubject = async ({ studentId, subject }) => addStudentSubjects({ studentId, subjects: [subject] });
+
+
+
+export const removeUserSubject = async ({ uid, subject }) => {
+  if (!subject) throw new Error('Choose a subject to remove.');
+
+  if (!isFirebaseConfigured) {
+    return { uid, subject };
+  }
+
+  ensureDb();
+  const userRef = doc(db, collections.users, uid);
+  const snapshot = await getDoc(userRef);
+  const profile = snapshot.exists() ? snapshot.data() : {};
+  const remainingSubjects = (Array.isArray(profile.subjects) ? profile.subjects : []).filter((item) => item !== subject);
+  const remainingMarks = (Array.isArray(profile.tutorSubjectMarks) ? profile.tutorSubjectMarks : []).filter((item) => item.subject !== subject);
+
+  await updateDoc(userRef, {
+    subjects: arrayRemove(subject),
+    tutorSubjectMarks: remainingMarks,
+    subject: profile.subject === subject ? (remainingSubjects[0] ?? null) : (profile.subject ?? null),
+    updatedAt: serverTimestamp(),
+  });
+
+  return { uid, subject };
+};
+
+
+
+export const updateUserSubjectAvailability = async ({ uid, subject, available }) => {
+  if (!subject) throw new Error('Choose a subject to update.');
+
+  if (!isFirebaseConfigured) {
+    return { uid, subject, available };
+  }
+
+  ensureDb();
+  const userRef = doc(db, collections.users, uid);
+  const snapshot = await getDoc(userRef);
+  const profile = snapshot.exists() ? snapshot.data() : {};
+  const subjectAvailability = {
+    ...(profile.subjectAvailability ?? {}),
+    [subject]: Boolean(available),
+  };
+
+  await updateDoc(userRef, {
+    subjectAvailability,
+    updatedAt: serverTimestamp(),
+  });
+
+  return { uid, subject, available };
+};
+
+export const getTutorBillingSummary = async (tutorId) => {
+  if (!isFirebaseConfigured) {
+    const lessons = mockCompletedLessons.filter((lesson) => lesson.tutorId === tutorId);
+    return {
+      totalLessons: lessons.length,
+      studentsTutored: new Set(lessons.map((lesson) => lesson.studentId)).size,
+      subjectsTutored: [...new Set(lessons.map((lesson) => lesson.subject ?? DEFAULT_SUBJECT))],
+      recentLessons: lessons.slice(0, 10),
+    };
+  }
+
+  ensureDb();
+  const snapshot = await getDocs(query(collection(db, collections.coveredTopics), where('tutorId', '==', tutorId)));
+  const lessons = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  return {
+    totalLessons: lessons.length,
+    studentsTutored: new Set(lessons.map((lesson) => lesson.studentId).filter(Boolean)).size,
+    subjectsTutored: [...new Set(lessons.map((lesson) => lesson.subject ?? DEFAULT_SUBJECT).filter(Boolean))],
+    recentLessons: lessons
+      .sort((left, right) => String(right.completedOn ?? '').localeCompare(String(left.completedOn ?? '')))
+      .slice(0, 10),
+  };
+};
+
+export const updateUserSettings = async ({ uid, settings }) => {
+  if (!isFirebaseConfigured) return { uid, settings };
+
+  ensureDb();
+  await updateDoc(doc(db, collections.users, uid), {
+    settings,
+    updatedAt: serverTimestamp(),
+  });
+  return { uid, settings };
+};
+
+export const signTutorAgreement = async ({ tutorId, legalName, accepted }) => {
+  if (!accepted) throw new Error('Please accept the tutor agreement before signing.');
+  if (!legalName?.trim()) throw new Error('Please enter your full legal name.');
+
+  const agreement = {
+    legalName: legalName.trim(),
+    accepted: true,
+    signedAt: new Date().toISOString(),
+    version: '2026-09-29',
+  };
+
+  if (!isFirebaseConfigured) return agreement;
+
+  ensureDb();
+  await updateDoc(doc(db, collections.users, tutorId), {
+    tutorAgreement: agreement,
+    updatedAt: serverTimestamp(),
+  });
+  return agreement;
+};
+
+
+export const getTutorMarksDocuments = async (tutorId) => {
+  if (!isFirebaseConfigured) {
+    return [];
+  }
+
+  ensureDb();
+  const snapshot = await getDocs(query(collection(db, collections.tutorMarksDocuments), where('tutorId', '==', tutorId)));
+  return snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .sort((left, right) => {
+      const leftValue = left.createdAt?.toMillis?.() ?? new Date(left.createdAt ?? 0).getTime();
+      const rightValue = right.createdAt?.toMillis?.() ?? new Date(right.createdAt ?? 0).getTime();
+      return rightValue - leftValue;
+    });
 };

@@ -6,11 +6,13 @@ import {
   signOut,
   updateProfile,
   updatePassword,
+  deleteUser,
 } from 'firebase/auth';
-import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { deleteDoc, doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { auth, db, isFirebaseConfigured } from '../firebase/config';
 import { collections } from '../firebase/schema';
 import { mockUsers } from '../data/mockData';
+import { DEFAULT_SUBJECT } from '../lib/constants';
 
 const provider = isFirebaseConfigured ? new GoogleAuthProvider() : null;
 
@@ -29,7 +31,7 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
       latestMark: Number(extraProfile.previousYearMark ?? 0),
       paymentCompleted: false,
       subscriptionStatus: 'pending',
-      subject: 'Mathematics',
+      subject: DEFAULT_SUBJECT,
     }
     : {};
 
@@ -41,7 +43,8 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
     email,
     displayName: fullName,
     role,
-    subject: 'Mathematics',
+    subject: role === 'tutor' ? null : DEFAULT_SUBJECT,
+    subjects: role === 'tutor' ? [] : [DEFAULT_SUBJECT],
     createdAt: serverTimestamp(),
     ...studentDefaults,
     ...extraProfile,
@@ -129,4 +132,19 @@ export const updateUserProfileDetails = async ({ uid, displayName, previousYearM
     // Demo mode bypass
     return { uid, displayName, previousYearMark };
   }
+};
+
+
+export const deleteCurrentUserAccount = async (uid) => {
+  if (!isFirebaseConfigured) {
+    return true;
+  }
+
+  if (!auth?.currentUser || auth.currentUser.uid !== uid) {
+    throw new Error('You must be signed in as this user to delete the account.');
+  }
+
+  await deleteDoc(doc(db, collections.users, uid));
+  await deleteUser(auth.currentUser);
+  return true;
 };

@@ -7,7 +7,7 @@ import { BookOpen, BrainCircuit, ShieldCheck, Users } from 'lucide-react';
 
 const features = [
   {
-    title: 'Daily Maths exercises that unlock progressively',
+    title: 'Daily subject exercises that unlock progressively',
     icon: BookOpen,
   },
   {
@@ -89,7 +89,7 @@ export const SignupPage = () => {
           : `/${result.profile.role}`
       );
     } catch (error) {
-      console.error('[Examify][Signup] submit:error', error);
+      console.error('[Examifying][Signup] submit:error', error);
       setStatus(error.message);
       setCreating(false);
     }
@@ -101,13 +101,13 @@ export const SignupPage = () => {
         
         <div className="panel-dark p-8 text-white">
           <p className="text-sm font-semibold uppercase tracking-[0.3em] text-brand-200">
-            Set up Examify
+            Set up Examifying
           </p>
           <h1 className="mt-4 text-4xl font-bold">
             Create a real starter account for the platform.
           </h1>
           <p className="mt-4 text-slate-300">
-            Students must enter their previous year’s mark manually so Examify can recommend the monthly session count before payment.
+            Students must enter their previous year’s mark manually so Examifying can recommend the monthly session count before payment.
           </p>
           <div className="mt-8 space-y-3">
             {features.map(({ title, icon: Icon }) => (
@@ -197,7 +197,7 @@ export const SignupPage = () => {
               required
             />
             <p>
-              By login in you agree to Examify {' '}
+              By login in you agree to Examifying {' '}
               <Link to="/policies#terms" className="font-semibold text-brand-700">
                 Terms of Service
               </Link>,{' '}

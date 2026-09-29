@@ -71,7 +71,7 @@ export const GuidePage = ({ role }) => {
       setLatestResult(result);
       setStatus(`Guide test saved successfully. Your latest mark is ${percentage}%.`);
     } catch (error) {
-      console.error('[Examify][GuidePage] submit:error', error);
+      console.error('[Examifying][GuidePage] submit:error', error);
       setStatus(error?.message || 'Unable to save your guide test right now.');
     } finally {
       setIsSubmitting(false);
@@ -82,7 +82,7 @@ export const GuidePage = ({ role }) => {
 
   return (
     <AppShell
-      title="Examify Guide"
+      title="Examifying Guide"
       subtitle={content.heroDescription}
       role={role}
       user={profile}
@@ -135,7 +135,7 @@ export const GuidePage = ({ role }) => {
 
       <section className="space-y-6">
         <SectionHeader
-          eyebrow="How to use Examify"
+          eyebrow="How to use Examifying"
           title="Follow the same steps you see in the app"
           description="Use these visual guides to understand where to click, what to expect, and how the normal workflow should move from one page to the next."
         />

@@ -5,6 +5,7 @@ build
 .env
 .env.local
 functions/node_modules
+functions/.env
 functions/firebase-debug.log
 functions/.env.local
 .DS_Store

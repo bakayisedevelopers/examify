@@ -13,9 +13,9 @@ import { useAuth } from '../hooks/useAuth';
 
 const features = [
   {
-    title: 'Daily Maths exercises that unlock progressively',
+    title: 'Daily subject exercises that unlock progressively',
     description:
-      'Examify assigns up to three exercises per day, but only from tutor-confirmed completed topics.',
+      'Examifying assigns up to three exercises per day, but only from tutor-confirmed completed topics.',
     icon: BookOpen,
   },
   {
@@ -62,18 +62,18 @@ export const LandingPage = () => {
           <div className="rounded-3xl border border-white/10 bg-white/5 p-10 backdrop-blur-xl shadow-[0_25px_70px_rgba(0,0,0,0.7)]">
             
             <div className="inline-flex items-center gap-2 rounded-full border border-brand-400/30 bg-brand-500/10 px-4 py-2 text-sm font-semibold text-brand-200">
-              70-20-10 Maths learning
+              70-20-10 subject learning
             </div>
 
             <h1 className="mt-6 text-5xl font-bold tracking-tight text-white md:text-6xl leading-tight">
-              Structured daily Maths practice,
+              Structured daily subject practice,
               <span className="block bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
                 guided by tutors & AI
               </span>
             </h1>
 
             <p className="mt-6 text-lg text-slate-300">
-              Examify helps students stay consistent with structured exercises,
+              Examifying helps students stay consistent with structured exercises,
               peer review, and tutor-led progress tracking.
             </p>
 
@@ -203,7 +203,7 @@ export const LandingPage = () => {
           
           <div>
             <h2 className="text-2xl font-bold text-white tracking-wide">
-              Examify
+              Examifying
             </h2>
             <p className="mt-4 text-sm text-slate-400 leading-relaxed">
               Structured learning powered by tutors and AI. Helping students
@@ -230,7 +230,7 @@ export const LandingPage = () => {
         </div>
 
         <div className="border-t border-white/10 py-6 text-center text-xs text-slate-500">
-          © {new Date().getFullYear()} Examify. All rights reserved.
+          © {new Date().getFullYear()} Examifying. All rights reserved.
         </div>
       </footer>
     </div>

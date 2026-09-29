@@ -1,5 +1,5 @@
 import { addDays, formatISO, subDays } from 'date-fns';
-import { PAPER_MONTHS, ROLES } from '../lib/constants';
+import { DEFAULT_SUBJECT, PAPER_MONTHS, ROLES } from '../lib/constants';
 
 const today = new Date();
 
@@ -37,11 +37,13 @@ export const mockUsers = {
     email: 'tutor@example.com',
     displayName: 'Mr. Dlamini',
     role: ROLES.TUTOR,
+    subjects: [DEFAULT_SUBJECT],
+    subject: DEFAULT_SUBJECT,
   },
   'admin@example.com': {
     uid: 'mock-admin-1',
     email: 'admin@example.com',
-    displayName: 'Examify Admin',
+    displayName: 'Examifying Admin',
     role: ROLES.ADMIN,
   },
 };
@@ -49,7 +51,7 @@ export const mockUsers = {
 export const mockQuestionPapers = [
   {
     id: 'qp-1',
-    subject: 'Mathematics',
+    subject: DEFAULT_SUBJECT,
     grade: 'Grade 10',
     year: 2023,
     month: 'June',
@@ -60,7 +62,7 @@ export const mockQuestionPapers = [
   },
   {
     id: 'qp-2',
-    subject: 'Mathematics',
+    subject: DEFAULT_SUBJECT,
     grade: 'Grade 10',
     year: 2022,
     month: 'September',
@@ -76,6 +78,7 @@ export const mockTutorReports = [
     id: 'r-1',
     studentId: 'mock-student-1',
     tutorId: 'mock-tutor-1',
+    subject: DEFAULT_SUBJECT,
     studentName: 'Naledi Khumalo',
     note: 'Confidence improving; assign mixed factorisation questions next week.',
     updatedAt: '2026-03-15T10:00:00.000Z',
@@ -87,6 +90,7 @@ export const mockCompletedLessons = [
     id: 'lesson-1',
     studentId: 'mock-student-1',
     tutorId: 'mock-tutor-1',
+    subject: DEFAULT_SUBJECT,
     topic: 'Factorisation of trinomials',
     topicReport: 'Learner can factorise with some prompting and should revise sign handling.',
     understandingLevel: 6,
@@ -95,7 +99,7 @@ export const mockCompletedLessons = [
 ];
 
 export const mockStudentAssignments = [
-  { studentId: 'mock-student-1', tutorId: 'mock-tutor-1', active: true },
+  { studentId: 'mock-student-1', tutorId: 'mock-tutor-1', subject: DEFAULT_SUBJECT, active: true },
 ];
 
 
@@ -192,7 +196,7 @@ export const mockDashboardData = {
   },
   tutor: {
     stats: [
-      { label: 'Assigned students', value: '1', detail: 'All Maths only' },
+      { label: 'Assigned students', value: '1', detail: DEFAULT_SUBJECT },
       { label: 'Unassigned students', value: '1', detail: 'Ready to add' },
       { label: 'Question papers', value: String(mockQuestionPapers.length), detail: 'Published' },
       { label: 'Reports due', value: '1', detail: 'This week' },
@@ -210,7 +214,7 @@ export const mockDashboardData = {
   admin: {
     stats: [
       { label: 'Active students', value: '2', detail: '1 has paid' },
-      { label: 'Active tutors', value: '1', detail: 'Maths tutors' },
+      { label: 'Active tutors', value: '1', detail: 'Subject tutors' },
       { label: 'Monthly revenue', value: 'R440.00', detail: 'Projected' },
       { label: 'Platform alerts', value: '0', detail: 'All clear' },
     ],

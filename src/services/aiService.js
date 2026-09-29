@@ -1,5 +1,5 @@
-import { getGenerativeModel } from 'firebase/ai';
-import { ai, firebaseAiModel, isFirebaseConfigured } from '../firebase/config';
+import { httpsCallable } from 'firebase/functions';
+import { functions, isFirebaseConfigured } from '../firebase/config';
 
 const stripCodeFence = (text = '') =>
   String(text)
@@ -31,8 +31,8 @@ const getFallbackRecommendations = (payload = {}) => {
   return {
     recommendations: assignmentDates.map((assignmentDate) => ({
       title: titleForTopics,
-      topic: topics.length ? topics.slice(0, 3).join(' | ') : 'Tutor-completed Mathematics topic',
-      reason: `AI recommendations are temporarily unavailable, so Examify is showing a safe fallback recommendation state for ${assignmentDate}.`,
+      topic: topics.length ? topics.slice(0, 3).join(' | ') : `Tutor-completed ${payload.subject ?? 'subject'} topic`,
+      reason: `AI recommendations are temporarily unavailable, so Examifying is showing a safe fallback recommendation state for ${assignmentDate}.`,
       sourceLabel: 'Retry after confirming AI recommendations are enabled for this project.',
       instruction: `Complete the referenced question number(s) for ${assignmentDate}.`,
       assignmentDate,
@@ -42,6 +42,7 @@ const getFallbackRecommendations = (payload = {}) => {
         questionReference: `${topicIndex + 1}.1`,
       })),
       paperIdsUsed: Array.isArray(payload.selectedPaperIds) ? payload.selectedPaperIds.slice(0, 2) : [],
+      questionLinks: [],
     })),
     source: 'fallback',
   };
@@ -58,7 +59,7 @@ const normalizeRecommendations = (parsed, payload = {}) => {
       topic: item?.topic || (
         Array.isArray(item?.topicBreakdown)
           ? item.topicBreakdown.map((entry) => entry?.topic).filter(Boolean).join(' | ')
-          : 'Mathematics topic'
+          : `${payload.subject ?? 'Subject'} topic`
       ),
       reason: item?.reason || 'No reason provided.',
       sourceLabel: item?.sourceLabel || 'AI recommendation',
@@ -73,7 +74,7 @@ const normalizeRecommendations = (parsed, payload = {}) => {
       topicBreakdown: Array.isArray(item?.topicBreakdown)
         ? item.topicBreakdown
             .map((entry) => ({
-              topic: entry?.topic || 'Mathematics topic',
+              topic: entry?.topic || `${payload.subject ?? 'Subject'} topic`,
               questionReference: entry?.questionReference || entry?.reference || '',
             }))
             .filter((entry) => entry.questionReference)
@@ -83,14 +84,25 @@ const normalizeRecommendations = (parsed, payload = {}) => {
         : Array.isArray(payload.selectedPaperIds)
           ? payload.selectedPaperIds.slice(0, 2)
           : [],
+      questionLinks: Array.isArray(item?.questionLinks)
+        ? item.questionLinks
+            .map((link) => ({
+              paperId: link?.paperId || link?.id || '',
+              pageNumber: Number(link?.pageNumber ?? link?.page ?? 1) || 1,
+              questionReference: link?.questionReference || link?.reference || '',
+              topic: link?.topic || '',
+            }))
+            .filter((link) => link.paperId && link.questionReference)
+        : [],
     })),
-    source: 'firebase-ai-logic',
+    source: 'kilo-text-with-fallback',
   };
 };
 
 const buildPrompt = ({
   grade,
   region,
+  subject = 'Mathematics',
   completedTopics = [],
   tutorReports = [],
   pastMarks = [],
@@ -106,15 +118,16 @@ const buildPrompt = ({
   understandingByTopic = [],
   previousGenerationSummaries = [],
 } = {}) => `
-You are Examify's Mathematics exercise recommendation assistant for South African grades.
+You are Examifying's ${subject} exercise recommendation assistant for South African grades.
 
 Business rules:
-- Recommend Mathematics only.
+- Recommend ${subject} only.
 - Recommend exercises only from tutor-completed topics.
 - Prefer references to question papers and question numbers instead of rewriting full question text.
-- Consider grade, region, tutor reports, tutor notes, question paper metadata, and past marks.
+- Consider grade, region, tutor reports, tutor notes, question paper metadata, stored question indexes, memorandum summaries, and past marks.
 - Return strict JSON with a top-level key called "recommendations".
-- Each recommendation must include: title, topic, reason, sourceLabel, instruction, assignmentDate, questionReferences, topicBreakdown, paperIdsUsed.
+- Each recommendation must include: title, topic, reason, sourceLabel, instruction, assignmentDate, questionReferences, topicBreakdown, paperIdsUsed, questionLinks.
+- Every questionLinks item must include paperId, pageNumber, questionReference, and topic from the stored question index.
 - Return only valid JSON.
 - Use double quotes for all property names and string values.
 - Do not include markdown.
@@ -138,19 +151,32 @@ Example format:
         { "topic": "Probability", "questionReference": "1.1" },
         { "topic": "Geometry", "questionReference": "2.3.4" }
       ],
-      "paperIdsUsed": ["paper-a", "paper-b"]
+      "paperIdsUsed": ["paper-a", "paper-b"],
+      "questionLinks": [
+        { "paperId": "paper-a", "pageNumber": 2, "questionReference": "1.1", "topic": "Probability" },
+        { "paperId": "paper-b", "pageNumber": 5, "questionReference": "2.3.4", "topic": "Geometry" }
+      ]
     }
   ]
 }
 
 Student grade: ${grade ?? 'Unknown'}
 Region: ${region ?? 'Unknown'}
+Subject: ${subject}
 Generation mode: ${mode}
 Completed topics: ${JSON.stringify(completedTopics)}
 Tutor reports: ${JSON.stringify(tutorReports)}
 Tutor notes: ${tutorNotes}
 Past marks: ${JSON.stringify(pastMarks)}
 Question paper metadata: ${JSON.stringify(questionPaperMetadata)}
+Stored source paper question indexes: ${JSON.stringify(selectedPapers.map((paper) => ({
+  id: paper.id,
+  metadata: paper.paperMetadata,
+  topics: paper.topics,
+  questions: paper.questions,
+  paperSummary: paper.paperDocumentAnalysis,
+  memoSummary: paper.memoDocumentAnalysis,
+})))}
 Assignment dates to schedule: ${JSON.stringify(assignmentDates)}
 Selected source papers: ${JSON.stringify(selectedPapers)}
 Selected source paper ids: ${JSON.stringify(selectedPaperIds)}
@@ -170,34 +196,39 @@ Additional mandatory generation rules:
 - For weekly mode, question references on the same day must come from different topics.
 - When more than three topics are available, bias selections toward higher understanding topics, while still occasionally including lower understanding topics.
 - Only use the selected source papers and include only those ids in paperIdsUsed.
+- Use only questions from the stored source paper question indexes. Do not invent question numbers.
+- Include a questionLinks entry for every selected question so the app can open the PDF at the correct page.
 - NEVER REPEAT the same question for different assignments dates, unless the number total number of questions in the given past papers is not enough or is less than 7.
 - An Exercise generation can have multiple papers references, for example assignedment date 1 from paper A and assignment date 2 paper B, this will give you multiple options to work with.
 `;
 
 export const recommendExercises = async (payload = {}) => {
-  console.log('[Examify][AI] recommendExercises:start', payload);
+  console.log('[Examifying][AI] recommendExercises:start', payload);
 
   if (!isFirebaseConfigured) {
     return getFallbackRecommendations(payload);
   }
 
   try {
-    if (!ai) {
-      console.log('[Examify][AI] recommendExercises:fallback:no-ai-instance');
+    if (!functions) {
+      console.log('[Examifying][AI] recommendExercises:fallback:no-functions-instance');
       return getFallbackRecommendations(payload);
     }
 
-    const model = getGenerativeModel(ai, {
-      model: firebaseAiModel,
+    const callKiloText = httpsCallable(functions, 'callKiloText');
+    const result = await callKiloText({
+      system: 'You return strict JSON only. Do not include markdown, comments, or explanatory text.',
+      prompt: buildPrompt(payload),
+      responseFormat: { type: 'json_object' },
+      maxTokens: 3000,
+      temperature: 0.2,
     });
-
-    const result = await model.generateContent(buildPrompt(payload));
-    const rawText = result?.response?.text?.() ?? '';
+    const rawText = result?.data?.text ?? '';
     const strippedText = stripCodeFence(rawText);
     const jsonText = extractJsonObject(strippedText);
 
-    console.log('[Examify][AI] recommendExercises:rawText', rawText);
-    console.log('[Examify][AI] recommendExercises:jsonText', jsonText);
+    console.log('[Examifying][AI] recommendExercises:rawText', rawText);
+    console.log('[Examifying][AI] recommendExercises:jsonText', jsonText);
 
     const parsed = JSON.parse(jsonText);
 
@@ -206,10 +237,10 @@ export const recommendExercises = async (payload = {}) => {
     }
 
     const response = normalizeRecommendations(parsed, payload);
-    console.log('[Examify][AI] recommendExercises:success', response);
+    console.log('[Examifying][AI] recommendExercises:success', response);
     return response;
   } catch (error) {
-    console.error('[Examify][AI] recommendExercises:error', error);
+    console.error('[Examifying][AI] recommendExercises:error', error);
     return getFallbackRecommendations(payload);
   }
 };

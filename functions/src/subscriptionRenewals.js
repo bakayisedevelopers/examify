@@ -1,14 +1,12 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions';
 import { getDb } from './admin.js';
-import { paystackConfigSecret, appConfigSecret } from './config.js';
 import { chargeAuthorizationForSubscription } from './paystack.js';
 
 export const processSubscriptionRenewals = onSchedule(
   {
     schedule: 'every day 01:00',
     timeZone: 'Africa/Johannesburg',
-    secrets: [paystackConfigSecret, appConfigSecret],
   },
   async () => {
     const db = getDb();

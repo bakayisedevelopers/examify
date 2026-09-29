@@ -20,7 +20,7 @@ export const initializeSubscriptionPayment = async (payload) => {
     }
 
     return {
-      authorizationUrl: 'https://paystack.com/pay/demo-examify-session-plan',
+      authorizationUrl: 'https://paystack.com/pay/demo-examifying-session-plan',
       reference: `demo-${payload.studentId || 'bulk'}-${Date.now()}`,
       quote,
     };

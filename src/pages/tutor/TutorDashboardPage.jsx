@@ -1,27 +1,33 @@
-import { useEffect, useMemo, useState } from 'react';
-import { doc, setDoc } from 'firebase/firestore';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { StatCard } from '../../components/common/StatCard';
 import { useAuth } from '../../hooks/useAuth';
+import { DEFAULT_SUBJECT } from '../../lib/constants';
 import {
-  assignStudentToTutor,
   generateExercisePlanIfEligible,
   getQuestionPapers,
   getRoleDashboardData,
   saveCompletedLesson,
+  saveTutorReport,
   subscribeToAssignedStudentsForTutor,
-  subscribeToUnassignedStudents,
 } from '../../services/firestoreService';
-import { db } from '../../firebase/config';
+import { uploadTutorMarksDocument } from '../../services/storageService';
+import { getApprovedTutorSubjects } from '../../utils/tutorSubjects';
 
 export const TutorDashboardPage = () => {
-  const { profile, logout } = useAuth();
+  const { profile, logout, refreshProfile } = useAuth();
 
   const [dashboard, setDashboard] = useState(null);
   const [students, setStudents] = useState([]);
-  const [unassignedStudents, setUnassignedStudents] = useState([]);
   const [status, setStatus] = useState('');
+  const approvedSubjects = useMemo(() => getApprovedTutorSubjects(profile), [profile]);
+  const [selectedSubject, setSelectedSubject] = useState(approvedSubjects[0] ?? DEFAULT_SUBJECT);
+  const [marksFile, setMarksFile] = useState(null);
+  const [marksUploadStatus, setMarksUploadStatus] = useState('');
+  const [marksUploadResult, setMarksUploadResult] = useState(null);
+  const [isUploadingMarks, setIsUploadingMarks] = useState(false);
+  const marksUploadFormRef = useRef(null);
 
   const [activeStudentId, setActiveStudentId] = useState('');
   const [reportNote, setReportNote] = useState('');
@@ -31,10 +37,51 @@ export const TutorDashboardPage = () => {
     understandingLevel: 5,
   });
 
+
+  useEffect(() => {
+    if (approvedSubjects.length && !approvedSubjects.includes(selectedSubject)) {
+      setSelectedSubject(approvedSubjects[0]);
+    }
+  }, [approvedSubjects, selectedSubject]);
+
+  const handleMarksUpload = async (event) => {
+    event.preventDefault();
+
+    if (!marksFile) {
+      setMarksUploadStatus('Please choose a marks document first.');
+      return;
+    }
+
+    try {
+      setIsUploadingMarks(true);
+      setMarksUploadStatus('Uploading marks document and extracting subjects...');
+      const result = await uploadTutorMarksDocument({ file: marksFile, tutor: profile, onProgress: setMarksUploadStatus });
+      setMarksUploadResult(result);
+      await refreshProfile(profile.uid);
+
+      if (result.addedSubjects.length) {
+        setSelectedSubject(result.addedSubjects[0]);
+        setMarksUploadStatus(`Approved subject${result.addedSubjects.length === 1 ? '' : 's'} added: ${result.addedSubjects.join(', ')}.`);
+      } else if (result.extractedMarks.length) {
+        setMarksUploadStatus('Marks were extracted, but no new eligible subjects were found at 60% or above.');
+      } else {
+        setMarksUploadStatus('No eligible subjects could be extracted from the document. Please upload a clearer marks document.');
+      }
+
+      setMarksFile(null);
+      marksUploadFormRef.current?.reset();
+    } catch (error) {
+      console.error('[Examifying][TutorDashboard] marksUpload:error', error);
+      setMarksUploadStatus(error.message || 'Failed to process marks document.');
+    } finally {
+      setIsUploadingMarks(false);
+    }
+  };
+
   const loadDashboard = async () => {
     if (!profile?.uid) return;
-    console.log('[Examify][TutorDashboard] load:start', { tutorId: profile.uid });
-    const data = await getRoleDashboardData('tutor', { tutorId: profile.uid });
+    console.log('[Examifying][TutorDashboard] load:start', { tutorId: profile.uid });
+    const data = await getRoleDashboardData('tutor', { tutorId: profile.uid, subject: selectedSubject });
     setDashboard(data);
   };
 
@@ -45,21 +92,17 @@ export const TutorDashboardPage = () => {
 
     const unsub1 = subscribeToAssignedStudentsForTutor(profile.uid, (data) => {
       setStudents(data);
-    });
-
-    const unsub2 = subscribeToUnassignedStudents(setUnassignedStudents);
+    }, selectedSubject);
 
     return () => {
       unsub1();
-      unsub2();
     };
-  }, [profile?.uid]);
+  }, [profile?.uid, selectedSubject]);
 
   const activeStudent =
     students.find((student) => (student.uid || student.id) === activeStudentId) ?? null;
 
   const activeStudentFirestoreId = activeStudent?.uid || activeStudent?.id || '';
-  const hasInitialReport = Boolean((activeStudent?.latestReport || '').trim());
 
   const filteredReports = useMemo(() => {
     if (!dashboard?.reports || !activeStudent) return [];
@@ -76,6 +119,9 @@ export const TutorDashboardPage = () => {
       );
     });
   }, [dashboard?.reports, activeStudent]);
+
+  const activeSubjectReport = activeStudent?.latestReportsBySubject?.[selectedSubject] || filteredReports[0]?.note || (selectedSubject === DEFAULT_SUBJECT ? activeStudent?.latestReport : '') || '';
+  const hasInitialReport = Boolean(activeSubjectReport.trim());
 
   const filteredCompletedLessons = useMemo(() => {
     if (!dashboard?.completedTopics || !activeStudent) return [];
@@ -115,23 +161,6 @@ export const TutorDashboardPage = () => {
     });
   };
 
-  const handleAssignStudent = async (studentId) => {
-    console.log('[Examify][TutorDashboard] assignStudent:start', {
-      studentId,
-      tutorId: profile?.uid,
-    });
-
-    try {
-      const result = await assignStudentToTutor({ studentId, tutorId: profile?.uid });
-      console.log('[Examify][TutorDashboard] assignStudent:success', result);
-      setStatus('Student assigned successfully. You can now open that student and manage reports and lessons.');
-      await loadDashboard();
-    } catch (error) {
-      console.error('[Examify][TutorDashboard] assignStudent:error', error);
-      setStatus(error.message || 'Failed to assign student.');
-    }
-  };
-
   const handleSaveInitialReport = async () => {
     if (!activeStudent || !activeStudentFirestoreId) {
       setStatus('Please select a student first.');
@@ -144,7 +173,7 @@ export const TutorDashboardPage = () => {
     }
 
     try {
-      console.log('[Examify][TutorDashboard] saveInitialReport:start', {
+      console.log('[Examifying][TutorDashboard] saveInitialReport:start', {
         studentId: activeStudentFirestoreId,
       });
 
@@ -155,21 +184,21 @@ export const TutorDashboardPage = () => {
       ${reportNote}
       Date: ${new Date().toLocaleString()}`;
 
-      await setDoc(
-        doc(db, 'users', activeStudentFirestoreId),
-        {
-          latestReport: newEntryFormatted,
-          updatedAt: new Date(),
-        },
-        { merge: true }
-      );
+      await saveTutorReport({
+        studentId: activeStudentFirestoreId,
+        tutorId: profile?.uid,
+        subject: selectedSubject,
+        reportType: 'initial',
+        note: newEntryFormatted,
+        studentName: activeStudent.displayName || activeStudent.name || 'Student',
+      });
 
-      console.log('[Examify][TutorDashboard] saveInitialReport:success');
+      console.log('[Examifying][TutorDashboard] saveInitialReport:success');
       setReportNote('');
       setStatus('Initial report saved successfully.');
       await loadDashboard();
     } catch (error) {
-      console.error('[Examify][TutorDashboard] saveInitialReport:error', error);
+      console.error('[Examifying][TutorDashboard] saveInitialReport:error', error);
       setStatus(error.message || 'Failed to save initial report.');
     }
   };
@@ -191,12 +220,10 @@ export const TutorDashboardPage = () => {
     }
 
     try {
-      console.log('[Examify][TutorDashboard] completeLesson:start', {
+      console.log('[Examifying][TutorDashboard] completeLesson:start', {
         studentId: activeStudentFirestoreId,
         lessonForm,
       });
-
-      const existingReport = activeStudent.latestReport || '';
 
       const newEntryFormatted = `
         --- ${lessonForm.topic} ---
@@ -207,16 +234,14 @@ export const TutorDashboardPage = () => {
         Date: ${new Date().toLocaleString()}
       `;
 
-      const updatedReport = `${existingReport}${existingReport ? '\n\n' : ''}${newEntryFormatted}`;
-
-      await setDoc(
-        doc(db, 'users', activeStudentFirestoreId),
-        {
-          latestReport: updatedReport,
-          updatedAt: new Date(),
-        },
-        { merge: true }
-      );
+      await saveTutorReport({
+        studentId: activeStudentFirestoreId,
+        tutorId: profile?.uid,
+        subject: selectedSubject,
+        reportType: 'lesson',
+        note: newEntryFormatted,
+        studentName: activeStudent.displayName || activeStudent.name || 'Student',
+      });
 
       const lesson = await saveCompletedLesson({
         studentId: activeStudentFirestoreId,
@@ -225,12 +250,13 @@ export const TutorDashboardPage = () => {
         topicReport: lessonForm.topicReport,
         understandingLevel: Number(lessonForm.understandingLevel),
         studentName: activeStudent.displayName || activeStudent.name || 'Student',
+        subject: selectedSubject,
       });
 
       const availablePapers = await getQuestionPapers({
         grade: activeStudent.grade,
         region: activeStudent.province,
-        subject: 'Mathematics',
+        subject: selectedSubject,
       });
 
       const generation = await generateExercisePlanIfEligible({
@@ -241,12 +267,14 @@ export const TutorDashboardPage = () => {
           paymentCompleted: activeStudent.paymentCompleted,
         },
         mode: 'weekly',
+        subject: selectedSubject,
         completedLesson: lesson,
         understandingLevel: Number(lessonForm.understandingLevel),
         availablePapers,
+        onProgress: (message) => setStatus(message),
       });
 
-      console.log('[Examify][TutorDashboard] completeLesson:generation', generation);
+      console.log('[Examifying][TutorDashboard] completeLesson:generation', generation);
 
       setLessonForm({
         topic: '',
@@ -262,7 +290,7 @@ export const TutorDashboardPage = () => {
 
       await loadDashboard();
     } catch (error) {
-      console.error('[Examify][TutorDashboard] completeLesson:error', error);
+      console.error('[Examifying][TutorDashboard] completeLesson:error', error);
       setStatus(error.message || 'Failed to complete lesson.');
     }
   };
@@ -276,14 +304,80 @@ export const TutorDashboardPage = () => {
       role="tutor"
       user={profile}
       onLogout={logout}
+      mobileHeaderContent={(
+        <select
+          className="input mx-auto w-full max-w-[12rem] py-2 text-xs font-semibold"
+          value={selectedSubject}
+          onChange={(event) => setSelectedSubject(event.target.value)}
+          disabled={!approvedSubjects.length}
+          aria-label="Select subject"
+        >
+          {approvedSubjects.map((subject) => <option key={subject}>{subject}</option>)}
+        </select>
+      )}
     >
+      <section className="panel space-y-4 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold text-slate-950">Approved tutor subjects</p>
+            <p className="mt-1 text-xs text-slate-500">Upload your marks document. AI extracts subjects and only adds approved subjects with marks of 60% or above.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {approvedSubjects.length ? approvedSubjects.map((subject) => (
+              <span key={subject} className="rounded-full bg-brand-50 px-3 py-1 text-sm font-semibold text-brand-700">{subject}</span>
+            )) : <span className="rounded-full bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-700">No approved subjects yet</span>}
+          </div>
+        </div>
+
+        <form ref={marksUploadFormRef} onSubmit={handleMarksUpload} className="grid gap-3 lg:grid-cols-[1fr_auto]">
+          <input
+            type="file"
+            className="input"
+            accept=".pdf,.png,.jpg,.jpeg,.webp,.heic,.heif"
+            onChange={(event) => setMarksFile(event.target.files?.[0] ?? null)}
+          />
+          <button type="submit" className="btn-primary" disabled={isUploadingMarks}>
+            {isUploadingMarks ? 'Checking marks...' : 'Upload marks proof'}
+          </button>
+        </form>
+
+        {marksUploadStatus ? <p className="text-sm text-slate-600">{marksUploadStatus}</p> : null}
+        {marksUploadResult?.extractedMarks?.length ? (
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <p className="text-sm font-semibold text-slate-950">Extracted marks</p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {marksUploadResult.extractedMarks.map((item) => (
+                <div key={`${item.subject}-${item.mark}`} className="rounded-xl bg-white px-3 py-2 text-sm">
+                  <p className="font-semibold text-slate-900">{item.subject}</p>
+                  <p className={Number(item.mark) >= 60 ? 'text-emerald-600' : 'text-slate-500'}>{item.mark}%</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      <div className="panel hidden flex-wrap items-center justify-between gap-3 p-4 lg:flex">
+        <div>
+          <p className="text-sm font-semibold text-slate-950">Subject</p>
+          <p className="text-xs text-slate-500">Student assignment, lessons, reports, and generation use one of your approved subjects.</p>
+        </div>
+        <select className="input max-w-xs" value={selectedSubject} onChange={(event) => setSelectedSubject(event.target.value)} disabled={!approvedSubjects.length}>
+          {approvedSubjects.map((subject) => <option key={subject}>{subject}</option>)}
+        </select>
+      </div>
+
+      {!approvedSubjects.length ? (
+        <div className="panel p-5 text-sm text-amber-700">Upload a marks document to unlock subjects before students can be assigned to you.</div>
+      ) : null}
+
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {(dashboard.stats ?? []).map((item) => (
           <StatCard key={item.label} {...item} />
         ))}
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[1fr_1fr]">
+      <section className="grid gap-6">
         <div className="space-y-6">
           <SectionHeader
             eyebrow="Students"
@@ -294,7 +388,7 @@ export const TutorDashboardPage = () => {
           <div className="space-y-4">
             {students.length ? (
               students.map((student) => {
-                const studentHasReport = Boolean((student.latestReport || '').trim());
+                const studentHasReport = Boolean((student.latestReportsBySubject?.[selectedSubject] || (selectedSubject === DEFAULT_SUBJECT ? student.latestReport : '') || '').trim());
 
                 return (
                   <button
@@ -345,47 +439,7 @@ export const TutorDashboardPage = () => {
               })
             ) : (
               <div className="panel p-5 text-sm text-slate-500">
-                No students are assigned to this tutor yet.
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="space-y-6">
-          <SectionHeader
-            eyebrow="Add student"
-            title="Unassigned students"
-            description="Only students without a Maths tutor appear here."
-          />
-
-          <div className="space-y-4">
-            {unassignedStudents.length ? (
-              unassignedStudents.map((student) => (
-                <div
-                  key={student.uid || student.id}
-                  className="panel flex items-center justify-between gap-3 p-5"
-                >
-                  <div>
-                    <p className="font-semibold text-slate-950">
-                      {student.displayName || student.name || 'Student'}
-                    </p>
-                    <p className="mt-1 text-sm text-slate-500">
-                      {student.grade || '?'} • {student.province || '?'}
-                    </p>
-                  </div>
-
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={() => handleAssignStudent(student.uid || student.id)}
-                  >
-                    Add student
-                  </button>
-                </div>
-              ))
-            ) : (
-              <div className="panel p-5 text-sm text-slate-500">
-                There are no unassigned students right now.
+                No students are assigned to you for this subject yet.
               </div>
             )}
           </div>
@@ -452,7 +506,7 @@ export const TutorDashboardPage = () => {
                   <SectionHeader
                     eyebrow="Lesson complete"
                     title="Complete topic and trigger weekly generation"
-                    description="This section appears after the initial report already exists. Each lesson appends to latestReport."
+                    description="This section appears after the initial report already exists for the selected subject. Each lesson updates the subject report history."
                   />
 
                   <input
@@ -563,11 +617,11 @@ export const TutorDashboardPage = () => {
                 <section className="panel p-6">
                   <SectionHeader
                     eyebrow="Latest report"
-                    title="Current latestReport value"
-                    description="This is the exact report string currently stored for the student and used for AI context."
+                    title="Current subject report value"
+                    description="This is the latest report for the selected subject and is used for AI context."
                   />
                   <pre className="mt-4 whitespace-pre-wrap rounded-2xl bg-slate-50 p-4 text-sm text-slate-700">
-                    {activeStudent.latestReport || 'No latest report found.'}
+                    {activeSubjectReport || 'No latest report found.'}
                   </pre>
                 </section>
               ) : null}

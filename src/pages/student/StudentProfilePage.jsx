@@ -77,7 +77,7 @@ export const StudentProfilePage = () => {
 
       setMessage('Subscription cancelled successfully.');
     } catch (error) {
-      console.error('[Examify][CancelSubscription] error', error);
+      console.error('[Examifying][CancelSubscription] error', error);
       setMessage('Failed to cancel subscription. Please try again.');
     } finally {
       setCancelling(false);

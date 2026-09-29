@@ -13,7 +13,7 @@ export const TutorQuestionPapersPage = () => {
   }, []);
 
   return (
-    <AppShell title="Question papers" subtitle="Manage uploaded Maths papers and reference metadata for exercise generation." role="tutor" user={profile} onLogout={logout}>
+    <AppShell title="Question papers" subtitle="Manage uploaded subject papers and reference metadata for exercise generation." role="tutor" user={profile} onLogout={logout}>
       <SectionHeader eyebrow="Repository" title="Available papers" description="Exercises should point to paper references and question numbers instead of duplicating entire question text." />
       <div className="grid gap-4">
         {(dashboard?.questionPapers ?? []).map((paper) => (

@@ -245,7 +245,7 @@ export const ParentDashboardPage = () => {
       <SectionHeader 
         eyebrow="Linked Students" 
         title="Your Children" 
-        description="Add students using their email or Examify ID. You can manage multiple students from this panel."
+        description="Add students using their email or Examifying ID. You can manage multiple students from this panel."
       />
       
       <div className="panel p-6 mb-8 flex flex-col md:flex-row gap-4 items-end">

@@ -11,14 +11,20 @@ git commit -m "Commit after Changing the landing page design. 24-03-2026."
 git push origin main
 
 
-These are for injecting keys to Firebase:
+Functions now read environment variables from functions/.env:
 
-firebase functions:secrets:set PAYSTACK_CONFIG
-firebase functions:secrets:set APP_CONFIG
-firebase functions:secrets:set GEMINI_CONFIG
+PAYSTACK_SECRET_KEY=sk_test_xxx
+PAYSTACK_BASE_URL=https://api.paystack.co
+PAYSTACK_CALLBACK_URL=https://your-frontend-domain.com/student/billing
+FIRESTORE_DATABASE_ID=(default)
+KILO_BASE_URL=https://api.kilo.ai/api/openrouter
+KILO_TEXT_MODEL=thinkingmachines/inkling-small:free
+KILO_FALLBACK_TEXT_MODEL=kilo-auto/free
+KILO_VISION_MODEL=dots-studio/dots-3-note-preview:free
+KILO_FALLBACK_VISION_MODELS=qwen/qwen3.8-27b:free,stepfun/step-3.7-flash:free,openrouter/free
 
 Deploying to Hosting:
 
 npm run build
-firebase deploy --only hosting:examify
+firebase deploy --only hosting
 firebase deploy --only functions

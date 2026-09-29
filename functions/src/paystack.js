@@ -1,11 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
 import { getDb, admin } from './admin.js';
-import {
-  paystackConfigSecret,
-  appConfigSecret,
-  getPaystackConfig,
-} from './config.js';
+import { getPaystackConfig } from './config.js';
 
 const sessionPricing = {
   online: 220,
@@ -34,7 +30,7 @@ const paystackRequest = async ({ path, method = 'POST', payload }) => {
   const { paystackSecretKey, paystackBaseUrl } = getPaystackConfig();
 
   if (!paystackSecretKey) {
-    throw new HttpsError('failed-precondition', 'Missing PAYSTACK_CONFIG.secretKey.');
+    throw new HttpsError('failed-precondition', 'Missing PAYSTACK_SECRET_KEY environment variable.');
   }
 
   const response = await fetch(`${paystackBaseUrl}${path}`, {
@@ -55,22 +51,30 @@ const paystackRequest = async ({ path, method = 'POST', payload }) => {
   return data.data;
 };
 
-const callableOptions = {
-  secrets: [paystackConfigSecret, appConfigSecret],
-};
-
-export const initializePaystackTransaction = onCall(callableOptions, async (request) => {
+export const initializePaystackTransaction = onCall(async (request) => {
   try {
-    const { email, studentId, latestMark, sessionType, studentIds } = request.data ?? {};
+    const { email, studentId, latestMark, sessionType, studentIds, callbackUrl } = request.data ?? {};
 
     if (!email || (!studentId && (!studentIds || studentIds.length === 0))) {
       throw new HttpsError('invalid-argument', 'email and either studentId or studentIds are required.');
     }
 
-    const { paystackCallbackUrl } = getPaystackConfig();
+    const { paystackCallbackUrl: fallbackCallbackUrl } = getPaystackConfig();
+    const paystackCallbackUrl = typeof callbackUrl === 'string' && callbackUrl.trim()
+      ? callbackUrl.trim()
+      : fallbackCallbackUrl;
 
     if (!paystackCallbackUrl) {
-      throw new HttpsError('failed-precondition', 'Missing PAYSTACK_CONFIG.callbackUrl.');
+      throw new HttpsError('invalid-argument', 'callbackUrl is required when initializing payment.');
+    }
+
+    try {
+      const parsedCallbackUrl = new URL(paystackCallbackUrl);
+      if (!['http:', 'https:'].includes(parsedCallbackUrl.protocol)) {
+        throw new Error('Unsupported callback URL protocol.');
+      }
+    } catch {
+      throw new HttpsError('invalid-argument', 'callbackUrl must be a valid http or https URL.');
     }
 
     const db = getDb();
@@ -89,7 +93,7 @@ export const initializePaystackTransaction = onCall(callableOptions, async (requ
       }
     }
 
-    const reference = `examify-${studentId || 'bulk'}-${Date.now()}`;
+    const reference = `examifying-${studentId || 'bulk'}-${Date.now()}`;
 
     logger.info('Initializing Paystack transaction', {
       email,
@@ -112,7 +116,7 @@ export const initializePaystackTransaction = onCall(callableOptions, async (requ
         metadata: {
           studentId: studentId || null,
           studentIds: studentIds ? JSON.stringify(studentIds.map(s => s.id)) : null,
-          subject: 'Mathematics',
+          product: 'Examifying subscription',
         },
       },
     });
@@ -144,7 +148,7 @@ export const initializePaystackTransaction = onCall(callableOptions, async (requ
   }
 });
 
-export const verifyPaystackTransaction = onCall(callableOptions, async (request) => {
+export const verifyPaystackTransaction = onCall(async (request) => {
   const { reference } = request.data ?? {};
 
   if (!reference) {
@@ -186,7 +190,9 @@ export const verifyPaystackTransaction = onCall(callableOptions, async (request)
       if (Array.isArray(parsedIds)) {
         targetStudents = [...new Set([...targetStudents, ...parsedIds])];
       }
-    } catch(e) {}
+    } catch (error) {
+      logger.warn('Failed to parse Paystack studentIds metadata', { error });
+    }
   }
 
   if (authorization?.authorization_code && targetStudents.length > 0) {
@@ -267,7 +273,7 @@ export const chargeAuthorizationForSubscription = async ({
       metadata: {
         ...metadata,
         studentId,
-        subject: 'Mathematics',
+        product: 'Examifying subscription',
         recurring: true,
       },
     },
@@ -323,7 +329,7 @@ export const chargeAuthorizationForSubscription = async ({
   return { charge, succeeded, nextRenewalDate };
 };
 
-export const chargeStoredAuthorization = onCall(callableOptions, async (request) => {
+export const chargeStoredAuthorization = onCall(async (request) => {
   const { studentId, email, amount, authorizationCode, metadata = {} } = request.data ?? {};
 
   if (!studentId || !email || !amount || !authorizationCode) {

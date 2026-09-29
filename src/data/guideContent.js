@@ -2,7 +2,7 @@ import { BookOpen, CheckCircle2, ClipboardCheck, CreditCard, FileText, Image, La
 
 export const guideContentByRole = {
   student: {
-    heroTitle: 'Learn the Examify student journey',
+    heroTitle: 'Learn the Examifying student journey',
     heroDescription:
       'Follow the same order you will use in the app: complete billing, open only today’s exercise, upload your written answer as an image, and then complete peer review when it unlocks.',
     quickTips: [
@@ -39,7 +39,7 @@ export const guideContentByRole = {
       {
         id: 'exercise',
         title: 'Complete only today\'s exercise',
-        description: 'Examify opens the current day\'s Maths exercise and keeps future or missed work unavailable for submission.',
+        description: 'Examifying opens the current day\'s Maths exercise and keeps future or missed work unavailable for submission.',
         icon: BookOpen,
         routeLabel: 'Exercises',
         steps: [
@@ -86,7 +86,7 @@ export const guideContentByRole = {
       },
     ],
     quizTitle: 'Student readiness check',
-    quizDescription: 'Answer all questions to confirm you understand how to use Examify as a student.',
+    quizDescription: 'Answer all questions to confirm you understand how to use Examifying as a student.',
     questions: [
       {
         id: 'student-q1',
@@ -127,7 +127,7 @@ export const guideContentByRole = {
     ],
   },
   tutor: {
-    heroTitle: 'Learn the Examify tutor workflow',
+    heroTitle: 'Learn the Examifying tutor workflow',
     heroDescription:
       'Tutors manage the student learning path by assigning learners, creating reports, recording completed topics, and keeping the weekly exercise pipeline moving.',
     quickTips: [
@@ -211,7 +211,7 @@ export const guideContentByRole = {
       },
     ],
     quizTitle: 'Tutor readiness check',
-    quizDescription: 'Answer all questions to confirm you understand how to use Examify as a tutor.',
+    quizDescription: 'Answer all questions to confirm you understand how to use Examifying as a tutor.',
     questions: [
       {
         id: 'tutor-q1',
