@@ -33,9 +33,23 @@ export const registerStudentNotificationDevice = async (studentId) => {
     throw new Error('This browser cannot receive Examifying push notifications.');
   }
 
-  const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+  const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', { scope: '/' });
+  await navigator.serviceWorker.ready;
+  if (registration.installing || registration.waiting) {
+    await new Promise((resolve) => {
+      const worker = registration.installing || registration.waiting;
+      if (!worker) {
+        resolve();
+        return;
+      }
+      worker.addEventListener('statechange', () => {
+        if (worker.state === 'activated') resolve();
+      });
+    });
+  }
+  const activeRegistration = await navigator.serviceWorker.ready;
   const messaging = getMessaging(firebaseApp);
-  const tokenOptions = vapidKey ? { vapidKey, serviceWorkerRegistration: registration } : { serviceWorkerRegistration: registration };
+  const tokenOptions = vapidKey ? { vapidKey, serviceWorkerRegistration: activeRegistration } : { serviceWorkerRegistration: activeRegistration };
   const token = await getToken(messaging, tokenOptions);
   if (!token) throw new Error('No notification token was returned for this browser.');
 

@@ -15,3 +15,14 @@ export {
 export { analyzeQuestionPaper } from './questionPaperAnalysis.js';
 
 export { assignPeerMarkingOnSubmission } from './peerMarking.js';
+
+
+export {
+  notifyNewUser,
+  notifyExerciseSubmission,
+  notifyPeerMarkingCompleted,
+  notifyPaymentStatus,
+  notifyTutorAssignment,
+  notifyTutorReport,
+  notifyCompletedLesson,
+} from './notifications.js';

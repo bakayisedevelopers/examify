@@ -18,13 +18,9 @@ export const ProtectedRoute = ({ allowedRoles }) => {
     return <Navigate to={`/${profile.role}`} replace />;
   }
 
-  if (profile.role === ROLES.STUDENT && allowedRoles?.includes(ROLES.STUDENT)) {
-    return (
-      <StudentNotificationGate profile={profile}>
-        <Outlet />
-      </StudentNotificationGate>
-    );
-  }
-
-  return <Outlet />;
+  return (
+    <StudentNotificationGate profile={profile} required={profile.role === ROLES.STUDENT && allowedRoles?.includes(ROLES.STUDENT)}>
+      <Outlet />
+    </StudentNotificationGate>
+  );
 };

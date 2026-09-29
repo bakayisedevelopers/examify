@@ -13,7 +13,7 @@ const buildAssignmentText = (assignment) => {
   return `${subject}${title}`.trim();
 };
 
-export const StudentNotificationGate = ({ profile, children }) => {
+export const StudentNotificationGate = ({ profile, children, required = true }) => {
   const [permission, setPermission] = useState(getNotificationPermission);
   const [error, setError] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
@@ -57,6 +57,7 @@ export const StudentNotificationGate = ({ profile, children }) => {
 
   const requestPermission = async () => {
     setError('');
+    setDeviceRegistered(false);
     setIsRegistering(true);
     if (getNotificationPermission() === 'unsupported') {
       setPermission('unsupported');
@@ -80,6 +81,7 @@ export const StudentNotificationGate = ({ profile, children }) => {
       await registerStudentNotificationDevice(profile.uid);
       setDeviceRegistered(true);
     } catch (requestError) {
+      setDeviceRegistered(false);
       setError(requestError?.message ?? 'Could not request notification permission.');
     } finally {
       setIsRegistering(false);
@@ -90,18 +92,37 @@ export const StudentNotificationGate = ({ profile, children }) => {
     if (permission !== 'granted' || !profile?.uid || deviceRegistered) return;
     registerStudentNotificationDevice(profile.uid)
       .then(() => setDeviceRegistered(true))
-      .catch((registrationError) => setError(registrationError?.message ?? 'Could not register this browser for notifications.'));
+      .catch((registrationError) => {
+        setDeviceRegistered(false);
+        setError(registrationError?.message ?? 'Could not register this browser for notifications.');
+      });
   }, [deviceRegistered, permission, profile?.uid]);
 
   if (permission === 'granted' && deviceRegistered) return children;
+
+  if (!required) {
+    return (
+      <>
+        <div className="mx-auto max-w-7xl px-4 pt-4 lg:px-6">
+          <div className="panel flex flex-wrap items-center justify-between gap-3 p-4 text-sm text-slate-600">
+            <span>Enable browser notifications to receive important Examifying alerts on this device.</span>
+            <button type="button" className="btn-secondary" onClick={requestPermission} disabled={isRegistering || permission === 'unsupported' || permission === 'denied'}>
+              {isRegistering ? 'Enabling...' : 'Enable notifications'}
+            </button>
+          </div>
+        </div>
+        {children}
+      </>
+    );
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-slate-100 p-6 text-slate-900">
       <div className="panel max-w-lg p-6 text-center">
         <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-50 text-2xl">🔔</div>
-        <h1 className="mt-5 text-2xl font-bold text-slate-950">Enable marking notifications</h1>
+        <h1 className="mt-5 text-2xl font-bold text-slate-950">Enable Examifying notifications</h1>
         <p className="mt-3 text-sm leading-6 text-slate-600">
-          Examifying requires browser notifications for students so you know when another learner’s submitted exercise is ready for you to mark.
+          Examifying requires browser notifications so students receive exercise, marking, payment, and learning alerts on time.
         </p>
         {permission === 'unsupported' ? (
           <p className="mt-4 rounded-2xl bg-amber-50 p-4 text-sm font-medium text-amber-800">
@@ -113,14 +134,23 @@ export const StudentNotificationGate = ({ profile, children }) => {
             Notifications are blocked in your browser settings. Open the site permissions for Examifying, allow notifications, then reload this page.
           </p>
         ) : null}
-        {error ? <p className="mt-4 rounded-2xl bg-rose-50 p-4 text-sm font-medium text-rose-700">{error}</p> : null}
+        {error ? (
+          <div className="mt-4 rounded-2xl bg-rose-50 p-4 text-sm font-medium text-rose-700">
+            <p>{error}</p>
+            {permission !== 'unsupported' && permission !== 'denied' ? (
+              <button type="button" className="mt-3 text-sm font-bold text-rose-800 underline" onClick={requestPermission} disabled={isRegistering}>
+                Try again
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         <button
           type="button"
           className="btn-primary mt-6 w-full"
           onClick={requestPermission}
           disabled={isRegistering || permission === 'unsupported' || permission === 'denied'}
         >
-          {isRegistering ? 'Enabling notifications...' : 'Enable notifications'}
+          {isRegistering ? 'Enabling notifications...' : error ? 'Retry notifications' : 'Enable notifications'}
         </button>
         <p className="mt-4 text-xs text-slate-500">
           Access to today’s exercises and peer marking will unlock after browser permission is granted and this device is saved for push notifications.

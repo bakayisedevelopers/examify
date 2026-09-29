@@ -1,6 +1,7 @@
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { logger } from 'firebase-functions';
-import { admin, getDb } from './admin.js';
+import { getDb } from './admin.js';
+import { sendNotificationToUsers } from './notifications.js';
 
 const hasSubmission = (data = {}) => Boolean(data.submittedImageUrl && data.submittedFileName);
 
@@ -70,65 +71,6 @@ const buildAssignments = ({ submitted, completedToday, recentReviewees }) => {
   return assignments;
 };
 
-
-const sendPeerMarkingNotifications = async ({ db, assignments }) => {
-  await Promise.all(assignments.map(async ({ assignmentId, reviewer, target, cohort }) => {
-    const tokensSnapshot = await db.collection('users')
-      .doc(reviewer.studentId)
-      .collection('notificationTokens')
-      .where('active', '==', true)
-      .get();
-    const tokenRows = tokensSnapshot.docs.map((doc) => ({ id: doc.id, ref: doc.ref, ...doc.data() })).filter((row) => row.token);
-    if (!tokenRows.length) {
-      logger.info('Peer marking notification skipped because reviewer has no active tokens', { reviewerId: reviewer.studentId, assignmentId });
-      return;
-    }
-
-    const response = await admin.messaging().sendEachForMulticast({
-      tokens: tokenRows.map((row) => row.token),
-      notification: {
-        title: 'New work to mark',
-        body: `${target.subject ?? cohort.subject} ${target.title ?? 'exercise'} is ready for peer marking.`,
-      },
-      webpush: {
-        fcmOptions: { link: '/student?tab=mark' },
-        notification: {
-          icon: '/logo.png',
-          badge: '/logo.png',
-          tag: `peer-marking-${assignmentId}`,
-          requireInteraction: true,
-        },
-      },
-      data: {
-        type: 'peer-marking-assigned',
-        assignmentId,
-        exerciseId: target.id,
-        subject: String(target.subject ?? cohort.subject ?? ''),
-        assignmentDate: String(cohort.assignmentDate ?? ''),
-        url: '/student?tab=mark',
-        tag: `peer-marking-${assignmentId}`,
-      },
-    });
-
-    const cleanupBatch = db.batch();
-    response.responses.forEach((result, index) => {
-      const code = result.error?.code ?? '';
-      if (code.includes('registration-token-not-registered') || code.includes('invalid-registration-token')) {
-        cleanupBatch.set(tokenRows[index].ref, { active: false, invalidatedAt: new Date(), invalidationReason: code }, { merge: true });
-      }
-    });
-    cleanupBatch.set(db.collection('notificationLogs').doc(), {
-      type: 'peer-marking-assigned',
-      reviewerId: reviewer.studentId,
-      revieweeId: target.studentId,
-      assignmentId,
-      successCount: response.successCount,
-      failureCount: response.failureCount,
-      createdAt: new Date(),
-    });
-    await cleanupBatch.commit();
-  }));
-};
 
 export const assignPeerMarkingOnSubmission = onDocumentWritten(
   { document: 'dailyExerciseAssignments/{exerciseId}', timeoutSeconds: 120, memory: '512MiB' },
@@ -221,7 +163,20 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
     });
 
     await batch.commit();
-    await sendPeerMarkingNotifications({ db, assignments: notificationJobs });
+    await Promise.all(notificationJobs.map(({ assignmentId, reviewer, target, cohort }) => sendNotificationToUsers({
+      userIds: [reviewer.studentId],
+      title: 'New work to mark',
+      body: `${target.subject ?? cohort.subject} ${target.title ?? 'exercise'} is ready for peer marking.`,
+      type: 'peer-marking.assigned',
+      url: '/student?tab=mark',
+      data: {
+        assignmentId,
+        exerciseId: target.id,
+        subject: target.subject ?? cohort.subject ?? '',
+        assignmentDate: cohort.assignmentDate ?? '',
+      },
+      tag: `peer-marking-${assignmentId}`,
+    })));
     logger.info('Peer marking assignments refreshed', { cohort, submittedCount: submitted.length, pairCount: pairs.length, notificationCount: notificationJobs.length });
   }
 );
