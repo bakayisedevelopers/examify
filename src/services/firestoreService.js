@@ -1088,6 +1088,20 @@ export const saveQuestionPaper = async (paper) => {
 };
 
 
+
+export const updateQuestionPaper = async (paperId, patch) => {
+  if (!paperId) throw new Error('Question paper id is required.');
+  if (!isFirebaseConfigured) return { id: paperId, ...patch };
+  ensureDb();
+  const paperRef = doc(db, collections.questionPapers, paperId);
+  const payload = {
+    ...patch,
+    updatedAt: serverTimestamp(),
+  };
+  await updateDoc(paperRef, payload);
+  return { id: paperId, ...payload };
+};
+
 export const getPeerMarkingAssignmentsForStudent = async (reviewerId) => {
   if (!reviewerId) return [];
   if (!isFirebaseConfigured) return [];

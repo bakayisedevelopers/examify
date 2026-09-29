@@ -4,7 +4,7 @@ import { AppShell } from '../components/common/AppShell';
 import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
-import { saveQuestionPaper, subscribeQuestionPapers } from '../services/firestoreService';
+import { saveQuestionPaper, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
 import { getApprovedTutorSubjects, getUserSubjects } from '../utils/tutorSubjects';
 
@@ -107,6 +107,8 @@ export const PastExamPapersPage = () => {
   const [singleForm, setSingleForm] = useState(defaultPaperForm(profile));
   const [bulkRows, setBulkRows] = useState([]);
   const [filters, setFilters] = useState({ subject: 'all', year: 'all' });
+  const [editingPaper, setEditingPaper] = useState(null);
+  const [editForm, setEditForm] = useState(null);
 
   const role = useMemo(() => profile?.role ?? ROLES.STUDENT, [profile]);
   const allowedSubjects = useMemo(() => {
@@ -126,6 +128,80 @@ export const PastExamPapersPage = () => {
     .filter((paper) => filters.subject === 'all' || paper.subject === filters.subject)
     .filter((paper) => filters.year === 'all' || String(paper.year) === String(filters.year)), [papers, role, visibleSubjects, filters]);
   const years = useMemo(() => [...new Set(papers.map((paper) => paper.year).filter(Boolean))].sort((a, b) => Number(b) - Number(a)), [papers]);
+
+
+  const startEditPaper = (paper) => {
+    setEditingPaper(paper);
+    setEditForm({
+      grade: paper.grade || SOUTH_AFRICAN_GRADES[0],
+      region: paper.region || REGIONS[0],
+      subject: paper.subject || DEFAULT_SUBJECT,
+      year: paper.year || new Date().getFullYear(),
+      month: paper.month || PAPER_MONTHS[0],
+      paperNumber: paper.paperNumber || PAPER_NUMBERS[0],
+      notes: paper.notes || '',
+      paperFile: null,
+      memoFile: null,
+      removeMemo: false,
+    });
+  };
+
+  const closeEditPaper = () => {
+    setEditingPaper(null);
+    setEditForm(null);
+  };
+
+  const handleEditSubmit = async (event) => {
+    event.preventDefault();
+    if (!editingPaper || !editForm) return;
+    try {
+      setStatus(`Updating ${editingPaper.displayName || editingPaper.paperFileName || 'paper'}...`);
+      const uploads = editForm.paperFile || editForm.memoFile
+        ? await uploadQuestionPaperDocuments({
+          paperFile: editForm.paperFile,
+          memoFile: editForm.memoFile,
+          uploaderId: profile?.uid ?? 'anonymous',
+          onProgress: (message) => setStatus(`Update: ${message}`),
+        })
+        : {};
+
+      const metadataChanged = ['grade', 'region', 'subject', 'year', 'month', 'paperNumber', 'notes']
+        .some((field) => String(editForm[field] ?? '') !== String(editingPaper[field] ?? ''));
+      const fileChanged = Boolean(editForm.paperFile || editForm.memoFile || editForm.removeMemo);
+      const needsAnalysis = metadataChanged || fileChanged;
+      const patch = {
+        grade: editForm.grade,
+        region: editForm.region,
+        subject: editForm.subject,
+        year: Number(editForm.year),
+        month: editForm.month,
+        paperNumber: editForm.paperNumber,
+        notes: editForm.notes,
+        displayName: `${editForm.subject} • ${editForm.grade} • ${editForm.region} • ${editForm.month} ${editForm.year} • ${editForm.paperNumber}${editingPaper.copySuffix ? ` ${editingPaper.copySuffix}` : ''}`,
+        ...(uploads.paperUrl ? { paperUrl: uploads.paperUrl, paperFileName: uploads.paperFileName, paperMimeType: uploads.paperMimeType } : {}),
+        ...(editForm.removeMemo ? { memoUrl: '', memoFileName: '', memoMimeType: '' } : {}),
+        ...(uploads.memoUrl ? { memoUrl: uploads.memoUrl, memoFileName: uploads.memoFileName, memoMimeType: uploads.memoMimeType } : {}),
+        ...(needsAnalysis ? {
+          analysisStatus: 'Analyzing',
+          availableForGeneration: false,
+          analysisProgressMessage: 'Queued for re-analysis',
+          analysisProgressCurrent: 0,
+          analysisProgressTotal: 1,
+          analysisError: '',
+          analysisRevision: Date.now(),
+          questions: [],
+          topics: [],
+          questionCount: 0,
+        } : {}),
+      };
+      await updateQuestionPaper(editingPaper.id, patch);
+      setPapers((current) => current.map((paper) => paper.id === editingPaper.id ? { ...paper, ...patch } : paper));
+      setStatus(needsAnalysis ? 'Paper updated. Analysis is running again in the background.' : 'Paper updated.');
+      closeEditPaper();
+    } catch (error) {
+      setStatus(error.message || 'Could not update paper.');
+    }
+  };
 
   const saveReviewedPaper = async ({ row, index, total }) => {
     setStatus(`Uploading paper ${index + 1}/${total}: ${row.paperFile.name}`);
@@ -232,6 +308,7 @@ export const PastExamPapersPage = () => {
             <div className="mt-4 flex flex-wrap gap-3 text-sm">
               <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Open paper</Link>
               {paper.memoUrl ? <a className="btn-secondary" href={paper.memoUrl} target="_blank" rel="noreferrer">Open memo</a> : <span className="rounded-full bg-slate-50 px-3 py-2 text-slate-500">No memo uploaded</span>}
+              <button type="button" className="btn-secondary" onClick={() => startEditPaper(paper)}>Edit</button>
             </div>
           </div>
         ))}
@@ -272,6 +349,28 @@ export const PastExamPapersPage = () => {
         )}
         {status ? <p className="text-sm text-slate-600">{status}</p> : null}
       </section>
+
+      {editingPaper && editForm ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-4">
+          <form onSubmit={handleEditSubmit} className="panel max-h-[90dvh] w-full max-w-4xl overflow-y-auto p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.25em] text-brand-700">Edit paper</p>
+                <h2 className="mt-2 text-2xl font-bold text-slate-950">{editingPaper.displayName || editingPaper.paperFileName || 'Question paper'}</h2>
+                <p className="mt-1 text-sm text-slate-500">Changing files or metadata queues the paper for analysis again.</p>
+              </div>
+              <button type="button" className="btn-secondary" onClick={closeEditPaper}>Close</button>
+            </div>
+            <div className="mt-6 grid gap-4 md:grid-cols-2">
+              <UploadFields value={editForm} onChange={(patch) => setEditForm((current) => ({ ...current, ...patch }))} subjects={visibleSubjects} />
+              <label className="md:col-span-2"><span className="label">Replace question paper optional</span><input type="file" className="input" accept=".pdf,.doc,.docx,image/*" onChange={(event) => setEditForm((current) => ({ ...current, paperFile: event.target.files?.[0] ?? null }))} /><span className="mt-1 block text-xs text-slate-500">Current: {editingPaper.paperFileName || 'No paper file name stored'}</span></label>
+              <label className="md:col-span-2"><span className="label">Replace memorandum optional</span><input type="file" className="input" accept=".pdf,.doc,.docx,image/*" onChange={(event) => setEditForm((current) => ({ ...current, memoFile: event.target.files?.[0] ?? null, removeMemo: false }))} /><span className="mt-1 block text-xs text-slate-500">Current: {editingPaper.memoFileName || 'No memo uploaded'}</span></label>
+              {editingPaper.memoUrl ? <label className="md:col-span-2 flex items-center gap-3 text-sm font-semibold text-slate-700"><input type="checkbox" checked={editForm.removeMemo} onChange={(event) => setEditForm((current) => ({ ...current, removeMemo: event.target.checked, memoFile: event.target.checked ? null : current.memoFile }))} /> Remove current memorandum</label> : null}
+              <button type="submit" className="btn-primary md:col-span-2">Save changes and re-analyze if needed</button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </AppShell>
   );
 };

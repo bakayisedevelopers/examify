@@ -245,7 +245,10 @@ const shouldAnalyze = ({ before, after }) => {
   if (after.analysisStatus !== ANALYZING) return false;
   if (!after.paperUrl) return false;
   if (!before) return true;
-  return before.analysisStatus !== ANALYZING || before.paperUrl !== after.paperUrl || before.memoUrl !== after.memoUrl;
+  return before.analysisStatus !== ANALYZING ||
+    before.paperUrl !== after.paperUrl ||
+    before.memoUrl !== after.memoUrl ||
+    before.analysisRevision !== after.analysisRevision;
 };
 
 export const analyzeQuestionPaper = onDocumentWritten(
