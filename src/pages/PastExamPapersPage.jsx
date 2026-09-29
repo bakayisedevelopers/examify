@@ -87,7 +87,8 @@ const buildBulkRows = ({ files, profile }) => {
   });
 };
 
-const PaperAnalysisStatus = ({ paper }) => {
+const PaperAnalysisStatus = ({ paper, visible = true }) => {
+  if (!visible) return null;
   const status = paper.analysisStatus ?? (paper.availableForGeneration ? 'Analyzed' : 'Analyzing');
   const current = Number(paper.analysisProgressCurrent ?? 0);
   const total = Math.max(1, Number(paper.analysisProgressTotal ?? 1));
@@ -316,7 +317,7 @@ export const PastExamPapersPage = () => {
               </div>
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.25em] text-slate-600">{paper.subject}</span>
             </div>
-            <PaperAnalysisStatus paper={paper} />
+            <PaperAnalysisStatus paper={paper} visible={role === ROLES.ADMIN || role === ROLES.TUTOR} />
             <div className="mt-4 flex flex-wrap gap-3 text-sm">
               <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Open paper</Link>
               {paper.memoUrl ? <a className="btn-secondary" href={paper.memoUrl} target="_blank" rel="noreferrer">Open memo</a> : <span className="rounded-full bg-slate-50 px-3 py-2 text-slate-500">No memo uploaded</span>}

@@ -101,13 +101,24 @@ const renderPdfPages = async ({ url, label }) => {
   return pages;
 };
 
-const analyzePageBatches = async ({ pages, paperId, paper, paperRef, progressOffset = 0, progressTotal = 1 }) => {
+const analyzePageBatches = async ({ pages, paperId, paper, paperRef, progressOffset = 0, progressTotal = 1, existingOutputs = [], preservedOutputs = [] }) => {
   const batches = chunk(pages, PAGES_PER_BATCH);
-  const outputs = [];
-  const models = new Set();
+  const outputs = [...existingOutputs];
+  const models = new Set(existingOutputs.map((item) => item.model).filter(Boolean));
 
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
     const batch = batches[batchIndex];
+    const batchPageKey = batch.map((page) => `${page.label}:${page.pageNumber}`).join('|');
+    if (outputs.some((item) => item.batchPageKey === batchPageKey && item.text)) {
+      const extractedPages = progressOffset + Math.min(pages.length, (batchIndex + 1) * PAGES_PER_BATCH);
+      await paperRef?.set({
+        analysisProgressMessage: `${batch[0]?.label ?? 'Document'} [${Math.min(pages.length, (batchIndex + 1) * PAGES_PER_BATCH)}/${pages.length} extracted]`,
+        analysisProgressCurrent: extractedPages,
+        analysisProgressTotal: progressTotal,
+        updatedAt: new Date(),
+      }, { merge: true });
+      continue;
+    }
     const result = await callKiloVisionWithFallback({
       messages: [{
         role: 'user',
@@ -133,16 +144,21 @@ const analyzePageBatches = async ({ pages, paperId, paper, paperRef, progressOff
     });
 
     if (result?.model) models.add(result.model);
-    outputs.push({
+    const output = {
       batchNumber: batchIndex + 1,
+      batchPageKey,
+      model: result?.model ?? '',
       pages: batch.map((page) => ({ label: page.label, pageNumber: page.pageNumber })),
       text: String(result?.text ?? '').trim(),
-    });
+      extractedAt: new Date().toISOString(),
+    };
+    outputs.push(output);
     const extractedPages = progressOffset + Math.min(pages.length, (batchIndex + 1) * PAGES_PER_BATCH);
     await paperRef?.set({
       analysisProgressMessage: `${batch[0]?.label ?? 'Document'} [${Math.min(pages.length, (batchIndex + 1) * PAGES_PER_BATCH)}/${pages.length} extracted]`,
       analysisProgressCurrent: extractedPages,
       analysisProgressTotal: progressTotal,
+      analysisBatchOutputs: [...preservedOutputs, ...outputs].map((item) => ({ ...item, text: item.text.slice(0, 6000) })),
       updatedAt: new Date(),
     }, { merge: true });
   }
@@ -286,10 +302,29 @@ export const analyzeQuestionPaper = onDocumentWritten(
         updatedAt: new Date(),
       }, { merge: true });
 
-      const paperResult = await analyzePageBatches({ pages: paperPages, paperId, paper, paperRef, progressOffset: 0, progressTotal: Math.max(1, paperPages.length + memoPages.length + 1) });
+      const existingBatchOutputs = Array.isArray(paper.analysisBatchOutputs) ? paper.analysisBatchOutputs : [];
+      const paperResult = await analyzePageBatches({
+        pages: paperPages,
+        paperId,
+        paper,
+        paperRef,
+        progressOffset: 0,
+        progressTotal: Math.max(1, paperPages.length + memoPages.length + 1),
+        existingOutputs: existingBatchOutputs.filter((item) => item.pages?.some((page) => page.label === 'Question paper')),
+        preservedOutputs: existingBatchOutputs.filter((item) => item.pages?.some((page) => page.label === 'Memorandum')),
+      });
       await paperRef.set({ analysisProgressMessage: `Question paper [${paperPages.length}/${paperPages.length} extracted]`, analysisProgressCurrent: paperPages.length, updatedAt: new Date() }, { merge: true });
 
-      const memoResult = memoPages.length ? await analyzePageBatches({ pages: memoPages, paperId, paper, paperRef, progressOffset: paperPages.length, progressTotal: Math.max(1, paperPages.length + memoPages.length + 1) }) : { outputs: [], models: [] };
+      const memoResult = memoPages.length ? await analyzePageBatches({
+        pages: memoPages,
+        paperId,
+        paper,
+        paperRef,
+        progressOffset: paperPages.length,
+        progressTotal: Math.max(1, paperPages.length + memoPages.length + 1),
+        existingOutputs: existingBatchOutputs.filter((item) => item.pages?.some((page) => page.label === 'Memorandum')),
+        preservedOutputs: paperResult.outputs,
+      }) : { outputs: [], models: [] };
       await paperRef.set({ analysisProgressMessage: 'AI text model [Structuring question index]', analysisProgressCurrent: paperPages.length + memoPages.length, updatedAt: new Date() }, { merge: true });
 
       const analysis = await normalizeAnalysis({
@@ -307,6 +342,7 @@ export const analyzeQuestionPaper = onDocumentWritten(
         questions: analysis.questions,
         questionCount: analysis.questions.length,
         topics: analysis.topics,
+        analysisBatchOutputs: [...paperResult.outputs, ...memoResult.outputs].map((item) => ({ ...item, text: item.text.slice(0, 6000) })),
         paperDocumentAnalysis: paperResult.outputs.map((item) => item.text).filter(Boolean).join('\n\n').slice(0, 45000),
         memoDocumentAnalysis: memoResult.outputs.map((item) => item.text).filter(Boolean).join('\n\n').slice(0, 25000),
         paperDocumentAnalysisModel: paperResult.models.join(', '),
@@ -332,8 +368,8 @@ export const analyzeQuestionPaper = onDocumentWritten(
         availableForGeneration: false,
         analysisError: error?.message ?? String(error),
         analysisProgressMessage: 'Analysis failed. Upload a clearer PDF or retry later.',
-        analysisProgressCurrent: 0,
-        analysisProgressTotal: 1,
+        analysisProgressCurrent: paper.analysisProgressCurrent ?? 0,
+        analysisProgressTotal: paper.analysisProgressTotal ?? 1,
         updatedAt: new Date(),
       }, { merge: true });
     }

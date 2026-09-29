@@ -42,6 +42,42 @@ const TodayExerciseCard = ({ exercise, onOpen }) => {
   );
 };
 
+
+const ReadinessChecklist = ({ rows }) => {
+  if (!rows.length) return null;
+  const labels = {
+    paymentCompleted: 'Payment active',
+    latestTutorReportExists: 'Tutor initial report added',
+    minimumQuestionPaperCountMet: 'At least 2 analyzed papers available',
+    lessonCompleted: 'At least 1 completed lesson logged',
+    initialGenerationExists: 'Initial AI plan already generated',
+  };
+  return (
+    <div className="panel space-y-4 p-5">
+      <div>
+        <p className="text-sm font-semibold uppercase tracking-[0.25em] text-brand-700">AI readiness</p>
+        <h2 className="mt-2 text-xl font-bold text-slate-950">What is needed before exercises can generate</h2>
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        {rows.map((row) => (
+          <div key={`${row.subject}-${row.mode}`} className="rounded-2xl bg-slate-50 p-4">
+            <p className="font-semibold text-slate-950">{row.subject} • {row.mode === 'initial' ? 'First generation' : 'Weekly generation'}</p>
+            <div className="mt-3 space-y-2">
+              {Object.entries(row.checks).map(([key, passed]) => (
+                <div key={key} className="flex items-center justify-between gap-3 text-sm">
+                  <span className="text-slate-600">{labels[key] ?? key}</span>
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${passed ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{passed ? 'Done' : 'Missing'}</span>
+                </div>
+              ))}
+            </div>
+            <p className="mt-3 text-xs text-slate-500">Papers available: {row.availablePaperCount}. Completed lessons: {row.completedLessonCount}.</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 export const StudentDashboardPage = () => {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
@@ -60,6 +96,7 @@ export const StudentDashboardPage = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
   const [generationMessage, setGenerationMessage] = useState('');
+  const [readinessRows, setReadinessRows] = useState([]);
 
   useEffect(() => {
     setActiveTab(searchParams.get('tab') === 'mark' ? 'mark' : 'exercises');
@@ -99,16 +136,20 @@ export const StudentDashboardPage = () => {
       try {
         setLoadError('');
         const loadedExercises = [];
+        const readiness = [];
         let anyPaidSubject = false;
 
         for (const subject of availableSubjects) {
           const access = await getStudentAccessState(profile, subject);
           anyPaidSubject = anyPaidSubject || Boolean(access.paymentCompleted);
 
-          if (access.paymentCompleted && access.initialGenerationReady) {
-            await runGeneratePlan(subject, 'initial');
-          } else if (access.paymentCompleted && access.weeklyGenerationReady) {
-            await runGeneratePlan(subject, 'weekly');
+          const mode = access.hasInitialGeneration ? 'weekly' : 'initial';
+          const modeStatus = access.generationStatus?.[mode];
+          const shouldGenerate = access.paymentCompleted && ((mode === 'initial' && access.initialGenerationReady) || (mode === 'weekly' && access.weeklyGenerationReady));
+          if (shouldGenerate) {
+            await runGeneratePlan(subject, mode);
+          } else if (!modeStatus?.ready) {
+            readiness.push({ subject, mode, checks: modeStatus?.checks ?? {}, availablePaperCount: access.matchingQuestionPapers?.length ?? 0, completedLessonCount: access.completedLessons?.length ?? 0 });
           }
 
           const today = await getTodayExercise(profile.uid, subject);
@@ -119,10 +160,12 @@ export const StudentDashboardPage = () => {
         setPaymentLocked(!anyPaidSubject);
         setTodayExercises(loadedExercises.sort((left, right) => String(left.subject).localeCompare(String(right.subject))));
         setPeerAssignments(await getPeerMarkingAssignmentsForStudent(profile.uid));
+        setReadinessRows(readiness);
         setGenerationProgress(100);
       } catch (error) {
         if (!active) return;
         setTodayExercises([]);
+        setReadinessRows([]);
         setLoadError(error?.message ?? 'Some exercises could not be loaded yet.');
       } finally {
         if (active) setTimeout(() => setIsGenerating(false), 500);
@@ -164,6 +207,8 @@ export const StudentDashboardPage = () => {
           </div>
         </div>
       ) : null}
+
+      {!isGenerating ? <ReadinessChecklist rows={readinessRows} /> : null}
 
       <div className="panel mx-auto flex w-fit justify-center gap-2 p-2">
         <button type="button" className={activeTab === 'exercises' ? 'btn-primary' : 'btn-secondary'} onClick={() => selectTab('exercises')}>Exercises</button>
