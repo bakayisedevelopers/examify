@@ -70,6 +70,7 @@ const ReadinessChecklist = ({ rows }) => {
                 </div>
               ))}
             </div>
+            {row.reason ? <p className="mt-3 rounded-xl bg-amber-50 p-3 text-xs font-medium text-amber-700">{row.reason}</p> : null}
             <p className="mt-3 text-xs text-slate-500">Papers available: {row.availablePaperCount}. Completed lessons: {row.completedLessonCount}.</p>
           </div>
         ))}
@@ -147,7 +148,18 @@ export const StudentDashboardPage = () => {
           const modeStatus = access.generationStatus?.[mode];
           const shouldGenerate = access.paymentCompleted && ((mode === 'initial' && access.initialGenerationReady) || (mode === 'weekly' && access.weeklyGenerationReady));
           if (shouldGenerate) {
-            await runGeneratePlan(subject, mode);
+            const result = await runGeneratePlan(subject, mode);
+            if (!result?.generated) {
+              const resultStatus = result?.criteria?.[mode] ?? modeStatus;
+              readiness.push({
+                subject,
+                mode,
+                checks: resultStatus?.checks ?? modeStatus?.checks ?? {},
+                availablePaperCount: result?.criteria?.analyzedPaperCount ?? access.matchingQuestionPapers?.length ?? 0,
+                completedLessonCount: access.completedLessons?.length ?? 0,
+                reason: result?.reason ?? 'Generation did not complete.',
+              });
+            }
           } else if (!modeStatus?.ready) {
             readiness.push({ subject, mode, checks: modeStatus?.checks ?? {}, availablePaperCount: access.matchingQuestionPapers?.length ?? 0, completedLessonCount: access.completedLessons?.length ?? 0 });
           }
