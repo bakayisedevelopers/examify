@@ -1,6 +1,6 @@
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { logger } from 'firebase-functions';
-import { getDb } from './admin.js';
+import { admin, getDb } from './admin.js';
 
 const hasSubmission = (data = {}) => Boolean(data.submittedImageUrl && data.submittedFileName);
 
@@ -70,6 +70,66 @@ const buildAssignments = ({ submitted, completedToday, recentReviewees }) => {
   return assignments;
 };
 
+
+const sendPeerMarkingNotifications = async ({ db, assignments }) => {
+  await Promise.all(assignments.map(async ({ assignmentId, reviewer, target, cohort }) => {
+    const tokensSnapshot = await db.collection('users')
+      .doc(reviewer.studentId)
+      .collection('notificationTokens')
+      .where('active', '==', true)
+      .get();
+    const tokenRows = tokensSnapshot.docs.map((doc) => ({ id: doc.id, ref: doc.ref, ...doc.data() })).filter((row) => row.token);
+    if (!tokenRows.length) {
+      logger.info('Peer marking notification skipped because reviewer has no active tokens', { reviewerId: reviewer.studentId, assignmentId });
+      return;
+    }
+
+    const response = await admin.messaging().sendEachForMulticast({
+      tokens: tokenRows.map((row) => row.token),
+      notification: {
+        title: 'New work to mark',
+        body: `${target.subject ?? cohort.subject} ${target.title ?? 'exercise'} is ready for peer marking.`,
+      },
+      webpush: {
+        fcmOptions: { link: '/student?tab=mark' },
+        notification: {
+          icon: '/logo.png',
+          badge: '/logo.png',
+          tag: `peer-marking-${assignmentId}`,
+          requireInteraction: true,
+        },
+      },
+      data: {
+        type: 'peer-marking-assigned',
+        assignmentId,
+        exerciseId: target.id,
+        subject: String(target.subject ?? cohort.subject ?? ''),
+        assignmentDate: String(cohort.assignmentDate ?? ''),
+        url: '/student?tab=mark',
+        tag: `peer-marking-${assignmentId}`,
+      },
+    });
+
+    const cleanupBatch = db.batch();
+    response.responses.forEach((result, index) => {
+      const code = result.error?.code ?? '';
+      if (code.includes('registration-token-not-registered') || code.includes('invalid-registration-token')) {
+        cleanupBatch.set(tokenRows[index].ref, { active: false, invalidatedAt: new Date(), invalidationReason: code }, { merge: true });
+      }
+    });
+    cleanupBatch.set(db.collection('notificationLogs').doc(), {
+      type: 'peer-marking-assigned',
+      reviewerId: reviewer.studentId,
+      revieweeId: target.studentId,
+      assignmentId,
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+      createdAt: new Date(),
+    });
+    await cleanupBatch.commit();
+  }));
+};
+
 export const assignPeerMarkingOnSubmission = onDocumentWritten(
   { document: 'dailyExerciseAssignments/{exerciseId}', timeoutSeconds: 120, memory: '512MiB' },
   async (event) => {
@@ -128,8 +188,18 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
       .filter((doc) => doc.data().status !== 'completed')
       .forEach((doc) => batch.delete(doc.ref));
 
+    const existingPairKeys = new Set(existingSnapshot.docs.map((doc) => {
+      const data = doc.data();
+      return `${data.reviewerId}|${data.exerciseId}`;
+    }));
+    const notificationJobs = [];
+
     pairs.forEach(({ reviewer, target }) => {
       const assignmentId = safeId(`${cohort.assignmentDate}_${cohort.grade}_${cohort.subject}_${reviewer.studentId}_${target.id}`);
+      const pairKey = `${reviewer.studentId}|${target.id}`;
+      if (!existingPairKeys.has(pairKey)) {
+        notificationJobs.push({ assignmentId, reviewer, target, cohort });
+      }
       batch.set(db.collection('peerMarkingAssignments').doc(assignmentId), {
         reviewerId: reviewer.studentId,
         revieweeId: target.studentId,
@@ -151,6 +221,7 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
     });
 
     await batch.commit();
-    logger.info('Peer marking assignments refreshed', { cohort, submittedCount: submitted.length, pairCount: pairs.length });
+    await sendPeerMarkingNotifications({ db, assignments: notificationJobs });
+    logger.info('Peer marking assignments refreshed', { cohort, submittedCount: submitted.length, pairCount: pairs.length, notificationCount: notificationJobs.length });
   }
 );

@@ -12,6 +12,7 @@ export const collections = {
   submissions: 'submissions',
   peerReviews: 'peerReviews',
   peerMarkingAssignments: 'peerMarkingAssignments',
+  notificationLogs: 'notificationLogs',
   tutorReports: 'tutorReports',
   tutorMarksDocuments: 'tutorMarksDocuments',
   questionPapers: 'questionPapers',

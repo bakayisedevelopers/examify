@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { subscribePeerMarkingAssignmentsForStudent } from '../../services/firestoreService';
+import { getNotificationSupportState, registerStudentNotificationDevice } from '../../services/notificationService';
 
 const getNotificationPermission = () => {
   if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported';
@@ -15,6 +16,8 @@ const buildAssignmentText = (assignment) => {
 export const StudentNotificationGate = ({ profile, children }) => {
   const [permission, setPermission] = useState(getNotificationPermission);
   const [error, setError] = useState('');
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [deviceRegistered, setDeviceRegistered] = useState(false);
   const initializedRef = useRef(false);
   const seenAssignmentsRef = useRef(new Set());
 
@@ -23,7 +26,7 @@ export const StudentNotificationGate = ({ profile, children }) => {
   }, []);
 
   useEffect(() => {
-    if (!profile?.uid || permission !== 'granted') return undefined;
+    if (!profile?.uid || permission !== 'granted' || !deviceRegistered) return undefined;
 
     return subscribePeerMarkingAssignmentsForStudent(profile.uid, (assignments) => {
       const openAssignments = assignments.filter((assignment) => assignment.status !== 'completed');
@@ -50,27 +53,47 @@ export const StudentNotificationGate = ({ profile, children }) => {
         };
       });
     });
-  }, [permission, profile?.uid]);
+  }, [deviceRegistered, permission, profile?.uid]);
 
   const requestPermission = async () => {
     setError('');
+    setIsRegistering(true);
     if (getNotificationPermission() === 'unsupported') {
       setPermission('unsupported');
+      setIsRegistering(false);
       return;
     }
 
     try {
+      const support = await getNotificationSupportState();
+      if (!support.supported) {
+        throw new Error('This browser cannot receive Examifying push notifications.');
+      }
+
       const result = await Notification.requestPermission();
       setPermission(result);
       if (result !== 'granted') {
         setError('Notifications are required before students can access today’s exercises. Enable browser notifications for Examifying and try again.');
+        return;
       }
+
+      await registerStudentNotificationDevice(profile.uid);
+      setDeviceRegistered(true);
     } catch (requestError) {
       setError(requestError?.message ?? 'Could not request notification permission.');
+    } finally {
+      setIsRegistering(false);
     }
   };
 
-  if (permission === 'granted') return children;
+  useEffect(() => {
+    if (permission !== 'granted' || !profile?.uid || deviceRegistered) return;
+    registerStudentNotificationDevice(profile.uid)
+      .then(() => setDeviceRegistered(true))
+      .catch((registrationError) => setError(registrationError?.message ?? 'Could not register this browser for notifications.'));
+  }, [deviceRegistered, permission, profile?.uid]);
+
+  if (permission === 'granted' && deviceRegistered) return children;
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-slate-100 p-6 text-slate-900">
@@ -95,12 +118,12 @@ export const StudentNotificationGate = ({ profile, children }) => {
           type="button"
           className="btn-primary mt-6 w-full"
           onClick={requestPermission}
-          disabled={permission === 'unsupported' || permission === 'denied'}
+          disabled={isRegistering || permission === 'unsupported' || permission === 'denied'}
         >
-          Enable notifications
+          {isRegistering ? 'Enabling notifications...' : 'Enable notifications'}
         </button>
         <p className="mt-4 text-xs text-slate-500">
-          Access to today’s exercises and peer marking will unlock after permission is granted.
+          Access to today’s exercises and peer marking will unlock after browser permission is granted and this device is saved for push notifications.
         </p>
       </div>
     </div>
