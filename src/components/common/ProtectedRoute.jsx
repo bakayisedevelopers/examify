@@ -1,5 +1,7 @@
 import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
+import { ROLES } from '../../lib/constants';
+import { StudentNotificationGate } from './StudentNotificationGate';
 
 export const ProtectedRoute = ({ allowedRoles }) => {
   const { loading, profile } = useAuth();
@@ -14,6 +16,14 @@ export const ProtectedRoute = ({ allowedRoles }) => {
 
   if (allowedRoles && !allowedRoles.includes(profile.role)) {
     return <Navigate to={`/${profile.role}`} replace />;
+  }
+
+  if (profile.role === ROLES.STUDENT && allowedRoles?.includes(ROLES.STUDENT)) {
+    return (
+      <StudentNotificationGate profile={profile}>
+        <Outlet />
+      </StudentNotificationGate>
+    );
   }
 
   return <Outlet />;

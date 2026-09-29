@@ -1102,6 +1102,26 @@ export const getPeerMarkingAssignmentsForStudent = async (reviewerId) => {
     .sort((left, right) => String(right.assignmentDate ?? '').localeCompare(String(left.assignmentDate ?? '')));
 };
 
+
+export const subscribePeerMarkingAssignmentsForStudent = (reviewerId, onChange) => {
+  if (!reviewerId || !isFirebaseConfigured) {
+    onChange([]);
+    return () => {};
+  }
+  ensureDb();
+  const peerQuery = query(
+    collection(db, collections.peerMarkingAssignments),
+    where('reviewerId', '==', reviewerId),
+  );
+  return onSnapshot(peerQuery, (snapshot) => {
+    const rows = snapshot.docs
+      .map((item) => ({ id: item.id, ...item.data() }))
+      .filter((item) => item.status !== 'completed')
+      .sort((left, right) => String(right.assignmentDate ?? '').localeCompare(String(left.assignmentDate ?? '')));
+    onChange(rows);
+  });
+};
+
 export const completePeerMarkingAssignment = async ({ assignmentId, reviewImageUrl, reviewFileName }) => {
   if (!assignmentId) throw new Error('Peer marking assignment id is required.');
   if (!isFirebaseConfigured) return { id: assignmentId, reviewImageUrl, reviewFileName, status: 'completed' };

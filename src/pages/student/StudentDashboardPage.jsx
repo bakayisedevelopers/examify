@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { MarkingCanvas as ImageEditor } from '../../components/canvas/pictureEditorCanvas';
 import { SectionHeader } from '../../components/common/SectionHeader';
@@ -45,13 +45,14 @@ const TodayExerciseCard = ({ exercise, onOpen }) => {
 export const StudentDashboardPage = () => {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const availableSubjects = useMemo(() => {
     const subjects = getUserSubjects(profile);
     return subjects.length ? subjects : [DEFAULT_SUBJECT];
   }, [profile]);
   const [todayExercises, setTodayExercises] = useState([]);
   const [peerAssignments, setPeerAssignments] = useState([]);
-  const [activeTab, setActiveTab] = useState('exercises');
+  const [activeTab, setActiveTab] = useState(searchParams.get('tab') === 'mark' ? 'mark' : 'exercises');
   const [markSubjectFilter, setMarkSubjectFilter] = useState('all');
   const [reviewingAssignment, setReviewingAssignment] = useState(null);
   const [loadError, setLoadError] = useState('');
@@ -59,6 +60,15 @@ export const StudentDashboardPage = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
   const [generationMessage, setGenerationMessage] = useState('');
+
+  useEffect(() => {
+    setActiveTab(searchParams.get('tab') === 'mark' ? 'mark' : 'exercises');
+  }, [searchParams]);
+
+  const selectTab = (tab) => {
+    setActiveTab(tab);
+    setSearchParams(tab === 'mark' ? { tab: 'mark' } : {});
+  };
 
   useEffect(() => {
     let active = true;
@@ -156,8 +166,8 @@ export const StudentDashboardPage = () => {
       ) : null}
 
       <div className="panel mx-auto flex w-fit justify-center gap-2 p-2">
-        <button type="button" className={activeTab === 'exercises' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('exercises')}>Exercises</button>
-        <button type="button" className={activeTab === 'mark' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('mark')}>Mark</button>
+        <button type="button" className={activeTab === 'exercises' ? 'btn-primary' : 'btn-secondary'} onClick={() => selectTab('exercises')}>Exercises</button>
+        <button type="button" className={activeTab === 'mark' ? 'btn-primary' : 'btn-secondary'} onClick={() => selectTab('mark')}>Mark</button>
       </div>
 
       {activeTab === 'exercises' ? (
