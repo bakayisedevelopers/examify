@@ -106,6 +106,7 @@ export const PastExamPapersPage = () => {
   const [uploadTab, setUploadTab] = useState('single');
   const [singleForm, setSingleForm] = useState(defaultPaperForm(profile));
   const [bulkRows, setBulkRows] = useState([]);
+  const [bulkMemoFiles, setBulkMemoFiles] = useState([]);
   const [filters, setFilters] = useState({ subject: 'all', year: 'all' });
   const [editingPaper, setEditingPaper] = useState(null);
   const [editForm, setEditForm] = useState(null);
@@ -254,8 +255,10 @@ export const PastExamPapersPage = () => {
   };
 
   const handleBulkFiles = (event) => {
-    const rows = buildBulkRows({ files: event.target.files, profile });
+    const files = Array.from(event.target.files ?? []);
+    const rows = buildBulkRows({ files, profile });
     setBulkRows(rows);
+    setBulkMemoFiles(files.filter(isMemoFile));
     setStatus(rows.length ? `${rows.length} question paper${rows.length === 1 ? '' : 's'} prepared for review.` : 'No question paper files were detected. Include paper files and optional memo files.');
   };
 
@@ -274,6 +277,7 @@ export const PastExamPapersPage = () => {
       }
       setPapers((current) => [...saved, ...current.filter((paper) => !saved.some((item) => item.id === paper.id))]);
       setBulkRows([]);
+      setBulkMemoFiles([]);
       setStatus(`${saved.length} paper${saved.length === 1 ? '' : 's'} saved. Analysis is running for each paper.`);
     } catch (error) {
       setStatus(error.message || 'Bulk upload failed.');
@@ -331,19 +335,51 @@ export const PastExamPapersPage = () => {
         ) : (
           <div className="space-y-4">
             <label className="block"><span className="label">Bulk files</span><input type="file" className="input" multiple accept=".pdf,.doc,.docx,image/*" onChange={handleBulkFiles} /><span className="mt-1 block text-xs text-slate-500">Select question papers and optional memos together. The app will infer metadata and pair memos by filename similarity before upload.</span></label>
-            <div className="space-y-4">
-              {bulkRows.map((row, index) => (
-                <div key={row.id} className="rounded-2xl border border-slate-200 p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div><p className="font-semibold text-slate-950">{index + 1}. {row.paperFile.name}</p><p className="text-sm text-slate-500">Memo: {row.memoFile?.name ?? 'None linked'}</p></div>
-                    <button type="button" className="btn-secondary text-sm" onClick={() => removeBulkRow(row.id)}>Remove</button>
-                  </div>
-                  <div className="mt-4 grid gap-3 md:grid-cols-3">
-                    <UploadFields value={row} onChange={(patch) => updateBulkRow(row.id, patch)} subjects={visibleSubjects} compact />
-                  </div>
+            {bulkRows.length ? (
+              <div className="w-full overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                <div className="overflow-x-auto overscroll-x-contain">
+                  <table className="min-w-[1180px] border-collapse text-left text-sm">
+                    <thead className="bg-slate-50 text-xs uppercase tracking-[0.2em] text-slate-500">
+                      <tr>
+                        <th className="w-12 px-4 py-3 font-semibold">#</th>
+                        <th className="min-w-64 px-4 py-3 font-semibold">Question paper</th>
+                        <th className="min-w-56 px-4 py-3 font-semibold">Linked memo</th>
+                        <th className="min-w-56 px-4 py-3 font-semibold">Subject</th>
+                        <th className="min-w-40 px-4 py-3 font-semibold">Grade</th>
+                        <th className="min-w-44 px-4 py-3 font-semibold">Region</th>
+                        <th className="min-w-32 px-4 py-3 font-semibold">Year</th>
+                        <th className="min-w-40 px-4 py-3 font-semibold">Month</th>
+                        <th className="min-w-40 px-4 py-3 font-semibold">Paper</th>
+                        <th className="min-w-64 px-4 py-3 font-semibold">Notes</th>
+                        <th className="min-w-28 px-4 py-3 font-semibold">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {bulkRows.map((row, index) => (
+                        <tr key={row.id} className="align-top">
+                          <td className="px-4 py-3 font-semibold text-slate-500">{index + 1}</td>
+                          <td className="px-4 py-3"><p className="font-semibold text-slate-950">{row.paperFile.name}</p><p className="mt-1 text-xs text-slate-500">{Math.round((row.paperFile.size || 0) / 1024)} KB</p></td>
+                          <td className="px-4 py-3">
+                            <select className="input min-w-52" value={row.memoFile?.name ?? ''} onChange={(event) => updateBulkRow(row.id, { memoFile: bulkMemoFiles.find((file) => file.name === event.target.value) ?? null })}>
+                              <option value="">No memo linked</option>
+                              {bulkMemoFiles.map((memoFile) => <option key={`${row.id}-${memoFile.name}`} value={memoFile.name}>{memoFile.name}</option>)}
+                            </select>
+                          </td>
+                          <td className="px-4 py-3"><select className="input min-w-52" value={row.subject} onChange={(event) => updateBulkRow(row.id, { subject: event.target.value })}>{visibleSubjects.map((subject) => <option key={subject}>{subject}</option>)}</select></td>
+                          <td className="px-4 py-3"><select className="input min-w-36" value={row.grade} onChange={(event) => updateBulkRow(row.id, { grade: event.target.value })}>{SOUTH_AFRICAN_GRADES.map((grade) => <option key={grade}>{grade}</option>)}</select></td>
+                          <td className="px-4 py-3"><select className="input min-w-40" value={row.region} onChange={(event) => updateBulkRow(row.id, { region: event.target.value })}>{REGIONS.map((region) => <option key={region}>{region}</option>)}</select></td>
+                          <td className="px-4 py-3"><input type="number" min="2000" max="2100" className="input min-w-28" value={row.year} onChange={(event) => updateBulkRow(row.id, { year: event.target.value })} /></td>
+                          <td className="px-4 py-3"><select className="input min-w-36" value={row.month} onChange={(event) => updateBulkRow(row.id, { month: event.target.value })}>{PAPER_MONTHS.map((month) => <option key={month}>{month}</option>)}</select></td>
+                          <td className="px-4 py-3"><select className="input min-w-36" value={row.paperNumber} onChange={(event) => updateBulkRow(row.id, { paperNumber: event.target.value })}>{PAPER_NUMBERS.map((paperNumber) => <option key={paperNumber}>{paperNumber}</option>)}</select></td>
+                          <td className="px-4 py-3"><input className="input min-w-60" value={row.notes} onChange={(event) => updateBulkRow(row.id, { notes: event.target.value })} placeholder="Optional notes" /></td>
+                          <td className="px-4 py-3"><button type="button" className="btn-secondary text-sm" onClick={() => removeBulkRow(row.id)}>Remove</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              ))}
-            </div>
+              </div>
+            ) : null}
             {bulkRows.length ? <button type="button" className="btn-primary w-full" onClick={handleBulkSubmit}>Upload reviewed papers</button> : null}
           </div>
         )}
