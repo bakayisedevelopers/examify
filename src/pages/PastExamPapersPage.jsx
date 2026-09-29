@@ -161,6 +161,24 @@ export const PastExamPapersPage = () => {
     setEditForm(null);
   };
 
+
+  const queuePaperReanalysis = async (paper) => {
+    if (!paper?.id) return;
+    const patch = {
+      analysisStatus: 'Analyzing',
+      availableForGeneration: false,
+      analysisProgressMessage: 'Retry queued by admin',
+      analysisProgressCurrent: 0,
+      analysisProgressTotal: Math.max(1, Number(paper.analysisProgressTotal ?? 1)),
+      analysisError: '',
+      analysisRevision: Date.now(),
+    };
+    setStatus(`Retrying analysis for ${paper.displayName || paper.paperFileName || 'paper'}...`);
+    await updateQuestionPaper(paper.id, patch);
+    setPapers((current) => current.map((item) => item.id === paper.id ? { ...item, ...patch } : item));
+    setStatus('Analysis retry queued. The status should change to Analyzing and progress will update when the backend starts.');
+  };
+
   const handleEditSubmit = async (event) => {
     event.preventDefault();
     if (!editingPaper || !editForm) return;
@@ -178,7 +196,8 @@ export const PastExamPapersPage = () => {
       const metadataChanged = ['grade', 'region', 'subject', 'year', 'month', 'paperNumber', 'notes']
         .some((field) => String(editForm[field] ?? '') !== String(editingPaper[field] ?? ''));
       const fileChanged = Boolean(editForm.paperFile || editForm.memoFile || editForm.removeMemo);
-      const needsAnalysis = metadataChanged || fileChanged;
+      const retryFailedAnalysis = editingPaper.analysisStatus === 'Failed';
+      const needsAnalysis = metadataChanged || fileChanged || retryFailedAnalysis;
       const patch = {
         grade: editForm.grade,
         region: editForm.region,
@@ -194,7 +213,7 @@ export const PastExamPapersPage = () => {
         ...(needsAnalysis ? {
           analysisStatus: 'Analyzing',
           availableForGeneration: false,
-          analysisProgressMessage: 'Queued for re-analysis',
+          analysisProgressMessage: retryFailedAnalysis && !metadataChanged && !fileChanged ? 'Retry queued by admin' : 'Queued for re-analysis',
           analysisProgressCurrent: 0,
           analysisProgressTotal: 1,
           analysisError: '',
@@ -322,6 +341,7 @@ export const PastExamPapersPage = () => {
               <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Open paper</Link>
               {paper.memoUrl ? <a className="btn-secondary" href={paper.memoUrl} target="_blank" rel="noreferrer">Open memo</a> : <span className="rounded-full bg-slate-50 px-3 py-2 text-slate-500">No memo uploaded</span>}
               <button type="button" className="btn-secondary" onClick={() => startEditPaper(paper)}>Edit</button>
+              {role === ROLES.ADMIN && paper.analysisStatus === 'Failed' ? <button type="button" className="btn-primary" onClick={() => queuePaperReanalysis(paper)}>Retry analysis</button> : null}
             </div>
           </div>
         ))}
@@ -418,7 +438,10 @@ export const PastExamPapersPage = () => {
               <label className="md:col-span-2"><span className="label">Replace question paper optional</span><input type="file" className="input" accept=".pdf,.doc,.docx,image/*" onChange={(event) => setEditForm((current) => ({ ...current, paperFile: event.target.files?.[0] ?? null }))} /><span className="mt-1 block text-xs text-slate-500">Current: {editingPaper.paperFileName || 'No paper file name stored'}</span></label>
               <label className="md:col-span-2"><span className="label">Replace memorandum optional</span><input type="file" className="input" accept=".pdf,.doc,.docx,image/*" onChange={(event) => setEditForm((current) => ({ ...current, memoFile: event.target.files?.[0] ?? null, removeMemo: false }))} /><span className="mt-1 block text-xs text-slate-500">Current: {editingPaper.memoFileName || 'No memo uploaded'}</span></label>
               {editingPaper.memoUrl ? <label className="md:col-span-2 flex items-center gap-3 text-sm font-semibold text-slate-700"><input type="checkbox" checked={editForm.removeMemo} onChange={(event) => setEditForm((current) => ({ ...current, removeMemo: event.target.checked, memoFile: event.target.checked ? null : current.memoFile }))} /> Remove current memorandum</label> : null}
-              <button type="submit" className="btn-primary md:col-span-2">Save changes and re-analyze if needed</button>
+              <div className="flex flex-wrap gap-3 md:col-span-2">
+                <button type="submit" className="btn-primary">Save changes and re-analyze if needed</button>
+                {role === ROLES.ADMIN && editingPaper.analysisStatus === 'Failed' ? <button type="button" className="btn-secondary" onClick={() => queuePaperReanalysis(editingPaper).then(closeEditPaper).catch((error) => setStatus(error.message || 'Could not retry analysis.'))}>Retry failed analysis</button> : null}
+              </div>
             </div>
           </form>
         </div>
