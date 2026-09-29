@@ -2,12 +2,13 @@ import { useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
 import { updateUserProfileDetails } from '../../services/authService';
-import { ROLES } from '../../lib/constants';
+import { ROLES, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
 
 export const ProfilePersonalDetailsPage = ({ role }) => {
   const { profile, logout, refreshProfile, isDemoMode } = useAuth();
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
   const [previousYearMark, setPreviousYearMark] = useState(profile?.previousYearMark ?? 0);
+  const [grade, setGrade] = useState(profile?.grade || SOUTH_AFRICAN_GRADES[0]);
   const [password, setPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
@@ -22,6 +23,7 @@ export const ProfilePersonalDetailsPage = ({ role }) => {
         uid: profile?.uid,
         displayName,
         previousYearMark: role === ROLES.STUDENT ? previousYearMark : undefined,
+        grade: role === ROLES.STUDENT ? grade : undefined,
         newPassword: password || undefined,
       });
       if (!isDemoMode) await refreshProfile(profile.uid);
@@ -47,10 +49,18 @@ export const ProfilePersonalDetailsPage = ({ role }) => {
           <input className="input" value={profile?.email ?? ''} disabled />
         </label>
         {role === ROLES.STUDENT ? (
-          <label>
-            <span className="label">Previous year mark (%)</span>
-            <input type="number" min="0" max="100" className="input" value={previousYearMark} onChange={(event) => setPreviousYearMark(event.target.value)} required />
-          </label>
+          <>
+            <label>
+              <span className="label">Grade</span>
+              <select className="input" value={grade} onChange={(event) => setGrade(event.target.value)} required>
+                {SOUTH_AFRICAN_GRADES.map((item) => <option key={item}>{item}</option>)}
+              </select>
+            </label>
+            <label>
+              <span className="label">Previous year mark (%)</span>
+              <input type="number" min="0" max="100" className="input" value={previousYearMark} onChange={(event) => setPreviousYearMark(event.target.value)} required />
+            </label>
+          </>
         ) : null}
         <label>
           <span className="label">New password</span>

@@ -28,16 +28,21 @@ export const LoginPage = () => {
   const { login } = useAuth();
   const [form, setForm] = useState({ email: 'something@example.com', password: 'password123' });
   const [status, setStatus] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   const redirectByRole = (role) => navigate(`/${role}`);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+    setIsLoggingIn(true);
+    setStatus('');
     try {
       const result = await login(form);
       redirectByRole(result.profile.role);
     } catch (error) {
       setStatus(error.message);
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -65,11 +70,11 @@ export const LoginPage = () => {
           </div>
           <label className="block">
             <span className="label">Email</span>
-            <input className="input" value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} />
+            <input className="input" value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} disabled={isLoggingIn} />
           </label>
           <label className="block">
             <span className="label">Password</span>
-            <input type="password" className="input" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} />
+            <input type="password" className="input" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} disabled={isLoggingIn} />
           </label>
           <div className="md:col-span-2 flex items-start gap-3 text-sm text-slate-600">
             <p>
@@ -85,7 +90,7 @@ export const LoginPage = () => {
               </Link>.
             </p>
           </div>
-          <button type="submit" className="btn-primary w-full">Login</button>
+          <button type="submit" className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-70" disabled={isLoggingIn}>{isLoggingIn ? 'Logging in...' : 'Login'}</button>
           {status ? <p className="text-sm text-rose-600">{status}</p> : null}
           <p className="text-sm text-slate-500">Need an account? <Link to="/signup" className="font-semibold text-brand-700">Create one</Link>.</p>
         </form>

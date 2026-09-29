@@ -14,7 +14,6 @@ const navigationByRole = {
   ],
   [ROLES.TUTOR]: [
     { to: '/tutor', label: 'Overview', icon: LayoutDashboard },
-    { to: '/tutor/students', label: 'Students', icon: Users },
     { to: '/tutor/papers', label: 'Past papers', icon: BookOpen },
     { to: '/tutor/reports', label: 'Reports', icon: FileText },
     { to: '/tutor/guide', label: 'Examifying Guide', icon: ClipboardCheck },

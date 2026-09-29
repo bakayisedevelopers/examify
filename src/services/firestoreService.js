@@ -125,28 +125,50 @@ const getLatestTutorReportFromList = (studentId, reports) =>
     .filter((report) => report.studentId === studentId)
     .sort((left, right) => new Date(right.updatedAt ?? right.createdAt ?? 0) - new Date(left.updatedAt ?? left.createdAt ?? 0))[0] ?? null;
 
+const getLessonTopicEntries = (lesson = {}, lessonIndex = 0) => {
+  if (Array.isArray(lesson.topicUnderstandingScores) && lesson.topicUnderstandingScores.length) {
+    return lesson.topicUnderstandingScores
+      .map((entry) => ({
+        topic: String(entry?.topic || '').trim(),
+        understandingLevel: Number(entry?.understandingLevel ?? lesson?.understandingLevel ?? 5),
+        reportSnippet: entry?.topicReport ?? lesson?.topicReport ?? lesson?.note ?? '',
+        completedOn: lesson?.completedOn ?? lesson?.createdAt ?? '',
+        firstSeenIndex: lessonIndex,
+      }))
+      .filter((entry) => entry.topic);
+  }
+
+  const topic = String(lesson?.topic || '').trim();
+  return topic ? [{
+    topic,
+    understandingLevel: Number(lesson?.understandingLevel ?? 5),
+    reportSnippet: lesson?.topicReport ?? lesson?.note ?? '',
+    completedOn: lesson?.completedOn ?? lesson?.createdAt ?? '',
+    firstSeenIndex: lessonIndex,
+  }] : [];
+};
+
 const getTopicSummary = (completedLessons = []) => {
   const topicMap = new Map();
 
   completedLessons.forEach((lesson, lessonIndex) => {
-    const topicName = String(lesson?.topic || '').trim();
-    if (!topicName) return;
+    getLessonTopicEntries(lesson, lessonIndex).forEach((entry) => {
+      const current = topicMap.get(entry.topic) ?? {
+        topic: entry.topic,
+        understandingLevel: entry.understandingLevel,
+        reportSnippet: entry.reportSnippet,
+        completedOn: entry.completedOn,
+        lessonCount: 0,
+        firstSeenIndex: entry.firstSeenIndex,
+      };
 
-    const current = topicMap.get(topicName) ?? {
-      topic: topicName,
-      understandingLevel: Number(lesson?.understandingLevel ?? 5),
-      reportSnippet: lesson?.topicReport ?? lesson?.note ?? '',
-      completedOn: lesson?.completedOn ?? lesson?.createdAt ?? '',
-      lessonCount: 0,
-      firstSeenIndex: lessonIndex,
-    };
-
-    topicMap.set(topicName, {
-      ...current,
-      understandingLevel: Number(lesson?.understandingLevel ?? current.understandingLevel ?? 5),
-      reportSnippet: lesson?.topicReport ?? lesson?.note ?? current.reportSnippet,
-      completedOn: lesson?.completedOn ?? lesson?.createdAt ?? current.completedOn,
-      lessonCount: current.lessonCount + 1,
+      topicMap.set(entry.topic, {
+        ...current,
+        understandingLevel: entry.understandingLevel,
+        reportSnippet: entry.reportSnippet || current.reportSnippet,
+        completedOn: entry.completedOn || current.completedOn,
+        lessonCount: current.lessonCount + 1,
+      });
     });
   });
 
@@ -157,6 +179,7 @@ const getTopicSummary = (completedLessons = []) => {
       return left.firstSeenIndex - right.firstSeenIndex;
     });
 };
+
 
 const getInitialTopicsForDay = (topicSummaries = []) => topicSummaries.map((item) => item.topic);
 
@@ -814,7 +837,7 @@ export const getCompletedLessons = async (studentId, subject = DEFAULT_SUBJECT) 
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 };
 
-export const saveCompletedLesson = async ({ studentId, tutorId, topic, topicReport, understandingLevel, studentName, subject = DEFAULT_SUBJECT }) => {
+export const saveCompletedLesson = async ({ studentId, tutorId, topic, topics, topicReport, understandingLevel, topicUnderstandingScores = [], studentName, subject = DEFAULT_SUBJECT }) => {
   if (!isFirebaseConfigured) {
     return {
       id: `mock-lesson-${Date.now()}`,
@@ -822,6 +845,8 @@ export const saveCompletedLesson = async ({ studentId, tutorId, topic, topicRepo
       tutorId,
       subject,
       topic,
+      topics: topics ?? (topic ? [topic] : []),
+      topicUnderstandingScores,
       topicReport,
       understandingLevel,
       studentName,
@@ -835,6 +860,8 @@ export const saveCompletedLesson = async ({ studentId, tutorId, topic, topicRepo
     tutorId,
     subject,
     topic,
+    topics: topics ?? (topic ? [topic] : []),
+    topicUnderstandingScores,
     note: topicReport,
     topicReport,
     understandingLevel,
@@ -842,7 +869,7 @@ export const saveCompletedLesson = async ({ studentId, tutorId, topic, topicRepo
     completedOn: new Date().toISOString().slice(0, 10),
     createdAt: serverTimestamp(),
   });
-  return { id: ref.id, studentId, tutorId, subject, topic, topicReport, understandingLevel, studentName };
+  return { id: ref.id, studentId, tutorId, subject, topic, topics: topics ?? (topic ? [topic] : []), topicUnderstandingScores, topicReport, understandingLevel, studentName };
 };
 
 export const assignStudentToTutor = async ({ studentId, tutorId, subject = DEFAULT_SUBJECT }) => {
@@ -1213,6 +1240,7 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
       topic: lesson.topic,
       topicReport: lesson.topicReport ?? lesson.note ?? '',
       understandingLevel: Number(lesson.understandingLevel ?? understandingLevel ?? 5),
+      topicUnderstandingScores: lesson.topicUnderstandingScores ?? [],
       completedOn: lesson.completedOn ?? lesson.createdAt ?? '',
     })),
     understandingByTopic: topicSummaries.map((summary) => ({

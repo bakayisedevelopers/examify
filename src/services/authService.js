@@ -110,7 +110,7 @@ export const logout = async () => {
   return true;
 };
 
-export const updateUserProfileDetails = async ({ uid, displayName, previousYearMark, newPassword }) => {
+export const updateUserProfileDetails = async ({ uid, displayName, previousYearMark, grade, newPassword }) => {
 
   if (isFirebaseConfigured && auth?.currentUser) {
     if (displayName) {
@@ -125,12 +125,13 @@ export const updateUserProfileDetails = async ({ uid, displayName, previousYearM
     if (previousYearMark !== undefined && previousYearMark !== null) {
       payload.previousYearMark = Number(previousYearMark);
     }
+    if (grade) payload.grade = grade;
     
     await updateDoc(doc(db, collections.users, uid), payload);
     return { uid, ...payload };
   } else {
     // Demo mode bypass
-    return { uid, displayName, previousYearMark };
+    return { uid, displayName, previousYearMark, grade };
   }
 };
 
