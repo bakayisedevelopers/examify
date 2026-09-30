@@ -173,10 +173,10 @@ export const PastExamPapersPage = () => {
       analysisError: '',
       analysisRevision: Date.now(),
     };
-    setStatus(`Retrying analysis for ${paper.displayName || paper.paperFileName || 'paper'}...`);
+    setStatus(`Adding ${paper.displayName || paper.paperFileName || 'paper'} to the analysis queue...`);
     await updateQuestionPaper(paper.id, patch);
     setPapers((current) => current.map((item) => item.id === paper.id ? { ...item, ...patch } : item));
-    setStatus('Analysis retry queued. The status should change to Analyzing and progress will update when the backend starts.');
+    setStatus('Analysis retry queued. It will start immediately if the queue is idle; otherwise it will wait for earlier papers to finish.');
   };
 
   const handleEditSubmit = async (event) => {
@@ -306,7 +306,7 @@ export const PastExamPapersPage = () => {
       setPapers((current) => [...saved, ...current.filter((paper) => !saved.some((item) => item.id === paper.id))]);
       setBulkRows([]);
       setBulkMemoFiles([]);
-      setStatus(`${saved.length} paper${saved.length === 1 ? '' : 's'} saved. Analysis is running for each paper.`);
+      setStatus(`${saved.length} paper${saved.length === 1 ? '' : 's'} saved. Papers will be analyzed one at a time in upload order.`);
     } catch (error) {
       setStatus(error.message || 'Bulk upload failed.');
     }
@@ -357,13 +357,13 @@ export const PastExamPapersPage = () => {
         {uploadTab === 'single' ? (
           <form onSubmit={handleSingleSubmit} className="grid gap-4 md:grid-cols-2">
             <UploadFields value={singleForm} onChange={(patch) => setSingleForm((current) => ({ ...current, ...patch }))} subjects={visibleSubjects} />
-            <label className="md:col-span-2"><span className="label">Question paper</span><input type="file" className="input" accept=".pdf,.doc,.docx,image/*" onChange={(event) => setSingleForm((current) => ({ ...current, paperFile: event.target.files?.[0] ?? null }))} required /></label>
-            <label className="md:col-span-2"><span className="label">Memo optional</span><input type="file" className="input" accept=".pdf,.doc,.docx,image/*" onChange={(event) => setSingleForm((current) => ({ ...current, memoFile: event.target.files?.[0] ?? null }))} /></label>
+            <label className="md:col-span-2"><span className="label">Question paper</span><input type="file" className="input" accept=".pdf,application/pdf" onChange={(event) => setSingleForm((current) => ({ ...current, paperFile: event.target.files?.[0] ?? null }))} required /><span className="mt-1 block text-xs text-slate-500">PDF only. Analysis runs securely in queued page batches.</span></label>
+            <label className="md:col-span-2"><span className="label">Memo optional</span><input type="file" className="input" accept=".pdf,application/pdf" onChange={(event) => setSingleForm((current) => ({ ...current, memoFile: event.target.files?.[0] ?? null }))} /></label>
             <button type="submit" className="btn-primary md:col-span-2">Upload and analyze</button>
           </form>
         ) : (
           <div className="space-y-4">
-            <label className="block"><span className="label">Bulk files</span><input type="file" className="input" multiple accept=".pdf,.doc,.docx,image/*" onChange={handleBulkFiles} /><span className="mt-1 block text-xs text-slate-500">Select question papers and optional memos together. The app will infer metadata and pair memos by filename similarity before upload.</span></label>
+            <label className="block"><span className="label">Bulk files</span><input type="file" className="input" multiple accept=".pdf,application/pdf" onChange={handleBulkFiles} /><span className="mt-1 block text-xs text-slate-500">Select PDF question papers and optional PDF memos together. The app will infer metadata and pair memos by filename similarity before upload.</span></label>
             {bulkRows.length ? (
               <div className="w-full overflow-hidden rounded-2xl border border-slate-200 bg-white">
                 <div className="overflow-x-auto overscroll-x-contain">
@@ -435,8 +435,8 @@ export const PastExamPapersPage = () => {
             </div>
             <div className="mt-6 grid gap-4 md:grid-cols-2">
               <UploadFields value={editForm} onChange={(patch) => setEditForm((current) => ({ ...current, ...patch }))} subjects={visibleSubjects} />
-              <label className="md:col-span-2"><span className="label">Replace question paper optional</span><input type="file" className="input" accept=".pdf,.doc,.docx,image/*" onChange={(event) => setEditForm((current) => ({ ...current, paperFile: event.target.files?.[0] ?? null }))} /><span className="mt-1 block text-xs text-slate-500">Current: {editingPaper.paperFileName || 'No paper file name stored'}</span></label>
-              <label className="md:col-span-2"><span className="label">Replace memorandum optional</span><input type="file" className="input" accept=".pdf,.doc,.docx,image/*" onChange={(event) => setEditForm((current) => ({ ...current, memoFile: event.target.files?.[0] ?? null, removeMemo: false }))} /><span className="mt-1 block text-xs text-slate-500">Current: {editingPaper.memoFileName || 'No memo uploaded'}</span></label>
+              <label className="md:col-span-2"><span className="label">Replace question paper optional</span><input type="file" className="input" accept=".pdf,application/pdf" onChange={(event) => setEditForm((current) => ({ ...current, paperFile: event.target.files?.[0] ?? null }))} /><span className="mt-1 block text-xs text-slate-500">PDF only. Current: {editingPaper.paperFileName || 'No paper file name stored'}</span></label>
+              <label className="md:col-span-2"><span className="label">Replace memorandum optional</span><input type="file" className="input" accept=".pdf,application/pdf" onChange={(event) => setEditForm((current) => ({ ...current, memoFile: event.target.files?.[0] ?? null, removeMemo: false }))} /><span className="mt-1 block text-xs text-slate-500">PDF only. Current: {editingPaper.memoFileName || 'No memo uploaded'}</span></label>
               {editingPaper.memoUrl ? <label className="md:col-span-2 flex items-center gap-3 text-sm font-semibold text-slate-700"><input type="checkbox" checked={editForm.removeMemo} onChange={(event) => setEditForm((current) => ({ ...current, removeMemo: event.target.checked, memoFile: event.target.checked ? null : current.memoFile }))} /> Remove current memorandum</label> : null}
               <div className="flex flex-wrap gap-3 md:col-span-2">
                 <button type="submit" className="btn-primary">Save changes and re-analyze if needed</button>

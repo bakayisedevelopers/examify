@@ -12,7 +12,13 @@ export {
   callKiloDocument,
 } from './kilo.js';
 
-export { analyzeQuestionPaper } from './questionPaperAnalysis.js';
+export {
+  analyzeQuestionPaper,
+  dispatchQuestionPaperAnalysis,
+  prepareQuestionPaperAnalysis,
+  analyzeQuestionPaperBatch,
+  finalizeQuestionPaperAnalysis,
+} from './questionPaperAnalysis.js';
 
 export { assignPeerMarkingOnSubmission } from './peerMarking.js';
 

@@ -82,6 +82,9 @@ Functions variables:
 - `PAYSTACK_BASE_URL`
 - `PAYSTACK_CALLBACK_URL`
 - `FIRESTORE_DATABASE_ID` (use `(default)` or your named database such as `tutoring`)
+- `KILO_BASE_URL` (defaults to `https://api.kilo.ai/api/openrouter`)
+- `KILO_TEXT_MODEL` and `KILO_FALLBACK_TEXT_MODEL`
+- `KILO_VISION_MODEL` and comma-separated `KILO_FALLBACK_VISION_MODELS`
 
 ### 3. Run the app
 
@@ -119,6 +122,7 @@ Any password is accepted in demo mode.
 - Gemini recommendations are now generated through Firebase AI Logic in the frontend Firebase initialization layer instead of the older direct Gemini Developer API function path.
 - Storage uploads create submission documents in Firestore after a successful upload.
 - Tutor assignment logic blocks a second active Maths tutor for the same student.
+- Question papers enter a shared FIFO Cloud Tasks workflow. One paper completes its preparation, independently retryable two-page vision batches, and finalization before the next paper starts. Deploying functions must be allowed to create and enqueue Cloud Tasks.
 - The current app includes realistic structure for future extensions such as AI moderation comparison, analytics, scheduling, and automated recurring renewals.
 
 ## Firestore entities modeled

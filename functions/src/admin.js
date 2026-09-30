@@ -1,5 +1,6 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+import { getFunctions } from 'firebase-admin/functions';
 import { getAppConfig } from './config.js';
 
 if (!admin.apps.length) {
@@ -24,5 +25,6 @@ export const getDb = () => {
 };
 
 export const storage = admin.storage();
+export const taskQueue = (functionName) => getFunctions().taskQueue(functionName);
 export const getFirestoreDatabaseId = () => firestoreDatabaseId;
 export { admin };
