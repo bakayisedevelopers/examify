@@ -11,6 +11,7 @@ import {
   onSnapshot,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -198,7 +199,10 @@ const getTopicSummary = (completedLessons = []) => {
 };
 
 
-const getInitialTopicsForDay = (topicSummaries = []) => topicSummaries.map((item) => item.topic);
+const getInitialTopicsForDay = (topicSummaries = [], dayIndex = 0) => {
+  if (!topicSummaries.length) return [];
+  return [topicSummaries[dayIndex % topicSummaries.length].topic];
+};
 
 const pickWeeklyTopicsForDay = ({ topicSummaries = [], maxQuestionsPerDay, dayIndex = 0, generationNumber = 1 }) => {
   if (!topicSummaries.length) return [];
@@ -639,39 +643,31 @@ const buildAssignmentDates = ({ mode, assignmentHistory = [] }) => {
   );
 };
 
-const buildAiQuestionPlan = ({ mode, topicSummaries = [], assignmentDates = [], generationNumber = 1 }) => {
-  if (mode === 'initial') {
-    return {
-      maxQuestionsPerDay: Math.max(1, topicSummaries.length),
-      perDayTopics: assignmentDates.map((assignmentDate) => ({
-        assignmentDate,
-        topics: getInitialTopicsForDay(topicSummaries),
-      })),
-      rules: {
-        titleFormat: 'question-references-only',
-        oneQuestionPerTopicPerDay: true,
-        disallowRanges: true,
-      },
-    };
-  }
-
-  const maxQuestionsPerDay = Math.min(MAX_DAILY_EXERCISES, Math.max(1, generationNumber));
+const buildAiQuestionPlan = ({ mode, topicSummaries = [], assignmentDates = [], generationNumber = 1, dailyExerciseCaps = {} }) => {
+  const maxExercisesPerDay = mode === 'initial'
+    ? 1
+    : Math.min(MAX_DAILY_EXERCISES, Math.max(1, generationNumber));
+  const highestDailyCap = Math.max(maxExercisesPerDay, ...Object.values(dailyExerciseCaps).map(Number).filter(Number.isFinite));
   return {
-    maxQuestionsPerDay,
+    maxExercisesPerDay: highestDailyCap,
+    maxQuestionsPerDay: 1,
     perDayTopics: assignmentDates.map((assignmentDate, dayIndex) => ({
       assignmentDate,
-      topics: pickWeeklyTopicsForDay({
-        topicSummaries,
-        maxQuestionsPerDay: Math.min(maxQuestionsPerDay, topicSummaries.length || 1),
-        dayIndex,
-        generationNumber,
-      }),
+      topics: mode === 'initial' && !dailyExerciseCaps[assignmentDate]
+        ? getInitialTopicsForDay(topicSummaries, dayIndex)
+        : pickWeeklyTopicsForDay({
+          topicSummaries,
+          maxQuestionsPerDay: Math.min(dailyExerciseCaps[assignmentDate] ?? maxExercisesPerDay, topicSummaries.length || 1),
+          dayIndex,
+          generationNumber,
+        }),
     })),
     rules: {
       titleFormat: 'question-references-only',
       distinctTopicsPerDay: true,
+      oneQuestionPerExercise: true,
+      maxExercisesPerDay: highestDailyCap,
       weightedTowardHigherUnderstandingFromFourthTopic: topicSummaries.length > 3,
-      maxQuestionsPerDay,
     },
   };
 };
@@ -684,15 +680,35 @@ const buildAssignmentsFromAiRecommendations = ({
   mode,
   subject = DEFAULT_SUBJECT,
   topicSummaries = [],
-  maxQuestionsPerDay = MAX_DAILY_EXERCISES,
+  maxExercisesPerDay = MAX_DAILY_EXERCISES,
+  dailyExerciseCaps = {},
+  allowedAssignmentDates = [],
   grade,
-}) =>
-  recommendations.map((recommendation, index) => {
+}) => {
+  const allowedDates = new Set(allowedAssignmentDates);
+  const dailyExerciseCounts = new Map();
+  const dailyTopics = new Map();
+  const cappedRecommendations = recommendations.filter((recommendation) => {
+    const assignmentDate = String(recommendation?.assignmentDate ?? '');
+    if (!assignmentDate || (allowedDates.size && !allowedDates.has(assignmentDate))) return false;
+    const count = dailyExerciseCounts.get(assignmentDate) ?? 0;
+    if (count >= (dailyExerciseCaps[assignmentDate] ?? maxExercisesPerDay)) return false;
+
+    const topic = String(recommendation?.topicBreakdown?.[0]?.topic || recommendation?.topic || '').trim();
+    const usedTopics = dailyTopics.get(assignmentDate) ?? new Set();
+    if (topic && usedTopics.has(topic)) return false;
+    if (topic) usedTopics.add(topic);
+    dailyTopics.set(assignmentDate, usedTopics);
+    dailyExerciseCounts.set(assignmentDate, count + 1);
+    return true;
+  });
+
+  return cappedRecommendations.map((recommendation, index) => {
     let topicBreakdown = Array.isArray(recommendation?.topicBreakdown) && recommendation.topicBreakdown.length
       ? recommendation.topicBreakdown
       : (Array.isArray(recommendation?.questionReferences) ? recommendation.questionReferences : [])
           .map((reference, referenceIndex) => ({
-            topic: topicSummaries[referenceIndex]?.topic ?? recommendation?.topic ?? 'Subject topic',
+            topic: recommendation?.topic || topicSummaries[referenceIndex]?.topic || 'Subject topic',
             questionReference: reference,
           }));
 
@@ -714,7 +730,7 @@ const buildAssignmentsFromAiRecommendations = ({
         seenTopics.add(entry.topic);
         return true;
       })
-      .slice(0, Math.min(MAX_DAILY_EXERCISES, maxQuestionsPerDay));
+      .slice(0, 1);
 
     const questionReferences = topicBreakdown.map((entry) => entry.questionReference).filter(Boolean);
     const questionLinks = Array.isArray(recommendation?.questionLinks)
@@ -725,7 +741,7 @@ const buildAssignmentsFromAiRecommendations = ({
             questionReference: String(link?.questionReference || link?.reference || '').trim(),
             topic: String(link?.topic || '').trim(),
           }))
-          .filter((link) => link.paperId && link.pageNumber)
+          .filter((link) => link.paperId && link.pageNumber && questionReferences.includes(link.questionReference))
       : [];
 
     return {
@@ -760,6 +776,7 @@ const buildAssignmentsFromAiRecommendations = ({
       submittedReviewFileName: "",
     };
   });
+};
 
 export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT) => {
   if (!student) {
@@ -1420,7 +1437,7 @@ export const getSubmissionForExercise = async (exerciseId) => {
   return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
 };
 
-export const generateExercisePlanIfEligible = async ({ student, mode, subject = DEFAULT_SUBJECT, latestTutorReport, completedLesson, understandingLevel, availablePapers, onProgress }) => {
+export const generateExercisePlanIfEligible = async ({ student, mode, subject = DEFAULT_SUBJECT, latestTutorReport, completedLesson, understandingLevel, availablePapers, onProgress, overrideFutureUnsubmitted = false, targetAssignmentDates = null, dailyExerciseCaps = {}, overrideExerciseIdsByDate = {} }) => {
   const studentState = await getStudentAccessState(student, subject);
   const papers = availablePapers ?? studentState.matchingQuestionPapers;
   const readyCompletedLesson = completedLesson && isCompletedLessonReadyForGeneration(completedLesson) ? completedLesson : null;
@@ -1441,9 +1458,9 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
   ].filter(Boolean);
   const assignmentHistory = await getAssignmentHistory(student?.uid, subject);
   const recentExerciseHistory = getRecentExerciseHistoryForAi(assignmentHistory, 28);
-  const ready = mode === 'initial'
+  const ready = overrideFutureUnsubmitted || (mode === 'initial'
     ? Boolean(studentState.initialGenerationReady && !studentState.hasInitialGeneration)
-    : Boolean(studentState.weeklyGenerationReady && studentState.hasInitialGeneration);
+    : Boolean(studentState.weeklyGenerationReady && studentState.hasInitialGeneration));
 
   if (!ready) {
     return {
@@ -1489,12 +1506,13 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
   onProgress?.(`Using topic metadata from ${selectedPapers.length} analyzed question papers [Generating exercises]`);
 
   const generationNumber = mode === 'weekly' ? getGenerationNumber(assignmentHistory, 'weekly') : 1;
-  const assignmentDates = buildAssignmentDates({ mode, assignmentHistory });
+  const assignmentDates = targetAssignmentDates ?? buildAssignmentDates({ mode, assignmentHistory });
   const aiPlan = buildAiQuestionPlan({
     mode,
     topicSummaries,
     assignmentDates,
     generationNumber,
+    dailyExerciseCaps,
   });
   const generationBatchId = `${mode}-${student.uid}-${Date.now()}`;
   const aiResponse = await recommendExercises({
@@ -1529,7 +1547,9 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
       questions: summarizePaperQuestions(paper, completedTopics),
     })),
     selectedPaperIds: selectedPapers.map((paper) => paper.id),
-    maxQuestionsPerDay: Math.min(aiPlan.maxQuestionsPerDay, topicSummaries.length || 1),
+    maxExercisesPerDay: aiPlan.maxExercisesPerDay,
+    dailyExerciseCaps,
+    maxQuestionsPerDay: aiPlan.maxQuestionsPerDay,
     questionPlanRules: aiPlan,
     lessonHistory: completedLessons.map((lesson) => ({
       topic: lesson.topic,
@@ -1557,7 +1577,9 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
     mode,
     subject,
     topicSummaries,
-    maxQuestionsPerDay: aiPlan.maxQuestionsPerDay,
+    maxExercisesPerDay: aiPlan.maxExercisesPerDay,
+    dailyExerciseCaps,
+    allowedAssignmentDates: assignmentDates,
     grade: student?.grade,
   }).filter((assignment) => Boolean(assignment.assignmentDate));
 
@@ -1578,24 +1600,72 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
 
   ensureDb();
   const createdAssignments = [];
+  const existingCounts = new Map();
   for (const assignment of assignments) {
-    const existingForDay = await getDocs(query(
-      collection(db, collections.dailyExerciseAssignments),
-      where('studentId', '==', assignment.studentId),
-      where('assignmentDate', '==', assignment.assignmentDate),
-      limit(1),
-    ));
-
-    if (!existingForDay.empty) {
-      console.log('[Examifying][Firestore] generateExercisePlanIfEligible:skip-existing', assignment);
-      continue;
+    const assignmentDate = assignment.assignmentDate;
+    if (overrideFutureUnsubmitted) continue;
+    if (!existingCounts.has(assignmentDate)) {
+      const snapshot = await getDocs(query(
+        collection(db, collections.dailyExerciseAssignments),
+        where('studentId', '==', assignment.studentId),
+        where('subject', '==', subject),
+        where('assignmentDate', '==', assignmentDate),
+      ));
+      existingCounts.set(assignmentDate, snapshot.size);
     }
 
-    const ref = await addDoc(collection(db, collections.dailyExerciseAssignments), {
-      ...assignment,
-      createdAt: serverTimestamp(),
-    });
+    const cap = dailyExerciseCaps[assignmentDate] ?? aiPlan.maxExercisesPerDay;
+    if (existingCounts.get(assignmentDate) >= cap) continue;
+    const ref = await addDoc(collection(db, collections.dailyExerciseAssignments), { ...assignment, createdAt: serverTimestamp() });
+    existingCounts.set(assignmentDate, existingCounts.get(assignmentDate) + 1);
     createdAssignments.push({ id: ref.id, ...assignment });
+  }
+
+  if (overrideFutureUnsubmitted) {
+    const replacementsByDate = new Map();
+    assignments.forEach((assignment) => {
+      const replacements = replacementsByDate.get(assignment.assignmentDate) ?? [];
+      replacements.push(assignment);
+      replacementsByDate.set(assignment.assignmentDate, replacements);
+    });
+    const replacementRows = await runTransaction(db, async (transaction) => {
+      const safeDates = [];
+      for (const assignmentDate of assignmentDates) {
+        const oldIds = overrideExerciseIdsByDate[assignmentDate] ?? [];
+        const replacements = replacementsByDate.get(assignmentDate) ?? [];
+        if (!oldIds.length || replacements.length !== dailyExerciseCaps[assignmentDate]) continue;
+        const currentSnapshots = await Promise.all(oldIds.map((id) => transaction.get(doc(db, collections.dailyExerciseAssignments, id))));
+        const currentExercises = currentSnapshots.filter((item) => item.exists()).map((item) => ({ id: item.id, ...item.data() }));
+        if (currentExercises.length !== oldIds.length || currentExercises.some(isExerciseSubmitted)) continue;
+        safeDates.push({ assignmentDate, currentExercises, replacements });
+      }
+
+      const rows = [];
+      safeDates.forEach(({ currentExercises, replacements }) => {
+        const sourceGeneration = currentExercises[0];
+        currentExercises.forEach((item) => transaction.delete(doc(db, collections.dailyExerciseAssignments, item.id)));
+        replacements.forEach((item) => {
+          const ref = doc(collection(db, collections.dailyExerciseAssignments));
+          const replacement = {
+            ...item,
+            generationMode: sourceGeneration.generationMode || item.generationMode,
+            generationBatchId: sourceGeneration.generationBatchId || item.generationBatchId || generationBatchId,
+          };
+          transaction.set(ref, { ...replacement, createdAt: serverTimestamp() });
+          rows.push({ id: ref.id, ...replacement });
+        });
+      });
+      return rows;
+    });
+    if (!replacementRows.length) {
+      return { generated: false, reason: 'The model did not return a complete replacement set. Existing exercises were kept.', assignments: [] };
+    }
+    return {
+      generated: true,
+      reason: `Regenerated ${replacementRows.length} future unsubmitted exercises.`,
+      assignments: replacementRows,
+      criteria: { ...studentState.generationStatus, selectedPaperIds: selectedPapers.map((paper) => paper.id) },
+    };
   }
 
   return {
@@ -1610,6 +1680,59 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
       topicsWithoutSources,
     },
   };
+};
+
+const isExerciseSubmitted = (exercise) => Boolean(
+  exercise?.submittedImageUrl || exercise?.submitted === 'Yes' || exercise?.submissionStatus === 'submitted'
+);
+
+const getLocalDate = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+};
+
+export const regenerateFutureUnsubmittedExercisesForTutor = async ({ tutorId, student, subject = DEFAULT_SUBJECT, onProgress }) => {
+  if (!tutorId || !student?.uid) throw new Error('Tutor and student are required to regenerate exercises.');
+  const contexts = await getTutorAssignedStudentContexts(tutorId);
+  const assignedContext = contexts.find((context) => context.studentId === student.uid && context.subject === subject);
+  if (!assignedContext) throw new Error('This student is not assigned to this tutor for the selected subject.');
+
+  if (!isFirebaseConfigured) {
+    return generateExercisePlanIfEligible({ student, subject, mode: 'weekly', overrideFutureUnsubmitted: true, onProgress });
+  }
+
+  ensureDb();
+  const today = getLocalDate();
+  const snapshot = await getDocs(query(
+    collection(db, collections.dailyExerciseAssignments),
+    where('studentId', '==', student.uid),
+    where('subject', '==', subject),
+    where('assignmentDate', '>=', today),
+    orderBy('assignmentDate', 'asc'),
+  ));
+  const eligible = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  const unsubmitted = eligible.filter((item) => !isExerciseSubmitted(item));
+  if (!unsubmitted.length) return { generated: false, reason: 'There are no future unsubmitted exercises to regenerate.', assignments: [] };
+
+  const idsByDate = new Map();
+  unsubmitted.forEach((item) => {
+    const ids = idsByDate.get(item.assignmentDate) ?? [];
+    ids.push(item.id);
+    idsByDate.set(item.assignmentDate, ids);
+  });
+  const targetAssignmentDates = [...idsByDate.keys()].sort();
+  const dailyExerciseCaps = Object.fromEntries([...idsByDate.entries()].map(([date, ids]) => [date, Math.min(ids.length, MAX_DAILY_EXERCISES)]));
+  const overrideExerciseIdsByDate = Object.fromEntries(idsByDate);
+  return generateExercisePlanIfEligible({
+    student: { ...assignedContext, ...student, uid: student.uid },
+    subject,
+    mode: 'weekly',
+    overrideFutureUnsubmitted: true,
+    targetAssignmentDates,
+    dailyExerciseCaps,
+    overrideExerciseIdsByDate,
+    onProgress,
+  });
 };
 
 export const subscribeToAssignedStudentsForTutor = (tutorId, callback, subject = DEFAULT_SUBJECT) => {

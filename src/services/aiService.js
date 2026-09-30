@@ -95,7 +95,7 @@ const normalizeRecommendations = (parsed, payload = {}) => {
             .filter((link) => link.paperId && link.questionReference)
         : [],
     })),
-    source: 'gemini-3.5-flash-lite',
+    source: 'model',
   };
 };
 
@@ -113,6 +113,7 @@ const buildPrompt = ({
   assignmentDates = [],
   selectedPapers = [],
   selectedPaperIds = [],
+  maxExercisesPerDay = 1,
   maxQuestionsPerDay = 1,
   questionPlanRules = {},
   lessonHistory = [],
@@ -142,21 +143,17 @@ Example format:
 {
   "recommendations": [
     {
-      "title": "1.1 | 2.3.4",
-      "topic": "Probability | Geometry",
-      "reason": "Probability and Geometry are tutor-completed topics selected for this day.",
-      "sourceLabel": "2023 Gauteng June Paper, Q1.1; 2022 National November Paper, Q2.3.4",
-      "instruction": "Answer the exact referenced question numbers only.",
+      "title": "1.1",
+      "topic": "Probability",
+      "reason": "Probability is a tutor-completed topic selected for this day.",
+      "sourceLabel": "2023 Gauteng June Paper, Q1.1",
+      "instruction": "Answer the exact referenced question only.",
       "assignmentDate": "2026-03-24",
-      "questionReferences": ["1.1", "2.3.4"],
-      "topicBreakdown": [
-        { "topic": "Probability", "questionReference": "1.1" },
-        { "topic": "Geometry", "questionReference": "2.3.4" }
-      ],
-      "paperIdsUsed": ["paper-a", "paper-b"],
+      "questionReferences": ["1.1"],
+      "topicBreakdown": [{ "topic": "Probability", "questionReference": "1.1" }],
+      "paperIdsUsed": ["paper-a"],
       "questionLinks": [
-        { "paperId": "paper-a", "pageNumber": 2, "questionReference": "1.1", "topic": "Probability" },
-        { "paperId": "paper-b", "pageNumber": 5, "questionReference": "2.3.4", "topic": "Geometry" }
+        { "paperId": "paper-a", "pageNumber": 2, "questionReference": "1.1", "topic": "Probability" }
       ]
     }
   ]
@@ -187,17 +184,20 @@ Last 28 days exercise history to avoid short repeats: ${JSON.stringify(recentExe
 Recent generation summaries to avoid repeating source papers: ${JSON.stringify(previousGenerationSummaries)}
 Question-plan rules: ${JSON.stringify(questionPlanRules)}
 Maximum question references per day: ${maxQuestionsPerDay}
+Maximum separate exercises per day: ${maxExercisesPerDay}
 
 Additional mandatory generation rules:
 - The title must be only the question reference numbers joined by " | " when there are multiple references.
 - Never use topic names in the title.
-- Return exactly one recommendation object per assignment date.
+- Follow Question-plan rules.perDayTopics. Return one recommendation object for each planned topic slot, repeating the same assignmentDate when that date has multiple planned slots.
+- Each recommendation is one exercise and must contain exactly one question reference and one topic.
+- Never return more than Maximum separate exercises per day for any assignmentDate. The frontend enforces this cap too.
 - Each question reference must belong to a tutor-completed topic.
 - Choose questions from Topic-based source metadata first. For each topic, prefer using questions from at least two different papers when available.
 - Do not use a question for a topic unless that question appears under that exact topic in Topic-based source metadata.
-- For initial mode, return exactly one question reference per covered topic for that day, without ranges like "1.1.3 - 1.1.5".
-- For weekly mode, never exceed the provided maximum question references per day.
-- For weekly mode, question references on the same day must come from different topics.
+- Return exactly one question reference for each exercise, without ranges like "1.1.3 - 1.1.5".
+- For initial mode, schedule at most one exercise per day, even when multiple topics are completed.
+- For weekly mode, schedule no more than the planned number of exercises per day; use different topics on the same date.
 - When more than three topics are available, bias selections toward higher understanding topics, while still occasionally including lower understanding topics.
 - Only use the selected source papers and include only those ids in paperIdsUsed.
 - Use only questions from the stored source paper question indexes. Do not invent question numbers.
@@ -215,38 +215,50 @@ export const recommendExercises = async (payload = {}) => {
     return getFallbackRecommendations(payload);
   }
 
-  try {
-    if (!functions) {
-      console.log('[Examifying][AI] recommendExercises:fallback:no-functions-instance');
-      return getFallbackRecommendations(payload);
-    }
+  if (!functions) {
+    console.log('[Examifying][AI] recommendExercises:fallback:no-functions-instance');
+    return { recommendations: [], source: 'unavailable', model: '' };
+  }
 
-    const callGeminiText = httpsCallable(functions, 'callGeminiText');
-    const result = await callGeminiText({
-      system: 'You return strict JSON only. Do not include markdown, comments, or explanatory text.',
-      prompt: buildPrompt(payload),
-      responseFormat: { type: 'json_object' },
-      maxTokens: 3000,
-      temperature: 0.2,
-    });
+  const request = {
+    system: 'You return strict JSON only. Do not include markdown, comments, or explanatory text.',
+    prompt: buildPrompt(payload),
+    responseFormat: { type: 'json_object' },
+    maxTokens: 3000,
+    temperature: 0.2,
+  };
+  const parseResult = (result, provider) => {
     const rawText = result?.data?.text ?? '';
-    const strippedText = stripCodeFence(rawText);
-    const jsonText = extractJsonObject(strippedText);
-
-    console.log('[Examifying][AI] recommendExercises:rawText', rawText);
-    console.log('[Examifying][AI] recommendExercises:jsonText', jsonText);
-
-    const parsed = JSON.parse(jsonText);
-
-    if (!parsed || !Array.isArray(parsed.recommendations)) {
-      throw new Error('Invalid AI response format: recommendations array missing.');
+    const parsed = JSON.parse(extractJsonObject(stripCodeFence(rawText)));
+    if (!Array.isArray(parsed?.recommendations) || !parsed.recommendations.length) {
+      throw new Error(`${provider} did not return exercise recommendations.`);
     }
+    return {
+      ...normalizeRecommendations(parsed, payload),
+      source: provider,
+      model: result?.data?.model ?? '',
+      fallbackUsed: Boolean(result?.data?.fallbackUsed),
+    };
+  };
 
-    const response = normalizeRecommendations(parsed, payload);
-    console.log('[Examifying][AI] recommendExercises:success', response);
+  try {
+    const callExerciseGenerationText = httpsCallable(functions, 'callExerciseGenerationText');
+    const kiloResult = await callExerciseGenerationText({ ...request, requiredJsonKey: 'recommendations' });
+    const response = parseResult(kiloResult, 'kilo');
+    console.info('[Examifying][AI] exercise model completed', { provider: response.source, model: response.model, fallbackUsed: response.fallbackUsed });
     return response;
-  } catch (error) {
-    console.error('[Examifying][AI] recommendExercises:error', error);
-    return getFallbackRecommendations(payload);
+  } catch (kiloError) {
+    console.warn('[Examifying][AI] Kilo exercise model chain exhausted; trying Gemini.', { message: kiloError?.message });
+  }
+
+  try {
+    const callGeminiText = httpsCallable(functions, 'callGeminiText');
+    const geminiResult = await callGeminiText(request);
+    const response = parseResult(geminiResult, 'gemini');
+    console.info('[Examifying][AI] exercise model completed', { provider: response.source, model: response.model, fallbackUsed: true });
+    return response;
+  } catch (geminiError) {
+    console.error('[Examifying][AI] Kilo and Gemini exercise generation failed.', { message: geminiError?.message });
+    return { recommendations: [], source: 'unavailable', model: '' };
   }
 };

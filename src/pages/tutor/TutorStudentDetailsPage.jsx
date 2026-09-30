@@ -10,6 +10,7 @@ import {
   getTutorExercisesForAssignedStudents,
   getTutorLessonsForAssignedStudents,
   getTutorReportsForAssignedStudents,
+  regenerateFutureUnsubmittedExercisesForTutor,
   saveCompletedLesson,
   saveTutorReport,
 } from '../../services/firestoreService';
@@ -39,6 +40,7 @@ export const TutorStudentDetailsPage = () => {
   const [reportNote, setReportNote] = useState('');
   const [lessonForm, setLessonForm] = useState(emptyLessonForm);
   const [status, setStatus] = useState('');
+  const [isRegenerating, setIsRegenerating] = useState(false);
 
   const load = async () => {
     if (!profile?.uid) return;
@@ -64,6 +66,13 @@ export const TutorStudentDetailsPage = () => {
 
   const latestReport = student?.latestReportsBySubject?.[subject] || reports[0]?.note || (subject === DEFAULT_SUBJECT ? student?.latestReport : '') || '';
   const hasInitialReport = Boolean(latestReport.trim());
+  const todayLocal = today();
+  const regenerableExercises = exercises.filter((exercise) =>
+    String(exercise.assignmentDate ?? '') >= todayLocal
+    && !exercise.submittedImageUrl
+    && exercise.submitted !== 'Yes'
+    && exercise.submissionStatus !== 'submitted'
+  );
 
   const addTopic = () => {
     if (!lessonForm.selectedTopic || lessonForm.topicUnderstandingScores.some((entry) => entry.topic === lessonForm.selectedTopic)) return;
@@ -118,6 +127,27 @@ export const TutorStudentDetailsPage = () => {
     await load();
   };
 
+  const regenerateExercises = async () => {
+    if (!student || !regenerableExercises.length) return;
+    const confirmed = window.confirm(`Regenerate ${regenerableExercises.length} future unsubmitted exercise${regenerableExercises.length === 1 ? '' : 's'} for ${student.displayName || student.name || 'this student'}? Past exercises and submitted work will be kept.`);
+    if (!confirmed) return;
+    setIsRegenerating(true);
+    try {
+      const result = await regenerateFutureUnsubmittedExercisesForTutor({
+        tutorId: profile.uid,
+        student: { uid: studentId, grade: student.grade, province: student.province, paymentCompleted: student.paymentCompleted },
+        subject,
+        onProgress: setStatus,
+      });
+      setStatus(result.reason || (result.generated ? 'Future exercises regenerated.' : 'No exercises were regenerated.'));
+      await load();
+    } catch (error) {
+      setStatus(error.message || 'Could not regenerate exercises.');
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
   return (
     <AppShell title={student?.displayName || student?.name || 'Student'} subtitle={`${subject} learner details, reports, exercises, and lessons.`} role="tutor" user={profile} onLogout={logout}>
       {status ? <div className="panel p-4 text-sm text-slate-700">{status}</div> : null}
@@ -163,7 +193,15 @@ export const TutorStudentDetailsPage = () => {
       )}
 
       <section className="grid gap-6 xl:grid-cols-2">
-        <div className="panel p-5"><SectionHeader eyebrow="Exercises" title="Assigned exercises" description="Click an exercise to view details and paper links." /><div className="space-y-3">{exercises.map((exercise) => <button key={exercise.id} type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}`)} className="block w-full rounded-2xl bg-slate-50 p-4 text-left"><p className="font-semibold text-slate-950">{exercise.title}</p><p className="text-sm text-slate-500">{exercise.subject} • {exercise.assignmentDate}</p></button>)}{!exercises.length ? <p className="text-sm text-slate-500">No exercises yet.</p> : null}</div></div>
+        <div className="panel space-y-4 p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <SectionHeader eyebrow="Exercises" title="Assigned exercises" description="Click an exercise to view details and paper links." />
+            <button type="button" className="btn-secondary" onClick={regenerateExercises} disabled={!regenerableExercises.length || isRegenerating}>
+              {isRegenerating ? 'Regenerating...' : 'Regenerate future exercises'}
+            </button>
+          </div>
+          <div className="space-y-3">{exercises.map((exercise) => <button key={exercise.id} type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}`)} className="block w-full rounded-2xl bg-slate-50 p-4 text-left"><p className="font-semibold text-slate-950">{exercise.title}</p><p className="text-sm text-slate-500">{exercise.subject} • {exercise.assignmentDate}{exercise.submittedImageUrl || exercise.submitted === 'Yes' ? ' • Submitted' : ''}</p></button>)}{!exercises.length ? <p className="text-sm text-slate-500">No exercises yet.</p> : null}</div>
+        </div>
         <div className="panel p-5"><SectionHeader eyebrow="Lessons" title="Tutor lessons" description="Planned and completed lessons for this student." /><div className="space-y-3">{lessons.map((lesson) => <Link key={lesson.id} to={`/tutor/lessons/${lesson.id}`} className="block rounded-2xl bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600">{lesson.status === 'planned' ? 'Planned' : 'Completed'}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lesson.lessonType === 'inPerson' ? 'In-person' : 'Online'}</p></Link>)}{!lessons.length ? <p className="text-sm text-slate-500">No lessons yet.</p> : null}</div></div>
       </section>
     </AppShell>
