@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
-import { getTutorAssignedStudentContexts, getTutorExercisesForAssignedStudents } from '../../services/firestoreService';
+import { deleteExerciseAssignmentForTutor, getTutorAssignedStudentContexts, getTutorExercisesForAssignedStudents } from '../../services/firestoreService';
+import { deleteExerciseSubmissionFiles } from '../../services/storageService';
 
 export const TutorExercisesPage = () => {
   const { profile, logout } = useAuth();
@@ -12,6 +14,8 @@ export const TutorExercisesPage = () => {
   const [contexts, setContexts] = useState([]);
   const [studentFilter, setStudentFilter] = useState('all');
   const [subjectFilter, setSubjectFilter] = useState('all');
+  const [status, setStatus] = useState('');
+  const [deletingExerciseId, setDeletingExerciseId] = useState('');
 
   useEffect(() => {
     if (!profile?.uid) return;
@@ -31,6 +35,21 @@ export const TutorExercisesPage = () => {
     (subjectFilter === 'all' || exercise.subject === subjectFilter)
   );
 
+  const removeExercise = async (exercise) => {
+    if (!window.confirm(`Delete “${exercise.title || 'this exercise'}” for ${exercise.studentName || 'this student'}? This cannot be undone.`)) return;
+    setDeletingExerciseId(exercise.id);
+    try {
+      const result = await deleteExerciseAssignmentForTutor({ tutorId: profile.uid, exerciseId: exercise.id });
+      await deleteExerciseSubmissionFiles(result.storageUrls);
+      setExercises((current) => current.filter((item) => item.id !== exercise.id));
+      setStatus('Exercise deleted.');
+    } catch (error) {
+      setStatus(error.message || 'Could not delete exercise.');
+    } finally {
+      setDeletingExerciseId('');
+    }
+  };
+
   return (
     <AppShell title="Exercises" subtitle="Tutor view of exercises assigned to your students." role="tutor" user={profile} onLogout={logout}>
       <div className="panel grid gap-3 p-4 md:grid-cols-2">
@@ -43,19 +62,23 @@ export const TutorExercisesPage = () => {
           {subjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
         </select>
       </div>
+      {status ? <div role="status" className="panel p-4 text-sm text-slate-300">{status}</div> : null}
       <SectionHeader eyebrow="Assigned work" title="Student exercises" description="Filter by all, student, or subject. Only students assigned to you are shown." />
       <div className="grid gap-4">
         {filteredExercises.map((exercise) => (
-          <button key={exercise.id} type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}`)} className="panel p-5 text-left transition hover:shadow-lg">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+          <div key={exercise.id} className="panel flex flex-wrap items-center justify-between gap-3 p-5">
+            <button type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}`)} className="min-w-0 flex-1 text-left transition">
               <div>
-                <p className="font-semibold text-slate-950">{exercise.title}</p>
-                <p className="mt-1 text-sm text-slate-500">{exercise.studentName || exercise.studentId} • {exercise.subject} • {exercise.assignmentDate}</p>
-                <p className="mt-2 text-sm text-slate-600">{exercise.topic}</p>
+                <p className="font-semibold text-slate-100">{exercise.title}</p>
+                <p className="mt-1 text-sm text-slate-400">{exercise.studentName || exercise.studentId} • {exercise.subject} • {exercise.assignmentDate}</p>
+                <p className="mt-2 text-sm text-slate-300">{exercise.topic}</p>
               </div>
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">{exercise.submittedImageUrl ? 'Submitted' : 'Not submitted'}</span>
-            </div>
-          </button>
+            </button>
+            <span className="rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-300">{exercise.submittedImageUrl ? 'Submitted' : 'Not submitted'}</span>
+            <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={() => removeExercise(exercise)} disabled={deletingExerciseId === exercise.id} aria-label={`Delete ${exercise.title}`} title="Delete exercise">
+              <Trash2 className="h-4 w-4" aria-hidden="true" /> {deletingExerciseId === exercise.id ? 'Deleting...' : 'Delete'}
+            </button>
+          </div>
         ))}
         {!filteredExercises.length ? <div className="panel p-5 text-sm text-slate-500">No exercises match this filter.</div> : null}
       </div>

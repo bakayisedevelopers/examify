@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { FileText, Trash2 } from 'lucide-react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { LoaderCircle } from 'lucide-react';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
@@ -10,14 +12,24 @@ import {
   getTutorExercisesForAssignedStudents,
   getTutorLessonsForAssignedStudents,
   getTutorReportsForAssignedStudents,
+  getCompletedPeerMarkingWorkForTutor,
+  getStudentTopicScoresForTutor,
+  deleteExerciseAssignmentForTutor,
   regenerateFutureUnsubmittedExercisesForTutor,
   saveCompletedLesson,
   saveTutorReport,
+  subscribeToExerciseGenerationStatus,
 } from '../../services/firestoreService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 import { getTopicOptionGroups } from '../../data/topicCatalog';
+import { deleteExerciseSubmissionFiles } from '../../services/storageService';
+import { getSevenDayWindow } from '../../services/exerciseGenerationPlan';
+import { TutorTopicScoreEditor } from '../../components/tutor/TutorTopicScoreEditor';
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => {
+  const date = new Date();
+  return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
+};
 const emptyLessonForm = { selectedTopic: '', topicUnderstandingScores: [], topicReport: '', lessonDate: today(), lessonType: 'online' };
 const emptyTopicGroups = { extracted: [], manual: [], all: [] };
 const hasValidScores = (entries = []) =>
@@ -35,12 +47,21 @@ export const TutorStudentDetailsPage = () => {
   const [student, setStudent] = useState(null);
   const [reports, setReports] = useState([]);
   const [exercises, setExercises] = useState([]);
+  const [peerMarkedWork, setPeerMarkedWork] = useState([]);
+  const [topicScores, setTopicScores] = useState({});
   const [lessons, setLessons] = useState([]);
   const [topicOptions, setTopicOptions] = useState(emptyTopicGroups);
   const [reportNote, setReportNote] = useState('');
   const [lessonForm, setLessonForm] = useState(emptyLessonForm);
   const [status, setStatus] = useState('');
   const [isRegenerating, setIsRegenerating] = useState(false);
+  const [deletingExerciseId, setDeletingExerciseId] = useState('');
+  const [regenerationStatus, setRegenerationStatus] = useState(null);
+
+  useEffect(() => {
+    if (!studentId || !profile?.uid) return undefined;
+    return subscribeToExerciseGenerationStatus(studentId, subject, setRegenerationStatus);
+  }, [profile?.uid, studentId, subject]);
 
   const load = async () => {
     if (!profile?.uid) return;
@@ -57,6 +78,8 @@ export const TutorStudentDetailsPage = () => {
     setReports(reportRows.filter((item) => item.studentId === studentId && item.subject === subject));
     setExercises(exerciseRows.filter((item) => item.studentId === studentId && item.subject === subject));
     setLessons(lessonRows.filter((item) => item.studentId === studentId && item.subject === subject));
+    setPeerMarkedWork(await getCompletedPeerMarkingWorkForTutor({ tutorId: profile.uid, studentId, subject }));
+    setTopicScores(await getStudentTopicScoresForTutor({ tutorId: profile.uid, studentId, subject }));
     setTopicOptions(getTopicOptionGroups({ extractedTopics, subject, grade: studentContext?.grade }));
   };
 
@@ -67,11 +90,17 @@ export const TutorStudentDetailsPage = () => {
   const latestReport = student?.latestReportsBySubject?.[subject] || reports[0]?.note || (subject === DEFAULT_SUBJECT ? student?.latestReport : '') || '';
   const hasInitialReport = Boolean(latestReport.trim());
   const todayLocal = today();
+  const regenerationEndDate = getSevenDayWindow(todayLocal).at(-1);
   const regenerableExercises = exercises.filter((exercise) =>
     String(exercise.assignmentDate ?? '') >= todayLocal
+    && String(exercise.assignmentDate ?? '') <= regenerationEndDate
     && !exercise.submittedImageUrl
     && exercise.submitted !== 'Yes'
     && exercise.submissionStatus !== 'submitted'
+  );
+  const regenerationInProgress = isRegenerating || (
+    regenerationStatus?.status === 'processing'
+    && Date.now() < Number(regenerationStatus.expiresAtMs ?? 0)
   );
 
   const addTopic = () => {
@@ -91,9 +120,10 @@ export const TutorStudentDetailsPage = () => {
 
   const regenerateExercises = async () => {
     if (isRegenerating || !student || !regenerableExercises.length) return;
-    const confirmed = window.confirm(`Regenerate ${regenerableExercises.length} future unsubmitted exercise${regenerableExercises.length === 1 ? '' : 's'} for ${student.displayName || student.name || 'this student'}? Past exercises and submitted work will be kept.`);
+    const confirmed = window.confirm(`Regenerate uncompleted exercises from today through ${regenerationEndDate} for ${student.displayName || student.name || 'this student'}? Completed exercises and exercises outside this 7-day window will be kept.`);
     if (!confirmed) return;
     setIsRegenerating(true);
+    setStatus('Starting exercise regeneration...');
     try {
       const result = await regenerateFutureUnsubmittedExercisesForTutor({
         tutorId: profile.uid,
@@ -109,6 +139,21 @@ export const TutorStudentDetailsPage = () => {
       setStatus(error.message || 'Could not regenerate exercises.');
     } finally {
       setIsRegenerating(false);
+    }
+  };
+
+  const removeExercise = async (exercise) => {
+    if (!window.confirm(`Delete “${exercise.title || 'this exercise'}” for ${student?.displayName || student?.name || 'this student'}? This cannot be undone.`)) return;
+    setDeletingExerciseId(exercise.id);
+    try {
+      const result = await deleteExerciseAssignmentForTutor({ tutorId: profile.uid, exerciseId: exercise.id });
+      await deleteExerciseSubmissionFiles(result.storageUrls);
+      setExercises((current) => current.filter((item) => item.id !== exercise.id));
+      setStatus('Exercise deleted.');
+    } catch (error) {
+      setStatus(error.message || 'Could not delete exercise.');
+    } finally {
+      setDeletingExerciseId('');
     }
   };
 
@@ -152,7 +197,12 @@ export const TutorStudentDetailsPage = () => {
 
   return (
     <AppShell title={student?.displayName || student?.name || 'Student'} subtitle={`${subject} learner details, reports, exercises, and lessons.`} role="tutor" user={profile} onLogout={logout}>
-      {status ? <div className="panel p-4 text-sm text-slate-700">{status}</div> : null}
+      {status || regenerationInProgress ? (
+        <div role="status" aria-live="polite" className={`panel flex items-center gap-3 p-4 text-sm ${regenerationInProgress ? 'border border-lime-400/30 bg-lime-400/10 text-lime-300' : 'text-slate-300'}`}>
+          {regenerationInProgress ? <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-lime-400" aria-hidden="true" /> : null}
+          <span>{regenerationInProgress ? regenerationStatus?.message || status || 'Regenerating exercises...' : status}</span>
+        </div>
+      ) : null}
       <Link to="/tutor" className="btn-secondary inline-flex w-fit">Back to students</Link>
 
       <section className="panel p-5">
@@ -198,13 +248,66 @@ export const TutorStudentDetailsPage = () => {
         <div className="panel space-y-4 p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <SectionHeader eyebrow="Exercises" title="Assigned exercises" description="Click an exercise to view details and paper links." />
-            <button type="button" className="btn-secondary" onClick={regenerateExercises} disabled={!regenerableExercises.length || isRegenerating}>
-              {isRegenerating ? <><span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-r-transparent" aria-hidden="true" /> Regenerating...</> : 'Regenerate future exercises'}
+            <button type="button" className="btn-secondary inline-flex items-center gap-2 disabled:cursor-not-allowed" onClick={regenerateExercises} disabled={!regenerableExercises.length || regenerationInProgress}>
+              {regenerationInProgress ? <><LoaderCircle className="h-4 w-4 animate-spin text-lime-400" aria-hidden="true" /> Regenerating...</> : 'Regenerate next 7 days'}
             </button>
           </div>
-          <div className="space-y-3">{exercises.map((exercise) => <button key={exercise.id} type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}`)} className="block w-full rounded-2xl bg-slate-50 p-4 text-left"><p className="font-semibold text-slate-950">{exercise.title}</p><p className="text-sm text-slate-500">{exercise.subject} • {exercise.assignmentDate}{exercise.submittedImageUrl || exercise.submitted === 'Yes' ? ' • Submitted' : ''}</p></button>)}{!exercises.length ? <p className="text-sm text-slate-500">No exercises yet.</p> : null}</div>
+          <div className="space-y-3">{exercises.map((exercise) => (
+            <div key={exercise.id} className="flex items-center gap-3 rounded-lg bg-slate-800/60 p-3">
+              <button type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}`)} className="min-w-0 flex-1 text-left">
+                <p className="font-semibold text-slate-100">{exercise.title}</p>
+                <p className="text-sm text-slate-400">{exercise.subject} • {exercise.assignmentDate}{exercise.submittedImageUrl || exercise.submitted === 'Yes' ? ' • Submitted' : ''}</p>
+              </button>
+              <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={() => removeExercise(exercise)} disabled={deletingExerciseId === exercise.id} aria-label={`Delete ${exercise.title}`} title="Delete exercise">
+                <Trash2 className="h-4 w-4" aria-hidden="true" /> {deletingExerciseId === exercise.id ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          ))}{!exercises.length ? <p className="text-sm text-slate-400">No exercises yet.</p> : null}</div>
         </div>
         <div className="panel p-5"><SectionHeader eyebrow="Lessons" title="Tutor lessons" description="Planned and completed lessons for this student." /><div className="space-y-3">{lessons.map((lesson) => <Link key={lesson.id} to={`/tutor/lessons/${lesson.id}`} className="block rounded-2xl bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full bg-slate-800 border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-300">{lesson.status === 'planned' ? 'Planned' : 'Completed'}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lesson.lessonType === 'inPerson' ? 'In-person' : 'Online'}</p></Link>)}{!lessons.length ? <p className="text-sm text-slate-500">No lessons yet.</p> : null}</div></div>
+      </section>
+
+      <section className="space-y-4">
+        <SectionHeader eyebrow="Peer marking" title="Work this student marked" description="Review the original student work, your student's whiteboard annotations, and the exact paper question they marked." />
+        {peerMarkedWork.map((assignment) => (
+          <article key={assignment.id} className="panel space-y-4 p-5">
+            <div>
+              <p className="font-semibold text-slate-900">{assignment.title || 'Peer-marked exercise'} · {assignment.assignmentDate}</p>
+              <p className="mt-1 text-sm text-slate-500">{assignment.topic || subject} · Marking completed</p>
+            </div>
+            {Array.isArray(assignment.questionLinks) && assignment.questionLinks.length ? (
+              <div className="flex flex-wrap gap-2">
+                {assignment.questionLinks.map((link, index) => (
+                  <Link key={`${link.paperId}-${link.questionReference}-${index}`} className="btn-secondary inline-flex items-center gap-2" to={`/tutor/papers/${link.paperId}?page=${Math.max(1, Number(link.pageNumber) || 1)}&question=${encodeURIComponent(link.questionReference || '')}`}>
+                    <FileText className="h-4 w-4" aria-hidden="true" />
+                    {link.questionReference ? `Q${link.questionReference}` : 'Question'} · page {link.pageNumber || 1}
+                  </Link>
+                ))}
+              </div>
+            ) : assignment.paperIds?.[0] ? (
+              <Link className="btn-secondary inline-flex items-center gap-2" to={`/tutor/papers/${assignment.paperIds[0]}?page=1`}><FileText className="h-4 w-4" aria-hidden="true" />Open question paper</Link>
+            ) : null}
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-slate-600">Manual topic understanding scores</p>
+              {[...new Set(String(assignment.topic || subject).split('|').map((topic) => topic.trim()).filter(Boolean))].map((topic) => (
+                <TutorTopicScoreEditor
+                  key={topic}
+                  tutorId={profile?.uid}
+                  studentId={studentId}
+                  subject={assignment.subject || subject}
+                  topic={topic}
+                  value={topicScores[topic]}
+                  onSaved={(savedTopic, score) => setTopicScores((current) => ({ ...current, [savedTopic]: score }))}
+                />
+              ))}
+            </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div><p className="mb-2 text-sm font-medium text-slate-600">Other student's submitted work</p><a href={assignment.submittedImageUrl} target="_blank" rel="noreferrer"><img src={assignment.submittedImageUrl} alt="Original work marked by the tutor's student" className="max-h-[620px] w-full rounded-md bg-slate-100 object-contain" /></a></div>
+              {assignment.reviewImageUrl ? <div><p className="mb-2 text-sm font-medium text-slate-600">{student?.displayName || student?.name || 'Student'}'s whiteboard marking</p><a href={assignment.reviewImageUrl} target="_blank" rel="noreferrer"><img src={assignment.reviewImageUrl} alt="Student's completed whiteboard annotations" className="max-h-[620px] w-full rounded-md bg-slate-100 object-contain" /></a></div> : null}
+            </div>
+          </article>
+        ))}
+        {!peerMarkedWork.length ? <div className="panel p-5 text-sm text-slate-500">No completed peer-marking work is available yet.</div> : null}
       </section>
     </AppShell>
   );

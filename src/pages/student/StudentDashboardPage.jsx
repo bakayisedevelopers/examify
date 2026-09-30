@@ -157,13 +157,16 @@ export const StudentDashboardPage = () => {
           const access = await getStudentAccessState(profile, subject);
           anyPaidSubject = anyPaidSubject || Boolean(access.paymentCompleted);
 
-          const mode = access.hasInitialGeneration ? 'weekly' : 'initial';
-          const modeStatus = access.generationStatus?.[mode];
-          const shouldGenerate = access.paymentCompleted && ((mode === 'initial' && access.initialGenerationReady) || (mode === 'weekly' && access.weeklyGenerationReady));
+          const initialWasAttempted = access.generationRunStatus?.lastTrigger === 'initial'
+            && ['completed', 'failed'].includes(access.generationRunStatus?.status);
+          const shouldGenerate = access.paymentCompleted
+            && !access.hasInitialGeneration
+            && access.initialGenerationReady
+            && !initialWasAttempted;
           if (shouldGenerate) {
-            const result = await runGeneratePlan(subject, mode);
-            if (!result?.generated && !access.hasInitialGeneration) {
-              const resultStatus = result?.criteria?.initial ?? access.generationStatus?.initial ?? modeStatus;
+            const result = await runGeneratePlan(subject, 'initial');
+            if (!result?.generated) {
+              const resultStatus = result?.criteria?.initial ?? access.generationStatus?.initial;
               readiness.push({
                 subject,
                 mode: 'initial',
@@ -226,11 +229,11 @@ export const StudentDashboardPage = () => {
 
       {Object.entries(exerciseGenerationStatuses).filter(([, status]) => {
         if (!status) return false;
-        if (status.status === 'processing') return true;
+        if (status.status === 'processing') return Date.now() < Number(status.expiresAtMs ?? 0);
         return Date.now() - Number(status.finishedAtMs || 0) < 120000;
       }).map(([subject, status]) => (
-        <div key={subject} role="status" aria-live="polite" className={`panel flex items-start gap-3 p-4 ${status.status === 'failed' ? 'text-rose-700' : 'text-slate-700'}`}>
-          {status.status === 'processing' ? <span className="mt-0.5 inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-current border-r-transparent" aria-hidden="true" /> : null}
+        <div key={subject} role="status" aria-live="polite" className={`panel flex items-start gap-3 p-4 ${status.status === 'failed' ? 'border border-rose-400/30 bg-rose-400/10 text-rose-300' : 'border border-lime-400/30 bg-lime-400/10 text-lime-300'}`}>
+          {status.status === 'processing' ? <span className="mt-0.5 inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-lime-400 border-r-transparent" aria-hidden="true" /> : null}
           <div>
             <p className="font-semibold">{status.status === 'processing' ? `${subject}: AI is regenerating your exercises` : `${subject}: ${status.status === 'completed' ? 'Exercise regeneration complete' : 'Exercise regeneration did not complete'}`}</p>
             <p className="mt-1 text-sm">{status.message}</p>
@@ -242,7 +245,7 @@ export const StudentDashboardPage = () => {
         <div className="panel p-4">
           <p className="font-medium text-slate-700">{generationMessage}</p>
           <div className="mt-3 h-2 w-full rounded-full bg-slate-200">
-            <div className="h-full rounded-full bg-brand-600 transition-all duration-300" style={{ width: `${Math.min(100, Math.max(0, generationProgress))}%` }} />
+            <div className="h-full rounded-full bg-lime-400 transition-all duration-300" style={{ width: `${Math.min(100, Math.max(0, generationProgress))}%` }} />
           </div>
         </div>
       ) : null}

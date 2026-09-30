@@ -1,4 +1,5 @@
 import { httpsCallable } from 'firebase/functions';
+import { jsonrepair } from 'jsonrepair';
 import { functions, isFirebaseConfigured } from '../firebase/config';
 
 const stripCodeFence = (text = '') =>
@@ -19,6 +20,21 @@ const extractJsonObject = (text = '') => {
   }
 
   return trimmed.slice(firstBrace, lastBrace + 1);
+};
+
+const parseModelJson = (text = '') => {
+  const cleaned = stripCodeFence(text);
+  const candidate = extractJsonObject(cleaned);
+  try {
+    return { parsed: JSON.parse(candidate), repaired: false };
+  } catch {
+    try {
+      return { parsed: JSON.parse(jsonrepair(candidate)), repaired: true };
+    } catch {
+      if (candidate !== cleaned) return { parsed: JSON.parse(jsonrepair(cleaned)), repaired: true };
+      throw new Error('Model response could not be repaired as JSON.');
+    }
+  }
 };
 
 const getFallbackRecommendations = (payload = {}) => {
@@ -54,23 +70,47 @@ const normalizeRecommendations = (parsed, payload = {}) => {
     : [];
 
   return {
-    recommendations: recommendations.map((item, index) => ({
-      title: item?.title || item?.questionReferences?.join(' | ') || `Recommendation ${index + 1}`,
-      topic: item?.topic || (
-        Array.isArray(item?.topicBreakdown)
-          ? item.topicBreakdown.map((entry) => entry?.topic).filter(Boolean).join(' | ')
-          : `${payload.subject ?? 'Subject'} topic`
-      ),
-      reason: item?.reason || 'No reason provided.',
-      sourceLabel: item?.sourceLabel || 'AI recommendation',
-      instruction: item?.instruction || item?.reason || 'Complete the referenced question(s).',
-      assignmentDate: item?.assignmentDate || payload.assignmentDates?.[index] || null,
-      questionReferences: Array.isArray(item?.questionReferences)
+    recommendations: recommendations.map((item, index) => {
+      const reference = item?.questionReference
+        || item?.reference
+        || item?.questionReferences?.[0]
+        || item?.topicBreakdown?.[0]?.questionReference
+        || item?.title
+        || '';
+      const topic = item?.topic || item?.topicBreakdown?.[0]?.topic || `${payload.subject ?? 'Subject'} topic`;
+      const paperId = item?.paperId || item?.questionLinks?.[0]?.paperId || item?.questionLinks?.[0]?.id || '';
+      const indexedQuestion = payload.selectedPapers?.flatMap((paper) => (
+        !paperId || paper.id === paperId
+          ? (paper.questions ?? []).map((question) => ({ paper, question }))
+          : []
+      )).find(({ question }) => String(question.questionReference || question.reference || '').trim() === String(reference).trim());
+      const resolvedPaperId = paperId || indexedQuestion?.paper?.id || '';
+      const pageNumber = Number(item?.pageNumber || item?.questionLinks?.[0]?.pageNumber || item?.questionLinks?.[0]?.page || indexedQuestion?.question?.pageNumber) || 1;
+      const questionLinks = Array.isArray(item?.questionLinks) && item.questionLinks.length
+        ? item.questionLinks
+            .map((link) => ({
+              paperId: link?.paperId || link?.id || resolvedPaperId,
+              pageNumber: Number(link?.pageNumber ?? link?.page ?? pageNumber) || 1,
+              questionReference: link?.questionReference || link?.reference || reference,
+              topic: link?.topic || topic,
+            }))
+            .filter((link) => link.paperId && link.questionReference)
+        : resolvedPaperId && reference
+          ? [{ paperId: resolvedPaperId, pageNumber, questionReference: reference, topic }]
+          : [];
+      const sourcePaper = payload.selectedPapers?.find((paper) => paper.id === resolvedPaperId);
+      const referenceList = Array.isArray(item?.questionReferences) && item.questionReferences.length
         ? item.questionReferences.filter(Boolean)
-        : String(item?.title || '')
-          .split('|')
-          .map((part) => part.trim())
-          .filter(Boolean),
+        : reference ? [reference] : [];
+
+      return {
+      title: item?.title || item?.questionReferences?.join(' | ') || reference || `Recommendation ${index + 1}`,
+      topic,
+      reason: item?.reason || `Selected from analyzed ${topic} question metadata.`,
+      sourceLabel: item?.sourceLabel || [sourcePaper?.year, sourcePaper?.region, sourcePaper?.month, sourcePaper?.paperNumber].filter(Boolean).join(' ') || 'Analyzed question paper',
+      instruction: item?.instruction || 'Answer the exact referenced question only.',
+      assignmentDate: item?.assignmentDate || payload.assignmentDates?.[index] || null,
+      questionReferences: referenceList,
       topicBreakdown: Array.isArray(item?.topicBreakdown)
         ? item.topicBreakdown
             .map((entry) => ({
@@ -78,23 +118,15 @@ const normalizeRecommendations = (parsed, payload = {}) => {
               questionReference: entry?.questionReference || entry?.reference || '',
             }))
             .filter((entry) => entry.questionReference)
-        : [],
-      paperIdsUsed: Array.isArray(item?.paperIdsUsed)
+        : reference ? [{ topic, questionReference: reference }] : [],
+      paperIdsUsed: Array.isArray(item?.paperIdsUsed) && item.paperIdsUsed.length
         ? item.paperIdsUsed.filter(Boolean)
-        : Array.isArray(payload.selectedPaperIds)
+        : resolvedPaperId ? [resolvedPaperId] : Array.isArray(payload.selectedPaperIds)
           ? payload.selectedPaperIds.slice(0, 2)
           : [],
-      questionLinks: Array.isArray(item?.questionLinks)
-        ? item.questionLinks
-            .map((link) => ({
-              paperId: link?.paperId || link?.id || '',
-              pageNumber: Number(link?.pageNumber ?? link?.page ?? 1) || 1,
-              questionReference: link?.questionReference || link?.reference || '',
-              topic: link?.topic || '',
-            }))
-            .filter((link) => link.paperId && link.questionReference)
-        : [],
-    })),
+      questionLinks,
+    };
+    }),
     source: 'model',
   };
 };
@@ -112,7 +144,6 @@ const buildPrompt = ({
   mode = 'initial',
   assignmentDates = [],
   selectedPapers = [],
-  selectedPaperIds = [],
   maxExercisesPerDay = 1,
   maxQuestionsPerDay = 1,
   questionPlanRules = {},
@@ -128,9 +159,8 @@ Business rules:
 - Recommend exercises only from tutor-completed topics.
 - Prefer references to question papers and question numbers instead of rewriting full question text.
 - Consider grade, region, tutor reports, tutor notes, topic-based question metadata, question paper metadata, stored question indexes, and past marks.
-- Return strict JSON with a top-level key called "recommendations".
-- Each recommendation must include: title, topic, reason, sourceLabel, instruction, assignmentDate, questionReferences, topicBreakdown, paperIdsUsed, questionLinks.
-- Every questionLinks item must include paperId, pageNumber, questionReference, and topic from the stored question index.
+- Return a compact JSON object with a top-level key called "recommendations".
+- Each recommendation must contain only these fields: assignmentDate, topic, questionReference, paperId, pageNumber.
 - Return only valid JSON.
 - Use double quotes for all property names and string values.
 - Do not include markdown.
@@ -143,18 +173,11 @@ Example format:
 {
   "recommendations": [
     {
-      "title": "1.1",
-      "topic": "Probability",
-      "reason": "Probability is a tutor-completed topic selected for this day.",
-      "sourceLabel": "2023 Gauteng June Paper, Q1.1",
-      "instruction": "Answer the exact referenced question only.",
       "assignmentDate": "2026-03-24",
-      "questionReferences": ["1.1"],
-      "topicBreakdown": [{ "topic": "Probability", "questionReference": "1.1" }],
-      "paperIdsUsed": ["paper-a"],
-      "questionLinks": [
-        { "paperId": "paper-a", "pageNumber": 2, "questionReference": "1.1", "topic": "Probability" }
-      ]
+      "topic": "Probability",
+      "questionReference": "1.1",
+      "paperId": "paper-a",
+      "pageNumber": 2
     }
   ]
 }
@@ -176,8 +199,6 @@ Stored source paper question indexes: ${JSON.stringify(selectedPapers.map((paper
   questions: paper.questions,
 })))}
 Assignment dates to schedule: ${JSON.stringify(assignmentDates)}
-Selected source papers: ${JSON.stringify(selectedPapers)}
-Selected source paper ids: ${JSON.stringify(selectedPaperIds)}
 Lesson history with understanding: ${JSON.stringify(lessonHistory)}
 Understanding by topic: ${JSON.stringify(understandingByTopic)}
 Last 28 days exercise history to avoid short repeats: ${JSON.stringify(recentExerciseHistory)}
@@ -187,8 +208,6 @@ Maximum question references per day: ${maxQuestionsPerDay}
 Maximum separate exercises per day: ${maxExercisesPerDay}
 
 Additional mandatory generation rules:
-- The title must be only the question reference numbers joined by " | " when there are multiple references.
-- Never use topic names in the title.
 - Follow Question-plan rules.perDayTopics. Return one recommendation object for each planned topic slot, repeating the same assignmentDate when that date has multiple planned slots.
 - Each recommendation is one exercise and must contain exactly one question reference and one topic.
 - Never return more than Maximum separate exercises per day for any assignmentDate. The frontend enforces this cap too.
@@ -199,13 +218,14 @@ Additional mandatory generation rules:
 - For initial mode, schedule at most one exercise per day, even when multiple topics are completed.
 - For weekly mode, schedule no more than the planned number of exercises per day; use different topics on the same date.
 - When more than three topics are available, bias selections toward higher understanding topics, while still occasionally including lower understanding topics.
-- Only use the selected source papers and include only those ids in paperIdsUsed.
+- Only use the selected source papers and include their exact ids in paperId.
 - Use only questions from the stored source paper question indexes. Do not invent question numbers.
-- Include a questionLinks entry for every selected question so the app can open the PDF at the correct page.
+- Use the exact questionReference, paperId, and pageNumber found in the stored question index.
+- Return only the five example fields per recommendation; the app fills display and linking fields locally.
 - Avoid repeating exact questionReferences from the same paper that appear in Last 28 days exercise history.
 - Repeating a recent exact question is allowed only when the topic-based source metadata does not contain enough different questions for that topic.
 - NEVER REPEAT the same question for different assignment dates in the new plan, unless the total number of available matching questions is not enough.
-- An Exercise generation can have multiple papers references, for example assignedment date 1 from paper A and assignment date 2 paper B, this will give you multiple options to work with.
+- Vary papers across recommendations when suitable questions are available.
 `;
 
 export const recommendExercises = async (payload = {}) => {
@@ -224,15 +244,16 @@ export const recommendExercises = async (payload = {}) => {
     system: 'You return strict JSON only. Do not include markdown, comments, or explanatory text.',
     prompt: buildPrompt(payload),
     responseFormat: { type: 'json_object' },
-    maxTokens: 3000,
+    maxTokens: 2000,
     temperature: 0.2,
   };
   const parseResult = (result, provider) => {
     const rawText = result?.data?.text ?? '';
-    const parsed = JSON.parse(extractJsonObject(stripCodeFence(rawText)));
+    const { parsed, repaired } = parseModelJson(rawText);
     if (!Array.isArray(parsed?.recommendations) || !parsed.recommendations.length) {
       throw new Error(`${provider} did not return exercise recommendations.`);
     }
+    if (repaired) console.info('[Examifying][AI] repaired model JSON response', { provider });
     return {
       ...normalizeRecommendations(parsed, payload),
       source: provider,

@@ -11,6 +11,7 @@ import {
   serverTimestamp,
   updateDoc,
   where,
+  writeBatch,
 } from 'firebase/firestore';
 import { db, isFirebaseConfigured, storage } from '../firebase/config';
 import { callKiloImage, callKiloText } from './kiloService';
@@ -45,27 +46,55 @@ export const uploadSubmissionImage = async ({ file, studentId, exerciseId }) => 
     };
   }
 
+  let uploadedFile = null;
   try {
-    const upload = await uploadFile({ file, path: `submissions/${studentId}/${exerciseId}` });
+    uploadedFile = await uploadFile({ file, path: `submissions/${studentId}/${exerciseId}` });
     const exerciseRef = doc(db, "dailyExerciseAssignments", exerciseId);
     const exerciseSnapshot = await getDoc(exerciseRef);
-    const exercise = exerciseSnapshot.exists() ? exerciseSnapshot.data() : {};
-    await updateDoc(exerciseRef, {
+    if (!exerciseSnapshot.exists()) throw new Error('This exercise could not be found.');
+    const exercise = exerciseSnapshot.data();
+    if (exercise.studentId && exercise.studentId !== studentId) throw new Error('This exercise belongs to another student.');
+    if (exercise.submittedImageUrl || exercise.submitted === 'Yes' || exercise.submissionStatus === 'submitted') {
+      throw new Error('Work has already been submitted for this exercise.');
+    }
+    const submittedAt = serverTimestamp();
+    const submissionData = {
       studentId,
       exerciseId,
-      submittedImageUrl: upload.url,
-      submittedFileName: upload.fileName,
+      imageUrl: uploadedFile.url,
+      submittedImageUrl: uploadedFile.url,
+      fileName: uploadedFile.fileName,
+      submittedFileName: uploadedFile.fileName,
+      subject: exercise.subject ?? '',
+      topic: exercise.topic ?? '',
+      exerciseTitle: exercise.title ?? '',
+      assignmentDate: exercise.assignmentDate ?? '',
+      status: 'submitted',
+      submitted: 'Yes',
+      submissionStatus: 'submitted',
+      submittedAt,
       updatedAt: serverTimestamp(),
-      submittedAt: serverTimestamp(),
-      submitted: "Yes",
-      peerReviewed: "No",
-      peerReviewStatus: "pending",
-      peerNotes: "",
+    };
+    const batch = writeBatch(db);
+    batch.update(exerciseRef, {
+      studentId,
+      exerciseId,
+      submittedImageUrl: uploadedFile.url,
+      submittedFileName: uploadedFile.fileName,
+      submittedAt,
+      updatedAt: serverTimestamp(),
+      peerReviewed: 'No',
+      peerReviewStatus: 'pending',
+      peerNotes: '',
       peerReviewDate: null,
+      submitted: 'Yes',
+      submissionStatus: 'submitted',
     });
+    batch.set(doc(db, collections.submissions, exerciseId), submissionData, { merge: true });
+    await batch.commit();
 
     callKiloImage({
-      imageUrl: upload.url,
+      imageUrl: uploadedFile.url,
       prompt: [
         'Analyze this student answer image for tutor review.',
         `Subject: ${exercise.subject ?? 'Unknown'}.`,
@@ -82,14 +111,28 @@ export const uploadSubmissionImage = async ({ file, studentId, exerciseId }) => 
     });
 
     return { 
-      submittedFileName: upload.fileName, 
-      submittedImageUrl: upload.url, 
+      submittedFileName: uploadedFile.fileName,
+      submittedImageUrl: uploadedFile.url,
       exerciseId: exerciseId 
     };
   } catch (error) {
+    if (uploadedFile?.url) {
+      try {
+        await deleteObject(ref(storage, uploadedFile.url));
+      } catch (cleanupError) {
+        console.warn('[Examifying][Storage] Could not clean up an incomplete submission upload:', cleanupError?.code || cleanupError?.message);
+      }
+    }
     console.error("Upload/Update failed:", error);
     throw error;
   }
+};
+
+export const uploadTutorMarkedWork = async ({ file, studentId, exerciseId }) => {
+  if (!isFirebaseConfigured) {
+    return { fileName: file?.name ?? 'marked-work.png', url: URL.createObjectURL(file) };
+  }
+  return uploadFile({ file, path: `tutorMarks/${studentId}/${exerciseId}` });
 };
 
 export const uploadPeerReviewImage = async ({ file, studentId, exerciseId }) => {
@@ -110,6 +153,18 @@ export const uploadPeerReviewImage = async ({ file, studentId, exerciseId }) => 
     console.error("Review upload failed:", error);
     throw error;
   }
+};
+
+export const deleteExerciseSubmissionFiles = async (urls = []) => {
+  if (!isFirebaseConfigured || !storage) return;
+  const uniqueUrls = [...new Set(urls.filter((url) => typeof url === 'string' && url.startsWith('https://')) )];
+  await Promise.all(uniqueUrls.map(async (url) => {
+    try {
+      await deleteObject(ref(storage, url));
+    } catch (error) {
+      console.warn('[Examifying][Storage] Could not remove an exercise attachment:', error?.code || error?.message);
+    }
+  }));
 };
 
 export const getUreviewedExercises = async (studentId, subject) => {

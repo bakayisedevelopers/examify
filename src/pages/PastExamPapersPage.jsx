@@ -388,7 +388,7 @@ export const PastExamPapersPage = () => {
             <PaperAnalysisStatus paper={paper} />
             <div className="mt-4 flex flex-wrap gap-3 text-sm">
               <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Open paper</Link>
-              {paper.memoUrl ? <a className="btn-secondary" href={paper.memoUrl} target="_blank" rel="noreferrer">Open memo</a> : <span className="rounded-full bg-slate-50 px-3 py-2 text-slate-500">No memo uploaded</span>}
+              {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Open memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-slate-500">No memo uploaded</span>}
               <button type="button" className="btn-secondary" onClick={() => startEditPaper(paper)}>Edit</button>
               {canManagePaperAnalysis(role) && canQueuePaperAnalysis(paper) ? <button type="button" className="btn-primary" onClick={() => queuePaperReanalysis(paper)}>{reanalysisButtonLabel(paper)}</button> : null}
               {canManagePaperAnalysis(role) && canStopPaperAnalysis(paper) ? <button type="button" className="btn-secondary text-rose-700 hover:text-rose-800" onClick={() => stopPaperAnalysis(paper).catch((error) => setStatus(error.message || 'Could not stop analysis.'))}>Stop analysis</button> : null}

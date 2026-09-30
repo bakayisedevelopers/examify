@@ -16,12 +16,14 @@ import {
   setDoc,
   updateDoc,
   where,
+  writeBatch,
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { addDays, formatISO } from 'date-fns';
 import { db, functions, isFirebaseConfigured } from '../firebase/config';
 import { collections } from '../firebase/schema';
 import { recommendExercises } from './aiService';
+import { getCurrentGenerationNumber, getGenerationWeekForTrigger, getRegenerationState, getSevenDayWindow, isExerciseSubmitted } from './exerciseGenerationPlan';
 import {
   mockCompletedLessons,
   mockDashboardData,
@@ -68,6 +70,7 @@ const demoUsers = Object.values(mockUsers);
 const demoGuideQuizResults = [...mockGuideQuizResults];
 
 const GENERATION_HISTORY_LIMIT = 40;
+const EXERCISE_REGENERATION_LOCK_TIMEOUT_MS = 20 * 60 * 1000;
 
 const buildTutorAssignmentId = ({ studentId, tutorId, subject }) => `${studentId}_${tutorId}_${subject}`;
 
@@ -156,14 +159,19 @@ const getLessonTopicEntries = (lesson = {}, lessonIndex = 0) => {
       .filter((entry) => entry.topic);
   }
 
-  const topic = String(lesson?.topic || '').trim();
-  return topic ? [{
-    topic,
-    understandingLevel: Number(lesson?.understandingLevel ?? 5),
-    reportSnippet: lesson?.topicReport ?? lesson?.note ?? '',
-    completedOn: lesson?.completedOn ?? lesson?.createdAt ?? '',
-    firstSeenIndex: lessonIndex,
-  }] : [];
+  const topics = Array.isArray(lesson?.topics) && lesson.topics.length
+    ? lesson.topics
+    : [lesson?.topic];
+  return topics
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .map((topic) => ({
+      topic,
+      understandingLevel: Number(lesson?.understandingLevel ?? 5),
+      reportSnippet: lesson?.topicReport ?? lesson?.note ?? '',
+      completedOn: lesson?.completedOn ?? lesson?.createdAt ?? '',
+      firstSeenIndex: lessonIndex,
+    }));
 };
 
 const getTopicSummary = (completedLessons = []) => {
@@ -236,17 +244,6 @@ const pickWeeklyTopicsForDay = ({ topicSummaries = [], maxQuestionsPerDay, dayIn
   }
 
   return selected;
-};
-
-const getGenerationNumber = (history = [], mode) => {
-  const batches = new Set(
-    history
-      .filter((assignment) => assignment?.generationMode === mode)
-      .map((assignment) => assignment?.generationBatchId)
-      .filter(Boolean),
-  );
-
-  return batches.size + 1;
 };
 
 const buildTutorDashboard = ({ tutorId = 'mock-tutor-1', subject = DEFAULT_SUBJECT } = {}) => {
@@ -684,6 +681,7 @@ const buildAssignmentsFromAiRecommendations = ({
   dailyExerciseCaps = {},
   allowedAssignmentDates = [],
   grade,
+  generationWeek = 1,
 }) => {
   const allowedDates = new Set(allowedAssignmentDates);
   const dailyExerciseCounts = new Map();
@@ -756,6 +754,7 @@ const buildAssignmentsFromAiRecommendations = ({
       generatedBy: 'frontend-ai-service',
       generationMode: mode,
       generationBatchId,
+      generationWeek,
       paperIds: Array.isArray(recommendation?.paperIdsUsed) && recommendation.paperIdsUsed.length
         ? recommendation.paperIdsUsed.filter(Boolean)
         : selectedPapers.map((paper) => paper.id),
@@ -815,6 +814,7 @@ export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT) 
       initialGenerationReady: generationStatus.initial.ready,
       weeklyGenerationReady: generationStatus.weekly.ready,
       generationStatus,
+      generationRunStatus: null,
       matchingQuestionPapers: matchingQuestionPapers.slice(0, MAX_AI_SOURCE_PAPERS),
       latestTutorReport,
       completedLessons,
@@ -832,6 +832,7 @@ export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT) 
   const reports = await getTutorReports(student.uid, subject);
   const lessons = await getCompletedLessons(student.uid, subject);
   const assignmentHistory = await getAssignmentHistory(student.uid, subject);
+  const generationRunSnapshot = await getDoc(doc(db, collections.exerciseGenerationStatus, `${student.uid}_${subject}`));
   const studentData = studentSnapshot.exists() ? studentSnapshot.data() : student;
   const latestTutorReport = studentData?.latestReportsBySubject?.[subject] || reports[0]?.note || (subject === DEFAULT_SUBJECT ? (studentData?.latestReport || '') : '');
   const generationStatus = buildStudentGenerationStatus({
@@ -849,6 +850,7 @@ export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT) 
     initialGenerationReady: generationStatus.initial.ready,
     weeklyGenerationReady: generationStatus.weekly.ready,
     generationStatus,
+    generationRunStatus: generationRunSnapshot.exists() ? generationRunSnapshot.data() : null,
     matchingQuestionPapers: papers.slice(0, MAX_AI_SOURCE_PAPERS),
     latestTutorReport,
     completedLessons: lessons,
@@ -978,6 +980,76 @@ export const getCompletedLessons = async (studentId, subject = DEFAULT_SUBJECT) 
   return snapshot.docs
     .map((item) => ({ id: item.id, ...item.data() }))
     .filter(isCompletedLessonReadyForGeneration);
+};
+
+export const getStudentTopicScoresForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT }) => {
+  if (!tutorId || !studentId) throw new Error('Tutor and student are required.');
+  const contexts = await getTutorAssignedStudentContexts(tutorId);
+  if (!contexts.some((context) => context.studentId === studentId && context.subject === subject)) {
+    throw new Error('This student is not assigned to you for this subject.');
+  }
+  const lessons = await getCompletedLessons(studentId, subject);
+  const scores = {};
+  lessons.forEach((lesson) => {
+    getLessonTopicEntries(lesson).forEach((entry) => {
+      if (!(entry.topic in scores)) scores[entry.topic] = entry.understandingLevel;
+    });
+  });
+  return scores;
+};
+
+export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT, topic, understandingLevel }) => {
+  const topicName = String(topic || '').trim();
+  const score = Number(understandingLevel);
+  if (!tutorId || !studentId || !topicName) throw new Error('Tutor, student, and topic are required.');
+  if (!Number.isFinite(score) || score < 0 || score > 10) throw new Error('Enter a topic score from 0 to 10.');
+  const contexts = await getTutorAssignedStudentContexts(tutorId);
+  if (!contexts.some((context) => context.studentId === studentId && context.subject === subject)) {
+    throw new Error('This student is not assigned to you for this subject.');
+  }
+
+  const lessons = await getCompletedLessons(studentId, subject);
+  const matchingLessons = lessons.filter((lesson) => getLessonTopicEntries(lesson).some((entry) => entry.topic.toLocaleLowerCase() === topicName.toLocaleLowerCase()));
+  if (!matchingLessons.length) throw new Error('No completed lesson was found for this topic.');
+
+  const updatedLessons = matchingLessons.map((lesson) => {
+    const originalEntries = Array.isArray(lesson.topicUnderstandingScores) && lesson.topicUnderstandingScores.length
+      ? lesson.topicUnderstandingScores
+      : (lesson.topics?.length ? lesson.topics : [lesson.topic]).filter(Boolean).map((entryTopic) => ({ topic: entryTopic, understandingLevel: lesson.understandingLevel }));
+    const entries = originalEntries.map((entry) => ({
+      ...entry,
+      understandingLevel: String(entry.topic).trim().toLocaleLowerCase() === topicName.toLocaleLowerCase()
+        ? score
+        : Number(entry.understandingLevel ?? lesson.understandingLevel ?? 5),
+    }));
+    const average = Math.round(entries.reduce((sum, entry) => sum + entry.understandingLevel, 0) / entries.length);
+    return { lesson, entries, average };
+  });
+
+  if (!isFirebaseConfigured) {
+    updatedLessons.forEach(({ lesson, entries, average }) => {
+      const target = mockCompletedLessons.find((item) => item.id === lesson.id);
+      if (target) {
+        target.topicUnderstandingScores = entries;
+        target.understandingLevel = average;
+      }
+    });
+    return { topic: topicName, understandingLevel: score };
+  }
+
+  ensureDb();
+  for (let offset = 0; offset < updatedLessons.length; offset += 450) {
+    const batch = writeBatch(db);
+    updatedLessons.slice(offset, offset + 450).forEach(({ lesson, entries, average }) => {
+      batch.update(doc(db, collections.coveredTopics, lesson.id), {
+        topicUnderstandingScores: entries,
+        understandingLevel: average,
+        updatedAt: serverTimestamp(),
+      });
+    });
+    await batch.commit();
+  }
+  return { topic: topicName, understandingLevel: score };
 };
 
 export const saveCompletedLesson = async ({
@@ -1375,15 +1447,19 @@ export const completePeerMarkingAssignment = async ({ assignmentId, reviewImageU
   const assignmentSnap = await getDoc(assignmentRef);
   if (!assignmentSnap.exists()) throw new Error('Peer marking assignment not found.');
   const assignment = assignmentSnap.data();
-  await updateDoc(assignmentRef, {
+  const completion = {
     reviewImageUrl,
     reviewFileName,
     status: 'completed',
     completedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-  });
+  };
+  const batch = writeBatch(db);
+  batch.update(assignmentRef, completion);
   if (assignment.exerciseId) {
-    await updateDoc(doc(db, collections.dailyExerciseAssignments, assignment.exerciseId), {
+    const exerciseRef = doc(db, collections.dailyExerciseAssignments, assignment.exerciseId);
+    const exerciseSnapshot = await getDoc(exerciseRef);
+    batch.update(exerciseRef, {
       peerReviewed: 'Yes',
       peerReviewStatus: 'completed',
       peerReviewDate: serverTimestamp(),
@@ -1391,7 +1467,18 @@ export const completePeerMarkingAssignment = async ({ assignmentId, reviewImageU
       submittedReviewFileName: reviewFileName,
       peerReviewerId: assignment.reviewerId,
     });
+    if (exerciseSnapshot.exists()) {
+      batch.set(doc(db, collections.submissions, assignment.exerciseId), {
+        ...completion,
+        exerciseId: assignment.exerciseId,
+        submittedReviewImageUrl: reviewImageUrl,
+        submittedReviewFileName: reviewFileName,
+        peerReviewerId: assignment.reviewerId,
+        peerMarkedAt: serverTimestamp(),
+      }, { merge: true });
+    }
   }
+  await batch.commit();
   return { id: assignmentId, reviewImageUrl, reviewFileName, status: 'completed' };
 };
 
@@ -1423,8 +1510,103 @@ export const getExerciseAssignmentById = async (exerciseId) => {
     return all.find((exercise) => exercise.id === exerciseId) ?? null;
   }
   ensureDb();
-  const snapshot = await getDoc(doc(db, collections.dailyExerciseAssignments, exerciseId));
-  return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
+  const [snapshot, submissionSnapshot] = await Promise.all([
+    getDoc(doc(db, collections.dailyExerciseAssignments, exerciseId)),
+    getDoc(doc(db, collections.submissions, exerciseId)),
+  ]);
+  if (!snapshot.exists()) return null;
+  return {
+    ...(submissionSnapshot.exists() ? submissionSnapshot.data() : {}),
+    ...snapshot.data(),
+    id: snapshot.id,
+  };
+};
+
+export const saveTutorMarkedExercise = async ({ tutorId, exerciseId, markedImageUrl, markedFileName }) => {
+  if (!tutorId || !exerciseId || !markedImageUrl) throw new Error('Tutor, exercise, and marked work are required.');
+  if (!isFirebaseConfigured) return { exerciseId, markedImageUrl, markedFileName, tutorMarkingStatus: 'completed' };
+  ensureDb();
+  const exerciseRef = doc(db, collections.dailyExerciseAssignments, exerciseId);
+  const exerciseSnapshot = await getDoc(exerciseRef);
+  if (!exerciseSnapshot.exists()) throw new Error('Exercise assignment not found.');
+  const exercise = exerciseSnapshot.data();
+  if (!exercise.submittedImageUrl) throw new Error('The student has not submitted work for this exercise yet.');
+  const contexts = await getTutorAssignedStudentContexts(tutorId);
+  if (!contexts.some((item) => item.studentId === exercise.studentId && item.subject === (exercise.subject ?? DEFAULT_SUBJECT))) {
+    throw new Error('You can only mark work for students assigned to you.');
+  }
+
+  const markedAt = serverTimestamp();
+  const patch = {
+    tutorMarkedImageUrl: markedImageUrl,
+    tutorMarkedFileName: markedFileName,
+    tutorMarkedBy: tutorId,
+    tutorMarkedAt: markedAt,
+    tutorMarkingStatus: 'completed',
+    markingStatus: 'completed',
+    updatedAt: serverTimestamp(),
+  };
+  const batch = writeBatch(db);
+  batch.update(exerciseRef, patch);
+  batch.set(doc(db, collections.submissions, exerciseId), { ...patch, exerciseId }, { merge: true });
+  await batch.commit();
+  return { exerciseId, ...patch };
+};
+
+export const getCompletedPeerMarkingWorkForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT }) => {
+  if (!tutorId || !studentId) return [];
+  const contexts = await getTutorAssignedStudentContexts(tutorId);
+  if (!contexts.some((item) => item.studentId === studentId && item.subject === subject)) {
+    throw new Error('This student is not assigned to you for the selected subject.');
+  }
+  if (!isFirebaseConfigured) return [];
+  ensureDb();
+  const snapshot = await getDocs(query(
+    collection(db, collections.peerMarkingAssignments),
+    where('reviewerId', '==', studentId),
+  ));
+  return snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .filter((item) => item.subject === subject && item.status === 'completed' && item.reviewImageUrl)
+    .sort((left, right) => String(right.assignmentDate ?? '').localeCompare(String(left.assignmentDate ?? '')));
+};
+
+export const deleteExerciseAssignmentForTutor = async ({ tutorId, exerciseId }) => {
+  if (!tutorId || !exerciseId) throw new Error('Tutor and exercise are required to delete an assignment.');
+  const exercise = await getExerciseAssignmentById(exerciseId);
+  if (!exercise) throw new Error('Exercise assignment not found.');
+  const contexts = await getTutorAssignedStudentContexts(tutorId);
+  if (!contexts.some((item) => item.studentId === exercise.studentId && item.subject === (exercise.subject ?? DEFAULT_SUBJECT))) {
+    throw new Error('You can only delete exercises for students assigned to you.');
+  }
+  if (!isFirebaseConfigured) return { deleted: true, storageUrls: [] };
+
+  ensureDb();
+  const [submissionSnapshot, peerAssignmentsSnapshot, peerReviewsSnapshot] = await Promise.all([
+    getDoc(doc(db, collections.submissions, exerciseId)),
+    getDocs(query(collection(db, collections.peerMarkingAssignments), where('exerciseId', '==', exerciseId))),
+    getDocs(query(collection(db, collections.peerReviews), where('submissionId', '==', exerciseId))),
+  ]);
+  const submission = submissionSnapshot.exists() ? submissionSnapshot.data() : {};
+  const storageUrls = [
+    exercise.submittedImageUrl,
+    exercise.submittedReviewImageUrl,
+    exercise.tutorMarkedImageUrl,
+    submission.imageUrl,
+    submission.submittedImageUrl,
+    submission.reviewImageUrl,
+    submission.submittedReviewImageUrl,
+    submission.tutorMarkedImageUrl,
+    ...peerAssignmentsSnapshot.docs.map((item) => item.data()?.reviewImageUrl),
+    ...peerReviewsSnapshot.docs.map((item) => item.data()?.reviewImageUrl),
+  ].filter((url) => typeof url === 'string' && url.startsWith('https://'));
+  const batch = writeBatch(db);
+  batch.delete(doc(db, collections.dailyExerciseAssignments, exerciseId));
+  if (submissionSnapshot.exists()) batch.delete(submissionSnapshot.ref);
+  peerAssignmentsSnapshot.docs.forEach((item) => batch.delete(item.ref));
+  peerReviewsSnapshot.docs.forEach((item) => batch.delete(item.ref));
+  await batch.commit();
+  return { deleted: true, storageUrls };
 };
 
 export const getSubmissionForExercise = async (exerciseId) => {
@@ -1437,7 +1619,7 @@ export const getSubmissionForExercise = async (exerciseId) => {
   return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
 };
 
-export const generateExercisePlanIfEligible = async ({ student, mode, subject = DEFAULT_SUBJECT, latestTutorReport, completedLesson, understandingLevel, availablePapers, onProgress, overrideFutureUnsubmitted = false, targetAssignmentDates = null, dailyExerciseCaps = {}, overrideExerciseIdsByDate = {} }) => {
+const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_SUBJECT, latestTutorReport, completedLesson, understandingLevel, availablePapers, onProgress, overrideFutureUnsubmitted = false, targetAssignmentDates = null, dailyExerciseCaps = {}, overrideExerciseIdsByDate = {}, plannedGenerationWeek = null }) => {
   const studentState = await getStudentAccessState(student, subject);
   const papers = availablePapers ?? studentState.matchingQuestionPapers;
   const readyCompletedLesson = completedLesson && isCompletedLessonReadyForGeneration(completedLesson) ? completedLesson : null;
@@ -1456,8 +1638,7 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
     ...(Array.isArray(studentState.tutorReports) ? studentState.tutorReports.map((report) => report?.note).filter(Boolean) : []),
     latestTutorReport ?? studentState.latestTutorReport ?? '',
   ].filter(Boolean);
-  const assignmentHistory = await getAssignmentHistory(student?.uid, subject);
-  const recentExerciseHistory = getRecentExerciseHistoryForAi(assignmentHistory, 28);
+  const replacesExerciseWindow = overrideFutureUnsubmitted || Boolean(readyCompletedLesson);
   const ready = overrideFutureUnsubmitted || (mode === 'initial'
     ? Boolean(studentState.initialGenerationReady && !studentState.hasInitialGeneration)
     : Boolean(studentState.weeklyGenerationReady && studentState.hasInitialGeneration));
@@ -1470,6 +1651,25 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
       assignments: [],
     };
   }
+
+  let assignmentHistory = await getAssignmentHistory(student?.uid, subject);
+  const assignmentDates = targetAssignmentDates ?? (replacesExerciseWindow
+    ? getSevenDayWindow(getLocalDate())
+    : buildAssignmentDates({ mode, assignmentHistory }));
+  if (replacesExerciseWindow && isFirebaseConfigured && student?.uid) {
+    const windowSnapshot = await getDocs(query(
+      collection(db, collections.dailyExerciseAssignments),
+      where('studentId', '==', student.uid),
+      where('subject', '==', subject),
+      where('assignmentDate', '>=', assignmentDates[0]),
+      where('assignmentDate', '<=', assignmentDates.at(-1)),
+      orderBy('assignmentDate', 'asc'),
+    ));
+    const historyById = new Map(assignmentHistory.map((assignment) => [assignment.id, assignment]));
+    windowSnapshot.docs.forEach((item) => historyById.set(item.id, { id: item.id, ...item.data() }));
+    assignmentHistory = [...historyById.values()];
+  }
+  const recentExerciseHistory = getRecentExerciseHistoryForAi(assignmentHistory, 28);
 
   const topicSummaries = getTopicSummary(completedLessons);
   const completedTopics = topicSummaries.map((item) => item.topic);
@@ -1505,14 +1705,23 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
 
   onProgress?.(`Using topic metadata from ${selectedPapers.length} analyzed question papers [Generating exercises]`);
 
-  const generationNumber = mode === 'weekly' ? getGenerationNumber(assignmentHistory, 'weekly') : 1;
-  const assignmentDates = targetAssignmentDates ?? buildAssignmentDates({ mode, assignmentHistory });
+  const currentGenerationNumber = mode === 'weekly'
+    ? getCurrentGenerationNumber(assignmentHistory, studentState.generationRunStatus?.generationWeek)
+    : 1;
+  const generationNumber = mode === 'initial'
+    ? 1
+    : Number(plannedGenerationWeek) || (readyCompletedLesson ? currentGenerationNumber + 1 : currentGenerationNumber);
+  const regenerationState = replacesExerciseWindow
+    ? getRegenerationState({ history: assignmentHistory, assignmentDates, generationNumber })
+    : { dailyExerciseCaps: {}, overrideExerciseIdsByDate: {} };
+  const effectiveDailyExerciseCaps = { ...regenerationState.dailyExerciseCaps, ...dailyExerciseCaps };
+  const effectiveOverrideExerciseIdsByDate = { ...regenerationState.overrideExerciseIdsByDate, ...overrideExerciseIdsByDate };
   const aiPlan = buildAiQuestionPlan({
     mode,
     topicSummaries,
     assignmentDates,
     generationNumber,
-    dailyExerciseCaps,
+    dailyExerciseCaps: effectiveDailyExerciseCaps,
   });
   const generationBatchId = `${mode}-${student.uid}-${Date.now()}`;
   const aiResponse = await recommendExercises({
@@ -1548,7 +1757,7 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
     })),
     selectedPaperIds: selectedPapers.map((paper) => paper.id),
     maxExercisesPerDay: aiPlan.maxExercisesPerDay,
-    dailyExerciseCaps,
+    dailyExerciseCaps: effectiveDailyExerciseCaps,
     maxQuestionsPerDay: aiPlan.maxQuestionsPerDay,
     questionPlanRules: aiPlan,
     lessonHistory: completedLessons.map((lesson) => ({
@@ -1578,9 +1787,10 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
     subject,
     topicSummaries,
     maxExercisesPerDay: aiPlan.maxExercisesPerDay,
-    dailyExerciseCaps,
+    dailyExerciseCaps: effectiveDailyExerciseCaps,
     allowedAssignmentDates: assignmentDates,
     grade: student?.grade,
+    generationWeek: generationNumber,
   }).filter((assignment) => Boolean(assignment.assignmentDate));
 
   if (!isFirebaseConfigured) {
@@ -1603,7 +1813,7 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
   const existingCounts = new Map();
   for (const assignment of assignments) {
     const assignmentDate = assignment.assignmentDate;
-    if (overrideFutureUnsubmitted) continue;
+    if (replacesExerciseWindow) continue;
     if (!existingCounts.has(assignmentDate)) {
       const snapshot = await getDocs(query(
         collection(db, collections.dailyExerciseAssignments),
@@ -1614,14 +1824,14 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
       existingCounts.set(assignmentDate, snapshot.size);
     }
 
-    const cap = dailyExerciseCaps[assignmentDate] ?? aiPlan.maxExercisesPerDay;
+    const cap = effectiveDailyExerciseCaps[assignmentDate] ?? aiPlan.maxExercisesPerDay;
     if (existingCounts.get(assignmentDate) >= cap) continue;
     const ref = await addDoc(collection(db, collections.dailyExerciseAssignments), { ...assignment, createdAt: serverTimestamp() });
     existingCounts.set(assignmentDate, existingCounts.get(assignmentDate) + 1);
     createdAssignments.push({ id: ref.id, ...assignment });
   }
 
-  if (overrideFutureUnsubmitted) {
+  if (replacesExerciseWindow) {
     const replacementsByDate = new Map();
     assignments.forEach((assignment) => {
       const replacements = replacementsByDate.get(assignment.assignmentDate) ?? [];
@@ -1631,9 +1841,10 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
     const replacementRows = await runTransaction(db, async (transaction) => {
       const safeDates = [];
       for (const assignmentDate of assignmentDates) {
-        const oldIds = overrideExerciseIdsByDate[assignmentDate] ?? [];
+        const oldIds = effectiveOverrideExerciseIdsByDate[assignmentDate] ?? [];
         const replacements = replacementsByDate.get(assignmentDate) ?? [];
-        if (!oldIds.length || replacements.length !== dailyExerciseCaps[assignmentDate]) continue;
+        const cap = effectiveDailyExerciseCaps[assignmentDate] ?? aiPlan.maxExercisesPerDay;
+        if (replacements.length !== cap) continue;
         const currentSnapshots = await Promise.all(oldIds.map((id) => transaction.get(doc(db, collections.dailyExerciseAssignments, id))));
         const currentExercises = currentSnapshots.filter((item) => item.exists()).map((item) => ({ id: item.id, ...item.data() }));
         if (currentExercises.length !== oldIds.length || currentExercises.some(isExerciseSubmitted)) continue;
@@ -1648,8 +1859,9 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
           const ref = doc(collection(db, collections.dailyExerciseAssignments));
           const replacement = {
             ...item,
-            generationMode: sourceGeneration.generationMode || item.generationMode,
-            generationBatchId: sourceGeneration.generationBatchId || item.generationBatchId || generationBatchId,
+            generationMode: readyCompletedLesson ? mode : sourceGeneration?.generationMode || item.generationMode,
+            generationBatchId: readyCompletedLesson ? generationBatchId : sourceGeneration?.generationBatchId || item.generationBatchId || generationBatchId,
+            generationWeek: generationNumber,
           };
           transaction.set(ref, { ...replacement, createdAt: serverTimestamp() });
           rows.push({ id: ref.id, ...replacement });
@@ -1662,7 +1874,7 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
     }
     return {
       generated: true,
-      reason: `Regenerated ${replacementRows.length} future unsubmitted exercises.`,
+      reason: `Regenerated ${replacementRows.length} uncompleted exercises within the next 7 days.`,
       assignments: replacementRows,
       criteria: { ...studentState.generationStatus, selectedPaperIds: selectedPapers.map((paper) => paper.id) },
     };
@@ -1682,9 +1894,69 @@ export const generateExercisePlanIfEligible = async ({ student, mode, subject = 
   };
 };
 
-const isExerciseSubmitted = (exercise) => Boolean(
-  exercise?.submittedImageUrl || exercise?.submitted === 'Yes' || exercise?.submissionStatus === 'submitted'
-);
+export const generateExercisePlanIfEligible = async (options = {}) => {
+  const { student, subject = DEFAULT_SUBJECT, mode, overrideFutureUnsubmitted = false, completedLesson, onProgress } = options;
+  if (overrideFutureUnsubmitted || !isFirebaseConfigured || !student?.uid) {
+    return generateExercisePlanUnlocked(options);
+  }
+
+  ensureDb();
+  const statusRef = doc(db, collections.exerciseGenerationStatus, `${student.uid}_${subject}`);
+  const startedAtMs = Date.now();
+  const lastTrigger = completedLesson ? 'lesson' : mode === 'initial' ? 'initial' : 'weekly';
+  const historyWeek = getCurrentGenerationNumber(await getAssignmentHistory(student.uid, subject));
+  const acquiredGenerationWeek = await runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(statusRef);
+    const current = snapshot.exists() ? snapshot.data() : null;
+    const lockIsFresh = startedAtMs - Number(current?.startedAtMs ?? 0) < EXERCISE_REGENERATION_LOCK_TIMEOUT_MS;
+    if (current?.status === 'processing' && lockIsFresh) return null;
+    const currentWeek = Math.max(historyWeek, Number(current?.generationWeek) || 1);
+    const generationWeek = getGenerationWeekForTrigger(currentWeek, { initial: mode === 'initial', lessonCompleted: Boolean(completedLesson) });
+    transaction.set(statusRef, {
+      studentId: student.uid,
+      subject,
+      mode,
+      lastTrigger,
+      generationWeek,
+      status: 'processing',
+      message: lastTrigger === 'lesson' ? 'Preparing exercises for the newly completed lesson.' : 'Preparing exercise generation.',
+      startedAtMs,
+      expiresAtMs: startedAtMs + EXERCISE_REGENERATION_LOCK_TIMEOUT_MS,
+      finishedAtMs: null,
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+    return generationWeek;
+  });
+  if (!acquiredGenerationWeek) return { generated: false, reason: 'Exercise generation is already running for this student and subject.', assignments: [] };
+
+  const reportProgress = (message) => {
+    onProgress?.(message);
+    setDoc(statusRef, { message, updatedAt: serverTimestamp() }, { merge: true }).catch((error) => {
+      console.warn('[Examifying][Firestore] generation progress update skipped:', error?.message);
+    });
+  };
+
+  try {
+    const result = await generateExercisePlanUnlocked({ ...options, plannedGenerationWeek: acquiredGenerationWeek, onProgress: reportProgress });
+    await setDoc(statusRef, {
+      status: result.generated ? 'completed' : 'failed',
+      message: result.reason || (result.generated ? 'Exercise generation completed.' : 'Exercise generation did not produce assignments.'),
+      finishedAtMs: Date.now(),
+      expiresAtMs: Date.now(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+    return result;
+  } catch (error) {
+    await setDoc(statusRef, {
+      status: 'failed',
+      message: error.message || 'Exercise generation failed.',
+      finishedAtMs: Date.now(),
+      expiresAtMs: Date.now(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+    throw error;
+  }
+};
 
 const getLocalDate = () => {
   const now = new Date();
@@ -1702,48 +1974,46 @@ export const regenerateFutureUnsubmittedExercisesForTutor = async ({ tutorId, st
   }
 
   ensureDb();
-  const today = getLocalDate();
-  const snapshot = await getDocs(query(
-    collection(db, collections.dailyExerciseAssignments),
-    where('studentId', '==', student.uid),
-    where('subject', '==', subject),
-    where('assignmentDate', '>=', today),
-    orderBy('assignmentDate', 'asc'),
-  ));
-  const eligible = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
-  const unsubmitted = eligible.filter((item) => !isExerciseSubmitted(item));
-  if (!unsubmitted.length) return { generated: false, reason: 'There are no future unsubmitted exercises to regenerate.', assignments: [] };
-
   const statusRef = doc(db, collections.exerciseGenerationStatus, `${student.uid}_${subject}`);
+  const startedAtMs = Date.now();
+  const acquired = await runTransaction(db, async (transaction) => {
+    const currentStatus = await transaction.get(statusRef);
+    const currentData = currentStatus.exists() ? currentStatus.data() : null;
+    const lockIsFresh = startedAtMs - Number(currentData?.startedAtMs ?? 0) < EXERCISE_REGENERATION_LOCK_TIMEOUT_MS;
+    if (currentData?.status === 'processing' && lockIsFresh) return false;
+    transaction.set(statusRef, {
+      studentId: student.uid,
+      tutorId,
+      subject,
+      status: 'processing',
+      message: 'Preparing analyzed paper metadata for exercise regeneration.',
+      startedAtMs,
+      expiresAtMs: startedAtMs + EXERCISE_REGENERATION_LOCK_TIMEOUT_MS,
+      finishedAtMs: null,
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+    return true;
+  });
+  if (!acquired) return { generated: false, reason: 'Exercise regeneration is already in progress for this student and subject.', assignments: [] };
+
   const saveStatus = (status, message) => setDoc(statusRef, {
     studentId: student.uid,
     tutorId,
     subject,
+    mode: 'weekly',
+    lastTrigger: 'manual',
     status,
     message,
     updatedAt: serverTimestamp(),
     ...(status === 'processing' ? { finishedAtMs: null } : { finishedAtMs: Date.now() }),
   }, { merge: true });
 
-  const idsByDate = new Map();
-  unsubmitted.forEach((item) => {
-    const ids = idsByDate.get(item.assignmentDate) ?? [];
-    ids.push(item.id);
-    idsByDate.set(item.assignmentDate, ids);
-  });
-  const targetAssignmentDates = [...idsByDate.keys()].sort();
-  const dailyExerciseCaps = Object.fromEntries([...idsByDate.entries()].map(([date, ids]) => [date, Math.min(ids.length, MAX_DAILY_EXERCISES)]));
-  const overrideExerciseIdsByDate = Object.fromEntries(idsByDate);
-  await saveStatus('processing', 'Preparing analyzed paper metadata for exercise regeneration.');
   try {
     const result = await generateExercisePlanIfEligible({
       student: { ...assignedContext, ...student, uid: student.uid },
       subject,
       mode: 'weekly',
       overrideFutureUnsubmitted: true,
-      targetAssignmentDates,
-      dailyExerciseCaps,
-      overrideExerciseIdsByDate,
       onProgress: async (message) => {
         onProgress?.(message);
         await saveStatus('processing', message);

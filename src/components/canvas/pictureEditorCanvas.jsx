@@ -1,20 +1,27 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { ReactSketchCanvas } from 'react-sketch-canvas';
 
-export const MarkingCanvas = ({ imageUrl, onSave }) => {
+export const MarkingCanvas = ({ imageUrl, onSave, saveLabel = 'Submit Grade' }) => {
   const canvasRef = useRef(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
   
   // This function triggers when the student is done marking
   const handleExport = async () => {
     if (!canvasRef.current) return;
+    setSaving(true);
+    setError('');
     try {
       const dataUrl = await canvasRef.current.exportImage("png");
       const res = await fetch(dataUrl);
       const blob = await res.blob();
       const file = new File([blob], "graded-work.png", { type: "image/png" });
-      onSave(file);
+      await onSave(file);
     } catch (error) {
       console.error("Failed to export image", error);
+      setError(error.message || 'Could not save the marked work.');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -33,13 +40,15 @@ export const MarkingCanvas = ({ imageUrl, onSave }) => {
         />
         <div style={{ position: 'absolute', top: 16, right: 16, zIndex: 1000 }}>
           <button 
-            className="btn-primary rounded-lg px-6 py-2 font-bold shadow-lg"
+            className="btn-primary rounded-lg px-6 py-2 font-bold shadow-lg disabled:opacity-60"
             onClick={handleExport} 
+            disabled={saving}
           >
-            Submit Grade
+            {saving ? 'Saving...' : saveLabel}
           </button>
         </div>
       </div>
+      {error ? <p role="alert" className="mt-3 text-sm text-rose-300">{error}</p> : null}
     </div>
   );
 };

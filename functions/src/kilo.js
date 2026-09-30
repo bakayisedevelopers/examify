@@ -1,5 +1,6 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
+import { jsonrepair } from 'jsonrepair';
 
 const kiloBaseUrl = () => process.env.KILO_BASE_URL?.trim() || 'https://api.kilo.ai/api/gateway';
 const kiloTextModel = () => process.env.KILO_TEXT_MODEL?.trim() || 'thinkingmachines/inkling-small:free';
@@ -177,11 +178,18 @@ const validateJsonArrayKey = (requiredJsonKey) => (text) => {
     const content = String(text ?? '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
     const first = content.indexOf('{');
     const last = content.lastIndexOf('}');
-    const parsed = JSON.parse(first >= 0 && last > first ? content.slice(first, last + 1) : content);
+    const candidate = first >= 0 ? content.slice(first, last > first ? last + 1 : undefined) : content;
+    let parsed;
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      parsed = JSON.parse(jsonrepair(candidate));
+    }
     const entries = parsed?.[requiredJsonKey];
     return Array.isArray(entries) && entries.length > 0 && entries.every((entry) =>
       Array.isArray(entry?.questionReferences) && entry.questionReferences.length > 0
       || Array.isArray(entry?.topicBreakdown) && entry.topicBreakdown.some((topic) => topic?.questionReference || topic?.reference)
+      || Boolean(entry?.questionReference && entry?.topic && entry?.paperId)
       || Boolean(entry?.title)
     );
   } catch {

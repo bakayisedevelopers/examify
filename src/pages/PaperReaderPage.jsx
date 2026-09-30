@@ -1,93 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
-import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { AppShell } from '../components/common/AppShell';
 import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { ROLES } from '../lib/constants';
 import { getQuestionPaperById, subscribeQuestionPaperAnalysisActivity, updateQuestionPaper } from '../services/firestoreService';
 
-GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-
-const StudentFullPagePdf = ({ paper, pageNumber, questionReference, status, onPageChange, onBack }) => {
-  const viewerRef = useRef(null);
-  const canvasRef = useRef(null);
-  const [pdf, setPdf] = useState(null);
-  const [pageCount, setPageCount] = useState(0);
-  const [size, setSize] = useState({ width: 0, height: 0 });
-  const [pdfStatus, setPdfStatus] = useState('Loading PDF...');
-
-  useEffect(() => {
-    if (!paper?.paperUrl) {
-      setPdfStatus('This paper has no PDF file to display.');
-      return undefined;
-    }
-    let active = true;
-    const task = getDocument({ url: paper.paperUrl });
-    task.promise.then((document) => {
-      if (!active) return;
-      setPdf(document);
-      setPageCount(document.numPages);
-      setPdfStatus('');
-    }).catch((error) => {
-      if (active) setPdfStatus(error.message || 'Could not render this PDF.');
-    });
-    return () => {
-      active = false;
-      task.destroy().catch(() => {});
-    };
-  }, [paper?.paperUrl]);
-
-  useEffect(() => {
-    const viewer = viewerRef.current;
-    if (!viewer) return undefined;
-    const measure = () => setSize({ width: viewer.clientWidth, height: viewer.clientHeight });
-    const observer = new ResizeObserver(measure);
-    observer.observe(viewer);
-    measure();
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (pageCount && pageNumber > pageCount) onPageChange(pageCount);
-  }, [pageCount, pageNumber, onPageChange]);
-
-  useEffect(() => {
-    if (!pdf || !size.width || !size.height || !canvasRef.current || pageNumber > pageCount) return undefined;
-    let cancelled = false;
-    let renderTask;
-    setPdfStatus('Rendering PDF page...');
-    const renderPage = async () => {
-      try {
-        const page = await pdf.getPage(pageNumber);
-        if (cancelled) return;
-        const baseViewport = page.getViewport({ scale: 1 });
-        const fitScale = Math.max(0.1, Math.min((size.width - 32) / baseViewport.width, (size.height - 32) / baseViewport.height));
-        const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-        const viewport = page.getViewport({ scale: fitScale * pixelRatio });
-        const canvas = canvasRef.current;
-        const context = canvas.getContext('2d', { alpha: false });
-        canvas.width = Math.ceil(viewport.width);
-        canvas.height = Math.ceil(viewport.height);
-        canvas.style.width = `${viewport.width / pixelRatio}px`;
-        canvas.style.height = `${viewport.height / pixelRatio}px`;
-        renderTask = page.render({ canvasContext: context, viewport });
-        await renderTask.promise;
-        if (!cancelled) setPdfStatus('');
-      } catch (error) {
-        if (!cancelled && error?.name !== 'RenderingCancelledException') setPdfStatus(error.message || 'Could not render this PDF page.');
-      }
-    };
-    renderPage();
-    return () => {
-      cancelled = true;
-      renderTask?.cancel();
-    };
-  }, [pdf, pageNumber, pageCount, size]);
-
-  const title = paper?.displayName || `${paper?.subject || 'Question paper'} ${paper?.grade || ''}`.trim();
+const StudentFullPagePdf = ({ paper, documentUrl, documentTitle, pageNumber, questionReference, status, onPageChange, onBack }) => {
+  const paperTitle = paper?.displayName || `${paper?.subject || 'Question paper'} ${paper?.grade || ''}`.trim();
+  const title = documentTitle && documentTitle !== 'Question paper' ? `${paperTitle} · ${documentTitle}` : paperTitle;
+  const viewerUrl = documentUrl ? `${documentUrl}#page=${pageNumber}&toolbar=1&navpanes=0` : '';
   return (
     <main className="fixed inset-0 z-50 flex h-[100dvh] flex-col bg-slate-950 text-slate-900">
       <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-3 sm:px-5">
@@ -97,13 +20,15 @@ const StudentFullPagePdf = ({ paper, pageNumber, questionReference, status, onPa
         <p className="min-w-0 flex-1 truncate text-center text-sm font-semibold text-slate-700">{title}{questionReference ? ` • Q${questionReference}` : ''}</p>
         <div className="flex shrink-0 items-center gap-1">
           <button type="button" className="grid h-10 w-10 place-items-center rounded-md text-slate-700 hover:bg-slate-100 disabled:opacity-40" onClick={() => onPageChange(pageNumber - 1)} disabled={pageNumber <= 1} aria-label="Previous PDF page"><ChevronLeft className="h-5 w-5" /></button>
-          <span className="min-w-14 text-center text-xs font-semibold text-slate-600">{pageCount ? `${pageNumber} / ${pageCount}` : pageNumber}</span>
-          <button type="button" className="grid h-10 w-10 place-items-center rounded-md text-slate-700 hover:bg-slate-100 disabled:opacity-40" onClick={() => onPageChange(pageNumber + 1)} disabled={pageCount > 0 && pageNumber >= pageCount} aria-label="Next PDF page"><ChevronRight className="h-5 w-5" /></button>
+          <span className="min-w-14 text-center text-xs font-semibold text-slate-600">Page {pageNumber}</span>
+          <button type="button" className="grid h-10 w-10 place-items-center rounded-md text-slate-700 hover:bg-slate-100" onClick={() => onPageChange(pageNumber + 1)} aria-label="Next PDF page"><ChevronRight className="h-5 w-5" /></button>
         </div>
       </header>
-      <div ref={viewerRef} className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3 sm:p-5">
-        {status || pdfStatus ? <p className="text-center text-sm text-white">{status || pdfStatus}</p> : <canvas ref={canvasRef} className="block max-h-full max-w-full bg-white shadow-xl" />}
-      </div>
+      {status || !viewerUrl ? (
+        <div role="status" className="grid min-h-0 flex-1 place-items-center p-6 text-center text-sm text-white">{status || `This ${documentTitle?.toLowerCase() || 'document'} is not available.`}</div>
+      ) : (
+        <iframe title={title} src={viewerUrl} className="min-h-0 flex-1 border-0 bg-slate-900" />
+      )}
     </main>
   );
 };
@@ -354,6 +279,9 @@ export const PaperReaderPage = () => {
   const initialPage = Math.max(1, Number(searchParams.get('page') ?? 1) || 1);
   const [pageNumber, setPageNumber] = useState(initialPage);
   const questionReference = searchParams.get('question') ?? '';
+  const documentType = searchParams.get('document') === 'memo' ? 'memo' : 'paper';
+  const documentUrl = documentType === 'memo' ? paper?.memoUrl : paper?.paperUrl;
+  const documentTitle = documentType === 'memo' ? 'Memorandum' : 'Question paper';
   const canReviewAnalysis = role === ROLES.ADMIN;
 
   useEffect(() => {
@@ -376,9 +304,9 @@ export const PaperReaderPage = () => {
   useEffect(() => subscribeQuestionPaperAnalysisActivity(paperId, setAnalysisActivity), [paperId]);
 
   const pdfUrl = useMemo(() => {
-    if (!paper?.paperUrl) return '';
-    return `${paper.paperUrl}#page=${pageNumber}&toolbar=1&navpanes=0`;
-  }, [paper?.paperUrl, pageNumber]);
+    if (!documentUrl) return '';
+    return `${documentUrl}#page=${pageNumber}&toolbar=1&navpanes=0`;
+  }, [documentUrl, pageNumber]);
 
   const updatePage = (nextPage) => {
     const safePage = Math.max(1, nextPage);
@@ -391,7 +319,7 @@ export const PaperReaderPage = () => {
 
   const goBack = () => {
     if (window.history.state?.idx > 0) navigate(-1);
-    else navigate('/student');
+    else navigate(role === ROLES.TUTOR ? '/tutor/exercises' : '/student');
   };
 
   const handleRetry = async () => {
@@ -407,8 +335,8 @@ export const PaperReaderPage = () => {
     }
   };
 
-  if (role === ROLES.STUDENT) {
-    return <StudentFullPagePdf paper={paper} pageNumber={pageNumber} questionReference={questionReference} status={status} onPageChange={updatePage} onBack={goBack} />;
+  if (role === ROLES.STUDENT || role === ROLES.TUTOR) {
+    return <StudentFullPagePdf paper={paper} documentUrl={documentUrl} documentTitle={documentTitle} pageNumber={pageNumber} questionReference={questionReference} status={status} onPageChange={updatePage} onBack={goBack} />;
   }
 
   return (
