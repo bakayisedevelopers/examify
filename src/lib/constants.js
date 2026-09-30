@@ -82,6 +82,7 @@ export const SESSION_TYPE_LABELS = {
 
 export const MAX_DAILY_EXERCISES = 3;
 export const WEEKLY_EXERCISE_DAYS = 7;
-export const MAX_AI_SOURCE_PAPERS = 2;
+export const MIN_AI_SOURCE_PAPERS = 2;
+export const MAX_AI_SOURCE_PAPERS = 4;
 
 export const APP_VERSION = '1.0.0';

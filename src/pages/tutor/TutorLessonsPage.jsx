@@ -28,9 +28,9 @@ export const TutorLessonsPage = () => {
         <select className="input" value={subjectFilter} onChange={(event) => setSubjectFilter(event.target.value)}><option value="all">All subjects</option>{subjects.map((subject) => <option key={subject}>{subject}</option>)}</select>
         <Link to="/tutor/lessons/new" className="btn-primary text-center">Add lesson</Link>
       </div>
-      <SectionHeader eyebrow="Lessons" title="Completed lessons" description="Lessons save completed topics and understanding scores for AI exercise generation." />
+      <SectionHeader eyebrow="Lessons" title="Tutor lessons" description="Plan lessons first, then mark them complete with understanding scores and reports." />
       <div className="grid gap-4">
-        {filteredLessons.map((lesson) => <Link key={lesson.id} to={`/tutor/lessons/${lesson.id}`} className="panel block p-5"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><p className="mt-1 text-sm text-slate-500">{lesson.studentName || lesson.studentId} • {lesson.subject} • {lesson.completedOn}</p><p className="mt-2 text-sm text-slate-600">{lesson.topicReport || lesson.note}</p></Link>)}
+        {filteredLessons.map((lesson) => <Link key={lesson.id} to={`/tutor/lessons/${lesson.id}`} className="panel block p-5"><div className="flex flex-wrap items-start justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">{lesson.status === 'planned' ? 'Planned' : 'Completed'}</span></div><p className="mt-1 text-sm text-slate-500">{lesson.studentName || lesson.studentId} • {lesson.subject} • {lesson.completedOn || lesson.lessonDate || 'No date'} • {lesson.lessonType === 'inPerson' ? 'In-person' : 'Online'}</p><p className="mt-2 text-sm text-slate-600">{lesson.topicReport || lesson.note || 'No completion report yet.'}</p></Link>)}
         {!filteredLessons.length ? <div className="panel p-5 text-sm text-slate-500">No lessons match this filter.</div> : null}
       </div>
     </AppShell>

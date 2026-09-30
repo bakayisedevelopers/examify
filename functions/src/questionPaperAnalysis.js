@@ -1,20 +1,24 @@
 import { createHash } from 'node:crypto';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
+import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 import { logger } from 'firebase-functions';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { createCanvas } from '@napi-rs/canvas';
+import { PDFDocument } from 'pdf-lib';
 import { getDb, storage, taskQueue } from './admin.js';
-import { callKiloTextWithFallback, callKiloVisionWithFallback } from './kilo.js';
+import { callKiloVisionWithFallback } from './kilo.js';
+import { callGeminiGenerateContent } from './gemini.js';
 
 const ANALYZING = 'Analyzing';
 const ANALYZED = 'Analyzed';
 const FAILED = 'Failed';
 const MAX_PAGES_PER_DOCUMENT = 40;
-const PAGES_PER_BATCH = 2;
+const PAGES_PER_BATCH = 1;
 const PDF_RENDER_SCALE = 1.6;
 const MAX_STORED_QUESTIONS = 180;
 const MAX_TASK_ATTEMPTS = 5;
+const GEMINI_BATCH_ATTEMPT = 5;
 const RUNS_COLLECTION = 'analysisRuns';
 const BATCHES_COLLECTION = 'batches';
 const PAPER_QUEUE_COLLECTION = 'questionPaperAnalysisQueue';
@@ -24,6 +28,11 @@ const TASK_OPTIONS = {
   rateLimits: { maxConcurrentDispatches: 3, maxDispatchesPerSecond: 2 },
   timeoutSeconds: 540,
   memory: '1GiB',
+};
+const BATCH_TASK_OPTIONS = {
+  ...TASK_OPTIONS,
+  retryConfig: { maxAttempts: MAX_TASK_ATTEMPTS, minBackoffSeconds: 60, maxBackoffSeconds: 600, maxDoublings: 4 },
+  rateLimits: { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 },
 };
 const pdfWasmUrl = new URL('../node_modules/pdfjs-dist/wasm/', import.meta.url).href;
 
@@ -41,13 +50,102 @@ const extractJsonObject = (text = '') => {
   return stripped.slice(start, end + 1);
 };
 
-const parseStructuredAnalysis = (text = '') => {
+const extractJsonArray = (text = '') => {
+  const stripped = stripCodeFence(text);
+  const start = stripped.indexOf('[');
+  const end = stripped.lastIndexOf(']');
+  if (start === -1 || end === -1 || end <= start) return stripped;
+  return stripped.slice(start, end + 1);
+};
+
+const parseJsonCandidate = (candidate = '') => {
+  const normalized = String(candidate)
+    .replace(/,\s*([}\]])/g, '$1')
+    .trim();
   try {
-    const parsed = JSON.parse(extractJsonObject(text));
-    return parsed && typeof parsed === 'object' && Array.isArray(parsed.questions) ? parsed : null;
+    return JSON.parse(normalized);
   } catch {
     return null;
   }
+};
+
+const parseStructuredAnalysis = (text = '') => {
+  const parsed = parseJsonCandidate(extractJsonObject(text));
+  return parsed && typeof parsed === 'object' && Array.isArray(parsed.questions) ? parsed : null;
+};
+
+const normalizeParsedBatch = (parsed) => {
+  if (!parsed) return null;
+  if (Array.isArray(parsed)) return { questions: parsed };
+  if (Array.isArray(parsed.questions)) return parsed;
+  if (Array.isArray(parsed.questionIndex)) return { ...parsed, questions: parsed.questionIndex };
+  if (Array.isArray(parsed.items)) return { ...parsed, questions: parsed.items };
+  if (Array.isArray(parsed.extractedQuestions)) return { ...parsed, questions: parsed.extractedQuestions };
+  if (Array.isArray(parsed.data?.questions)) return { ...parsed.data, summary: parsed.summary ?? parsed.data.summary };
+  return null;
+};
+
+const inferQuestionsFromText = (text = '') => {
+  const lines = String(text)
+    .split(/\n|(?=Question\s+\d)|(?=\b\d+\.\d)/i)
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter((line) => line.length >= 8);
+  const seen = new Set();
+  const questions = [];
+
+  lines.forEach((line) => {
+    if (!/question|\b\d+\.\d/i.test(line)) return;
+    const referenceMatch = line.match(/(?:question\s*)?(\d+(?:\.\d+){0,4}(?:\s*\([a-z]\))?)/i);
+    if (!referenceMatch) return;
+    const questionReference = referenceMatch[1].replace(/\s+/g, '');
+    if (seen.has(questionReference)) return;
+    seen.add(questionReference);
+    const pageMatch = line.match(/\bpage\s*(\d+)/i);
+    const marksMatch = line.match(/\b(\d+)\s*marks?\b/i);
+    const topicMatch = line.match(/\b(?:topic|skill)\s*[:=-]\s*([^.;]+)/i) || line.match(/\bon\s+([^.;:]+?)(?:\s*[:;-]|\s+\d+\s*marks|\s*$)/i);
+    questions.push({
+      questionReference,
+      parentQuestion: questionReference.split('.')[0],
+      topic: topicMatch?.[1]?.trim() || 'Unclassified topic',
+      pageNumber: pageMatch ? Number(pageMatch[1]) : 1,
+      marks: marksMatch ? Number(marksMatch[1]) : 0,
+      section: '',
+      instruction: line.slice(0, 700),
+      memoSummary: '',
+    });
+  });
+
+  return questions.slice(0, 60);
+};
+
+const parseBatchAnalysis = (text = '') => {
+  const raw = String(text ?? '').trim();
+  const parsed = normalizeParsedBatch(parseStructuredAnalysis(raw)) ||
+    normalizeParsedBatch(parseJsonCandidate(extractJsonObject(raw))) ||
+    normalizeParsedBatch(parseJsonCandidate(extractJsonArray(raw)));
+  const fallbackQuestions = parsed ? [] : inferQuestionsFromText(raw);
+  const fallbackSummary = raw.slice(0, 1200);
+  if (!parsed) {
+    logger.warn('Vision model returned non-JSON batch output; preserving raw text', {
+      textLength: raw.length,
+      inferredQuestionCount: fallbackQuestions.length,
+      preview: raw.slice(0, 160),
+    });
+  }
+  return {
+    questions: parsed?.questions ?? fallbackQuestions,
+    topics: Array.isArray(parsed?.topics) ? parsed.topics : [],
+    summary: String(parsed?.summary ?? fallbackSummary).trim(),
+    readabilityNotes: Array.isArray(parsed?.readabilityNotes) ? parsed.readabilityNotes : [],
+    rawText: String(parsed?.rawText ?? parsed?.extractedText ?? parsed?.summary ?? raw).trim(),
+    parseWarning: parsed ? '' : 'Vision model returned non-JSON output; raw text was preserved.',
+  };
+};
+
+const isIntentionallyEmptyPage = (parsed = {}) => {
+  if (parsed.parseWarning) return false;
+  const summary = String(parsed.summary || parsed.rawText || '').toLowerCase();
+  return /no visible questions|no questions|no exam questions|cover page|instruction page|information page|formula sheet/.test(summary);
 };
 
 const chunk = (items = [], size = PAGES_PER_BATCH) => {
@@ -82,6 +180,73 @@ const releaseAnalysisSlot = async ({ paperId, runId }) => {
   await queueTask('dispatchQuestionPaperAnalysis', {});
 };
 
+export const cancelQuestionPaperAnalysis = onCall(async (request) => {
+  const { paperId } = request.data ?? {};
+  if (!paperId) throw new HttpsError('invalid-argument', 'paperId is required.');
+
+  const db = getDb();
+  const paperRef = db.collection('questionPapers').doc(paperId);
+  const paperSnapshot = await paperRef.get();
+  if (!paperSnapshot.exists) throw new HttpsError('not-found', 'Question paper not found.');
+
+  const paper = paperSnapshot.data();
+  const stateRef = paperQueueStateRef();
+  const stateSnapshot = await stateRef.get();
+  const state = stateSnapshot.data();
+  const runIds = [...new Set([
+    paper.activeAnalysisRunId,
+    paper.queuedAnalysisRunId,
+    state?.activePaperId === paperId ? state.activeRunId : '',
+  ].filter(Boolean))];
+
+  const queueSnapshot = await paperQueueRef().where('paperId', '==', paperId).get();
+  const now = new Date();
+  const batch = db.batch();
+
+  queueSnapshot.docs.forEach((item) => batch.delete(item.ref));
+  runIds.forEach((runId) => {
+    batch.set(runRefFor(paperId, runId), {
+      status: 'Cancelled',
+      error: '',
+      cancelledAt: now,
+      updatedAt: now,
+    }, { merge: true });
+  });
+  if (state?.activePaperId === paperId) {
+    batch.set(stateRef, {
+      activePaperId: null,
+      activeRunId: null,
+      cancelledAt: now,
+      updatedAt: now,
+    }, { merge: true });
+  }
+  batch.set(paperRef, {
+    analysisStatus: 'Cancelled',
+    analysisStage: 'Cancelled',
+    analysisProgressMessage: 'Analysis stopped by user.',
+    analysisError: '',
+    activeAnalysisRunId: null,
+    queuedAnalysisRunId: null,
+    availableForGeneration: false,
+    updatedAt: now,
+  }, { merge: true });
+  await batch.commit();
+
+  await Promise.all(runIds.map(async (runId) => {
+    const batchesSnapshot = await runRefFor(paperId, runId).collection(BATCHES_COLLECTION).get();
+    await Promise.all(batchesSnapshot.docs
+      .filter((item) => item.data()?.status !== 'Completed')
+      .map((item) => item.ref.set({ status: 'Cancelled', error: '', updatedAt: new Date() }, { merge: true })));
+    await storage.bucket().deleteFiles({ prefix: `questionPaperAnalysis/${paperId}/${runId}/` }).catch((error) => {
+      logger.warn('Could not clean up cancelled question-paper analysis pages', { paperId, runId, message: error?.message });
+    });
+  }));
+
+  await queueTask('dispatchQuestionPaperAnalysis', {});
+  logger.info('Question paper analysis cancelled', { paperId, runIds });
+  return { paperId, runIds, status: 'Cancelled' };
+});
+
 const canvasFactory = {
   create(width, height) {
     const canvas = createCanvas(width, height);
@@ -113,6 +278,16 @@ const fetchDocument = async (url) => {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Could not download document (${response.status}).`);
   return Buffer.from(await response.arrayBuffer());
+};
+
+const extractSinglePagePdf = async ({ url, pageNumber }) => {
+  const buffer = await fetchDocument(url);
+  const source = await PDFDocument.load(buffer);
+  const target = await PDFDocument.create();
+  const sourcePageIndex = Math.max(0, Math.min(source.getPageCount() - 1, Number(pageNumber) - 1));
+  const [page] = await target.copyPages(source, [sourcePageIndex]);
+  target.addPage(page);
+  return Buffer.from(await target.save());
 };
 
 const assertPdf = ({ mimeType, fileName, label }) => {
@@ -216,97 +391,173 @@ const enqueuePendingBatches = async ({ paperId, runId, runRef }) => {
 };
 
 const enqueueFinalizerIfComplete = async ({ paperId, runId, runRef, batchCount }) => {
-  const completedSnapshot = await runRef.collection(BATCHES_COLLECTION).where('status', '==', 'Completed').get();
-  if (completedSnapshot.size >= batchCount) {
+  const snapshot = await runRef.collection(BATCHES_COLLECTION).get();
+  const batches = snapshot.docs.map((item) => item.data());
+  const paperBatches = batches.filter((batch) => batch.documentType === 'paper');
+  const completedPaperCount = paperBatches.filter((batch) => batch.status === 'Completed').length;
+  const completedCount = batches.filter((batch) => batch.status === 'Completed').length;
+  const requiredCount = paperBatches.length || batchCount;
+  if (completedPaperCount >= requiredCount) {
     await queueTask('finalizeQuestionPaperAnalysis', { paperId, runId });
   }
-  return completedSnapshot.size;
+  return completedCount;
 };
 
 const normalizeQuestion = ({ item, index, paperId, fallbackSubject }) => {
   const questionReference = String(item?.questionReference ?? item?.questionNumber ?? item?.number ?? '').trim();
   if (!questionReference) return null;
   const pageNumber = Number(item?.pageNumber ?? item?.page ?? 1) || 1;
+  const topics = (Array.isArray(item?.topics) ? item.topics : [item?.topic ?? item?.skill])
+    .map((topic) => String(topic ?? '').trim())
+    .filter(Boolean);
+  const topic = topics[0] || 'Unclassified topic';
   return {
     id: String(item?.id ?? `${paperId}-${questionReference}`).replace(/\s+/g, '-').replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 80) || `${paperId}-${index + 1}`,
     paperId,
     questionReference,
     parentQuestion: String(item?.parentQuestion ?? questionReference.split('.')[0] ?? '').trim(),
     subject: String(item?.subject ?? fallbackSubject ?? '').trim(),
-    topic: String(item?.topic ?? item?.skill ?? 'Unclassified topic').trim(),
+    topic,
+    topics,
     pageNumber,
     marks: Number(item?.marks ?? item?.totalMarks ?? 0) || 0,
     section: String(item?.section ?? '').trim(),
-    instruction: String(item?.instruction ?? item?.summary ?? '').trim().slice(0, 700),
-    memoSummary: String(item?.memoSummary ?? item?.memo ?? '').trim().slice(0, 700),
+    instruction: '',
+    memoSummary: '',
+    sourceDocumentType: String(item?.sourceDocumentType ?? item?.documentType ?? '').trim(),
+    sourceBatchId: String(item?.sourceBatchId ?? item?.batchId ?? '').trim(),
   };
 };
 
-const normalizeAnalysis = async ({ paperId, paper, paperOutputs, memoOutputs, models }) => {
-  const requestedShape = {
-    metadata: { year: paper.year, month: paper.month, subject: paper.subject, grade: paper.grade, region: paper.region, paperNumber: paper.paperNumber ?? 'Paper 1', copySuffix: paper.copySuffix ?? '', paperTitle: '', totalMarks: 0, confidence: 'medium' },
-    topics: [],
-    questions: [{ questionReference: '1.1', parentQuestion: '1', subject: paper.subject, topic: 'Topic name', pageNumber: 1, marks: 2, section: 'Section A', instruction: 'Short identification', memoSummary: 'Short memo summary' }],
-    summary: 'Short description of the paper contents',
-    readabilityNotes: [],
-  };
-  const result = await callKiloTextWithFallback({
-    messages: [
-      { role: 'system', content: 'You return strict JSON only. Do not include markdown, comments, or explanatory text.' },
-      { role: 'user', content: [
-        'Convert this OCR output into a concise question-paper index for Examifying.',
-        'Do not include full copied paper text. Store only metadata and enough question detail to choose exercises later.',
-        'Every question must use the exact paperId shown below and include a pageNumber that opens the original PDF.',
-        'Use the uploaded subject when uncertain. If marks are unclear, set marks to 0.',
-        `Paper id: ${paperId}`,
-        `Uploaded metadata: ${JSON.stringify({ year: paper.year, month: paper.month, subject: paper.subject, grade: paper.grade, region: paper.region, paperNumber: paper.paperNumber ?? 'Paper 1', copySuffix: paper.copySuffix ?? '', displayName: paper.displayName ?? '', notes: paper.notes ?? '' })}`,
-        `Return JSON matching this shape: ${JSON.stringify(requestedShape)}`,
-        `Paper OCR batches: ${JSON.stringify(paperOutputs)}`,
-        `Memo OCR batches: ${JSON.stringify(memoOutputs)}`,
-      ].join('\n') },
-    ],
-    responseFormat: { type: 'json_object' },
-    maxTokens: 5000,
-    temperature: 0.1,
-    validateText: (text) => Boolean(parseStructuredAnalysis(text)),
+const questionKey = (question = {}) => String(question.questionReference ?? '')
+  .trim()
+  .toLowerCase()
+  .replace(/\s+/g, '');
+
+const mergeQuestionsFromBatches = ({ paperId, paper, batches }) => {
+  const merged = new Map();
+  const orderedQuestions = batches.flatMap((batch) => (Array.isArray(batch.questions) ? batch.questions : [])
+    .map((question) => ({ ...question, sourceDocumentType: batch.documentType, sourceBatchId: batch.batchId })));
+
+  orderedQuestions.forEach((item, index) => {
+    const normalized = normalizeQuestion({ item, index, paperId, fallbackSubject: paper.subject });
+    if (!normalized) return;
+    const key = questionKey(normalized);
+    if (!key) return;
+
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, normalized);
+      return;
+    }
+
+    const existingIsMemoOnly = existing.sourceDocumentType === 'memo';
+    const nextIsPaper = item.sourceDocumentType === 'paper';
+    const base = existingIsMemoOnly && nextIsPaper ? normalized : existing;
+    const extra = existingIsMemoOnly && nextIsPaper ? existing : normalized;
+    merged.set(key, {
+      ...base,
+      marks: base.marks || extra.marks || 0,
+      topic: base.topic && base.topic !== 'Unclassified topic' ? base.topic : extra.topic,
+      topics: [...new Set([...(base.topics ?? []), ...(extra.topics ?? [])])],
+      section: base.section || extra.section,
+      instruction: '',
+      memoSummary: '',
+    });
   });
-  const parsed = parseStructuredAnalysis(result.text);
-  if (!parsed) throw new Error('Kilo returned invalid question-paper JSON after all text-model attempts.');
-  const questions = parsed.questions
-    .map((item, index) => normalizeQuestion({ item, index, paperId, fallbackSubject: paper.subject }))
-    .filter(Boolean)
+
+  return [...merged.values()]
+    .map((question, index) => ({
+      ...question,
+      id: String(question.id || `${paperId}-${question.questionReference}-${index + 1}`)
+        .replace(/\s+/g, '-')
+        .replace(/[^a-zA-Z0-9_.-]/g, '')
+        .slice(0, 80),
+    }))
     .slice(0, MAX_STORED_QUESTIONS);
-  const topics = Array.isArray(parsed.topics)
-    ? parsed.topics.map((topic) => String(topic).trim()).filter(Boolean).slice(0, 80)
-    : [...new Set(questions.map((question) => question.topic).filter(Boolean))].slice(0, 80);
+};
+
+const buildAnalysisFromBatches = ({ paperId, paper, batches, models }) => {
+  const questions = mergeQuestionsFromBatches({ paperId, paper, batches });
+  const batchTopics = batches.flatMap((batch) => Array.isArray(batch.topics) ? batch.topics : []);
+  const topics = [...new Set([
+    ...questions.map((question) => question.topic),
+    ...questions.flatMap((question) => question.topics ?? []),
+    ...batchTopics,
+  ].map((topic) => String(topic ?? '').trim()).filter(Boolean))]
+    .filter((topic) => topic !== 'Unclassified topic')
+    .slice(0, 80);
+  const summaries = batches.map((batch) => String(batch.summary ?? '').trim()).filter(Boolean);
+  const readabilityNotes = [...new Set(batches.flatMap((batch) => Array.isArray(batch.readabilityNotes) ? batch.readabilityNotes : [])
+    .map((note) => String(note).trim())
+    .filter(Boolean))]
+    .slice(0, 20);
   return {
     metadata: {
-      year: Number(parsed?.metadata?.year ?? paper.year) || Number(paper.year) || null,
-      month: String(parsed?.metadata?.month ?? paper.month ?? '').trim(),
-      subject: String(parsed?.metadata?.subject ?? paper.subject ?? '').trim(),
-      grade: String(parsed?.metadata?.grade ?? paper.grade ?? '').trim(),
-      region: String(parsed?.metadata?.region ?? paper.region ?? '').trim(),
-      paperNumber: String(parsed?.metadata?.paperNumber ?? paper.paperNumber ?? 'Paper 1').trim(),
+      year: Number(paper.year) || null,
+      month: String(paper.month ?? '').trim(),
+      subject: String(paper.subject ?? '').trim(),
+      grade: String(paper.grade ?? '').trim(),
+      region: String(paper.region ?? '').trim(),
+      paperNumber: String(paper.paperNumber ?? 'Paper 1').trim(),
       copySuffix: String(paper.copySuffix ?? '').trim(),
-      paperTitle: String(parsed?.metadata?.paperTitle ?? '').trim().slice(0, 160),
-      totalMarks: Number(parsed?.metadata?.totalMarks ?? 0) || 0,
-      confidence: String(parsed?.metadata?.confidence ?? 'medium').trim(),
+      paperTitle: String(paper.displayName ?? '').trim().slice(0, 160),
+      totalMarks: questions.reduce((sum, question) => sum + (Number(question.marks) || 0), 0),
+      confidence: questions.length ? 'medium' : 'low',
     },
     questions,
     topics,
-    summary: String(parsed?.summary ?? '').trim().slice(0, 1200),
-    readabilityNotes: Array.isArray(parsed?.readabilityNotes) ? parsed.readabilityNotes.map((note) => String(note).trim()).filter(Boolean).slice(0, 20) : [],
-    textModel: result.model ?? '',
+    summary: summaries.join('\n\n').slice(0, 1200),
+    readabilityNotes,
+    textModel: '',
     visionModels: models,
   };
 };
+
+const buildMinimalBatchPrompt = ({ paperId, paper, pages }) => {
+  const requestedShape = {
+    topics: ['Topic name'],
+    questions: [{
+      questionReference: '1.1',
+      parentQuestion: '1',
+      topics: ['Topic name'],
+      marks: 2,
+      pageNumber: pages[0]?.pageNumber ?? 1,
+      section: 'Section A',
+    }],
+    summary: 'Short page metadata summary',
+  };
+
+  return [
+    'Analyze this South African Mathematics question-paper page for Examifying.',
+    `Saved paper id: ${paperId}.`,
+    `Upload metadata: subject=${paper.subject}, grade=${paper.grade}, region=${paper.region}, month=${paper.month}, year=${paper.year}, paperNumber=${paper.paperNumber ?? 'Paper 1'}, copySuffix=${paper.copySuffix ?? ''}.`,
+    'Return strict JSON only. Do not include markdown, comments, code fences, or explanation outside the JSON.',
+    `Return JSON matching this shape: ${JSON.stringify(requestedShape)}`,
+    'For each visible exam question or sub-question, return only these keys in this order: questionReference, parentQuestion, topics, marks, pageNumber, section.',
+    'Do not return id, paperId, subject, batchId, instruction, memoSummary, solution, or full question text.',
+    'Use Mathematics topic names, not long explanations. If a question covers multiple topics, include up to three topics.',
+    'For pages with no visible questions, return {"topics":[],"questions":[],"summary":"No visible questions"}.',
+    'If embedded PDF text is provided, use it as a helper but trust the page visual for scanned pages.',
+    ...pages.map((page) => page.text ? `${page.label} page ${page.pageNumber} embedded text: ${page.text.slice(0, 1800)}` : `${page.label} page ${page.pageNumber}: no embedded text found.`),
+  ].join('\n');
+};
+
+const normalizeParsedQuestions = ({ parsed, batch, paperId, subject }) =>
+  parsed.questions
+    .map((item, index) => normalizeQuestion({
+      item: { ...item, sourceDocumentType: batch.documentType, sourceBatchId: batch.batchId },
+      index,
+      paperId,
+      fallbackSubject: subject,
+    }))
+    .filter(Boolean);
 
 const shouldAnalyze = ({ before, after }) => {
   if (!after || after.analysisStatus !== ANALYZING || !after.paperUrl) return false;
   if (!before) return true;
   return before.analysisStatus !== ANALYZING ||
     before.paperUrl !== after.paperUrl ||
-    before.memoUrl !== after.memoUrl ||
     before.analysisRevision !== after.analysisRevision;
 };
 
@@ -441,27 +692,19 @@ export const prepareQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, async
 
   try {
     assertPdf({ mimeType: paper.paperMimeType, fileName: paper.paperFileName, label: 'Question paper' });
-    if (paper.memoUrl) assertPdf({ mimeType: paper.memoMimeType, fileName: paper.memoFileName, label: 'Memorandum' });
     await runRef.set({ status: 'Rendering', startedAt: new Date(), updatedAt: new Date() }, { merge: true });
     await paperRef.set({ analysisStatus: ANALYZING, analysisStage: 'Rendering', analysisProgressMessage: 'Rendering PDF pages for analysis', analysisError: '', updatedAt: new Date() }, { merge: true });
 
-    const [paperBuffer, memoBuffer] = await Promise.all([
-      fetchDocument(paper.paperUrl),
-      paper.memoUrl ? fetchDocument(paper.memoUrl) : Promise.resolve(null),
-    ]);
+    const paperBuffer = await fetchDocument(paper.paperUrl);
     const paperFingerprint = sha256(paperBuffer);
-    const memoFingerprint = memoBuffer ? sha256(memoBuffer) : '';
-    const [paperDocument, memoDocument] = await Promise.all([
-      renderAndStorePdfPages({ buffer: paperBuffer, label: 'Question paper', paperId, runId, fileFingerprint: paperFingerprint }),
-      memoBuffer ? renderAndStorePdfPages({ buffer: memoBuffer, label: 'Memorandum', paperId, runId, fileFingerprint: memoFingerprint }) : Promise.resolve({ pages: [], totalPages: 0, analyzedPageCount: 0 }),
-    ]);
+    const memoFingerprint = '';
+    const paperDocument = await renderAndStorePdfPages({ buffer: paperBuffer, label: 'Question paper', paperId, runId, fileFingerprint: paperFingerprint });
     if (!await ensureActiveRun({ paperId, runId })) {
       await storage.bucket().deleteFiles({ prefix: `questionPaperAnalysis/${paperId}/${runId}/` });
       return;
     }
     const allBatches = [
       ...chunk(paperDocument.pages).map((pages, index) => ({ id: `paper-${index + 1}`, documentType: 'paper', pages })),
-      ...chunk(memoDocument.pages).map((pages, index) => ({ id: `memo-${index + 1}`, documentType: 'memo', pages })),
     ];
     if (!allBatches.length) throw new Error('No question paper pages could be rendered for analysis.');
 
@@ -481,9 +724,9 @@ export const prepareQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, async
       paperFingerprint,
       memoFingerprint,
       paperPageCount: paperDocument.totalPages,
-      memoPageCount: memoDocument.totalPages,
+      memoPageCount: 0,
       paperAnalyzedPageCount: paperDocument.analyzedPageCount,
-      memoAnalyzedPageCount: memoDocument.analyzedPageCount,
+      memoAnalyzedPageCount: 0,
       batchCount: allBatches.length,
       completedBatchCount: 0,
       updatedAt: new Date(),
@@ -494,7 +737,7 @@ export const prepareQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, async
       analysisProgressCurrent: 0,
       analysisProgressTotal: allBatches.length + 1,
       paperPageCount: paperDocument.totalPages,
-      memoPageCount: memoDocument.totalPages,
+      memoPageCount: 0,
       updatedAt: new Date(),
     }, { merge: true });
     await enqueuePendingBatches({ paperId, runId, runRef });
@@ -504,7 +747,7 @@ export const prepareQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, async
   }
 });
 
-export const analyzeQuestionPaperBatch = onTaskDispatched(TASK_OPTIONS, async (request) => {
+export const analyzeQuestionPaperBatch = onTaskDispatched(BATCH_TASK_OPTIONS, async (request) => {
   const { paperId, runId, batchId } = request.data ?? {};
   if (!paperId || !runId || !batchId) throw new Error('paperId, runId, and batchId are required.');
   const active = await ensureActiveRun({ paperId, runId });
@@ -521,34 +764,95 @@ export const analyzeQuestionPaperBatch = onTaskDispatched(TASK_OPTIONS, async (r
   await batchRef.set({ status: 'Processing', attemptCount, error: '', updatedAt: new Date() }, { merge: true });
 
   try {
-    const images = await Promise.all(batch.pages.map((page) => loadPageImage(page.storagePath)));
-    const result = await callKiloVisionWithFallback({
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: [
-            'Analyze these South African Mathematics exam document pages for Examifying.',
-            `Saved paper id: ${paperId}.`,
-            `Upload metadata: subject=${active.paper.subject}, grade=${active.paper.grade}, region=${active.paper.region}, month=${active.paper.month}, year=${active.paper.year}, paperNumber=${active.paper.paperNumber ?? 'Paper 1'}, copySuffix=${active.paper.copySuffix ?? ''}.`,
-            'For every visible exam question or memo item, transcribe the question number, Maths topic or skill, mark allocation, page number, section heading, and any short instruction needed to identify the question later.',
-            'If embedded PDF text is provided, use it as a helper but trust the image for scanned pages.',
-            'Return concise plain text grouped by page. Do not return JSON yet.',
-            ...batch.pages.map((page) => page.text ? `${page.label} page ${page.pageNumber} embedded text: ${page.text.slice(0, 2500)}` : `${page.label} page ${page.pageNumber}: no embedded text found.`),
-          ].join('\n') },
-          ...images.map((imageUrl) => ({ type: 'image_url', image_url: { url: imageUrl } })),
-        ],
-      }],
-      maxTokens: 2600,
-      temperature: 0.1,
-      mode: 'general',
-    });
+    if (batch.documentType !== 'paper') {
+      await batchRef.set({
+        status: 'Completed',
+        model: '',
+        fallbackUsed: false,
+        fallbackFrom: '',
+        text: 'Skipped: only question-paper pages are indexed for generation.',
+        questions: [],
+        topics: [],
+        summary: '',
+        readabilityNotes: [],
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      }, { merge: true });
+      const completedBatchCount = await enqueueFinalizerIfComplete({ paperId, runId, runRef: active.runRef, batchCount: active.run.batchCount });
+      await active.runRef.set({ completedBatchCount, updatedAt: new Date() }, { merge: true });
+      await active.paperRef.set({
+        analysisProgressMessage: `AI page extraction [${completedBatchCount}/${active.run.batchCount} batches]`,
+        analysisProgressCurrent: completedBatchCount,
+        updatedAt: new Date(),
+      }, { merge: true });
+      return;
+    }
+
+    const prompt = buildMinimalBatchPrompt({ paperId, paper: active.paper, pages: batch.pages });
+    const useGeminiFallback = attemptCount >= GEMINI_BATCH_ATTEMPT;
+    const result = useGeminiFallback
+      ? await (async () => {
+        const pageNumber = batch.pages[0]?.pageNumber ?? 1;
+        const pdfPage = await extractSinglePagePdf({ url: active.paper.paperUrl, pageNumber });
+        const geminiResult = await callGeminiGenerateContent({
+          prompt,
+          pdfBase64: pdfPage.toString('base64'),
+          responseFormat: { type: 'json_object' },
+          maxTokens: 2200,
+          temperature: 0.1,
+        });
+        logger.info('Question paper batch used Gemini PDF fallback', {
+          paperId,
+          runId,
+          batchId,
+          pageNumber,
+          model: geminiResult.model,
+        });
+        return { ...geminiResult, fallbackUsed: true, fallbackFrom: 'kilo-vision-retries' };
+      })()
+      : await (async () => {
+        const images = await Promise.all(batch.pages.map((page) => loadPageImage(page.storagePath)));
+        const kiloResult = await callKiloVisionWithFallback({
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              ...images.map((imageUrl) => ({ type: 'image_url', image_url: { url: imageUrl } })),
+            ],
+          }],
+          maxTokens: 2200,
+          temperature: 0.1,
+          responseFormat: { type: 'json_object' },
+          mode: 'general',
+        });
+        logger.info('Question paper batch used Kilo vision extraction', {
+          paperId,
+          runId,
+          batchId,
+          attemptCount,
+          model: kiloResult.model,
+          fallbackUsed: Boolean(kiloResult.fallbackUsed),
+          fallbackFrom: kiloResult.fallbackFrom ?? '',
+        });
+        return kiloResult;
+      })();
+    const parsed = parseBatchAnalysis(result.text);
+    const questions = normalizeParsedQuestions({ parsed, batch, paperId, subject: active.paper.subject });
+    if (!questions.length && !useGeminiFallback && !isIntentionallyEmptyPage(parsed)) {
+      throw new Error(`No question metadata extracted for ${batchId}; retrying before Gemini fallback.`);
+    }
     if (!await ensureActiveRun({ paperId, runId })) return;
     await batchRef.set({
       status: 'Completed',
       model: result.model ?? '',
       fallbackUsed: Boolean(result.fallbackUsed),
       fallbackFrom: result.fallbackFrom ?? '',
-      text: String(result.text ?? '').trim().slice(0, 6000),
+      text: (parsed.rawText || parsed.summary || String(result.text ?? '')).trim().slice(0, 6000),
+      questions,
+      topics: parsed.topics.map((topic) => String(topic).trim()).filter(Boolean).slice(0, 40),
+      summary: parsed.summary.slice(0, 1200),
+      readabilityNotes: parsed.readabilityNotes.map((note) => String(note).trim()).filter(Boolean).slice(0, 10),
+      parseWarning: parsed.parseWarning,
       completedAt: new Date(),
       updatedAt: new Date(),
     }, { merge: true });
@@ -584,7 +888,8 @@ export const finalizeQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, asyn
   try {
     const batchesSnapshot = await active.runRef.collection(BATCHES_COLLECTION).get();
     const batches = batchesSnapshot.docs.map((item) => item.data());
-    if (!batches.length || batches.some((batch) => batch.status !== 'Completed')) {
+    const paperBatches = batches.filter((batch) => batch.documentType === 'paper');
+    if (!paperBatches.length || paperBatches.some((batch) => batch.status !== 'Completed')) {
       logger.warn('Finalization skipped because analysis batches are incomplete', { paperId, runId });
       return;
     }
@@ -592,20 +897,19 @@ export const finalizeQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, asyn
     await active.paperRef.set({
       analysisStatus: ANALYZING,
       analysisStage: 'Structuring',
-      analysisProgressMessage: 'AI text model [Structuring question index]',
+      analysisProgressMessage: 'Combining extracted question index',
       analysisProgressCurrent: batches.length,
       updatedAt: new Date(),
     }, { merge: true });
     const ordered = batches.sort((left, right) => String(left.batchId).localeCompare(String(right.batchId), undefined, { numeric: true }));
     const paperOutputs = ordered.filter((item) => item.documentType === 'paper');
     const memoOutputs = ordered.filter((item) => item.documentType === 'memo');
-    const models = [...new Set(ordered.map((item) => item.model).filter(Boolean))];
-    const analysis = await normalizeAnalysis({ paperId, paper: active.paper, paperOutputs, memoOutputs, models });
+    const models = [...new Set(paperOutputs.map((item) => item.model).filter(Boolean))];
+    const analysis = buildAnalysisFromBatches({ paperId, paper: active.paper, batches: paperOutputs, models });
     if (!await ensureActiveRun({ paperId, runId })) return;
     const completedAt = new Date();
     await active.runRef.set({
       status: ANALYZED,
-      textModel: analysis.textModel,
       visionModels: analysis.visionModels,
       questionCount: analysis.questions.length,
       completedAt,
@@ -628,7 +932,7 @@ export const finalizeQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, asyn
       memoDocumentAnalysisPageCount: active.run.memoAnalyzedPageCount,
       paperAnalysisSummary: analysis.summary,
       analysisReadabilityNotes: analysis.readabilityNotes,
-      analysisTextModel: analysis.textModel,
+      analysisTextModel: '',
       analysisVisionModels: analysis.visionModels,
       analysisSourcePaperFingerprint: active.run.paperFingerprint,
       analysisSourceMemoFingerprint: active.run.memoFingerprint,

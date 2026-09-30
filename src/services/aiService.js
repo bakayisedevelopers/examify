@@ -95,7 +95,7 @@ const normalizeRecommendations = (parsed, payload = {}) => {
             .filter((link) => link.paperId && link.questionReference)
         : [],
     })),
-    source: 'kilo-text-with-fallback',
+    source: 'gemini-3.5-flash-lite',
   };
 };
 
@@ -107,6 +107,7 @@ const buildPrompt = ({
   tutorReports = [],
   pastMarks = [],
   questionPaperMetadata = [],
+  topicPaperMetadata = [],
   tutorNotes = '',
   mode = 'initial',
   assignmentDates = [],
@@ -116,6 +117,7 @@ const buildPrompt = ({
   questionPlanRules = {},
   lessonHistory = [],
   understandingByTopic = [],
+  recentExerciseHistory = [],
   previousGenerationSummaries = [],
 } = {}) => `
 You are Examifying's ${subject} exercise recommendation assistant for South African grades.
@@ -124,7 +126,7 @@ Business rules:
 - Recommend ${subject} only.
 - Recommend exercises only from tutor-completed topics.
 - Prefer references to question papers and question numbers instead of rewriting full question text.
-- Consider grade, region, tutor reports, tutor notes, question paper metadata, stored question indexes, memorandum summaries, and past marks.
+- Consider grade, region, tutor reports, tutor notes, topic-based question metadata, question paper metadata, stored question indexes, and past marks.
 - Return strict JSON with a top-level key called "recommendations".
 - Each recommendation must include: title, topic, reason, sourceLabel, instruction, assignmentDate, questionReferences, topicBreakdown, paperIdsUsed, questionLinks.
 - Every questionLinks item must include paperId, pageNumber, questionReference, and topic from the stored question index.
@@ -169,19 +171,19 @@ Tutor reports: ${JSON.stringify(tutorReports)}
 Tutor notes: ${tutorNotes}
 Past marks: ${JSON.stringify(pastMarks)}
 Question paper metadata: ${JSON.stringify(questionPaperMetadata)}
+Topic-based source metadata: ${JSON.stringify(topicPaperMetadata)}
 Stored source paper question indexes: ${JSON.stringify(selectedPapers.map((paper) => ({
   id: paper.id,
   metadata: paper.paperMetadata,
   topics: paper.topics,
   questions: paper.questions,
-  paperSummary: paper.paperDocumentAnalysis,
-  memoSummary: paper.memoDocumentAnalysis,
 })))}
 Assignment dates to schedule: ${JSON.stringify(assignmentDates)}
 Selected source papers: ${JSON.stringify(selectedPapers)}
 Selected source paper ids: ${JSON.stringify(selectedPaperIds)}
 Lesson history with understanding: ${JSON.stringify(lessonHistory)}
 Understanding by topic: ${JSON.stringify(understandingByTopic)}
+Last 28 days exercise history to avoid short repeats: ${JSON.stringify(recentExerciseHistory)}
 Recent generation summaries to avoid repeating source papers: ${JSON.stringify(previousGenerationSummaries)}
 Question-plan rules: ${JSON.stringify(questionPlanRules)}
 Maximum question references per day: ${maxQuestionsPerDay}
@@ -191,6 +193,8 @@ Additional mandatory generation rules:
 - Never use topic names in the title.
 - Return exactly one recommendation object per assignment date.
 - Each question reference must belong to a tutor-completed topic.
+- Choose questions from Topic-based source metadata first. For each topic, prefer using questions from at least two different papers when available.
+- Do not use a question for a topic unless that question appears under that exact topic in Topic-based source metadata.
 - For initial mode, return exactly one question reference per covered topic for that day, without ranges like "1.1.3 - 1.1.5".
 - For weekly mode, never exceed the provided maximum question references per day.
 - For weekly mode, question references on the same day must come from different topics.
@@ -198,7 +202,9 @@ Additional mandatory generation rules:
 - Only use the selected source papers and include only those ids in paperIdsUsed.
 - Use only questions from the stored source paper question indexes. Do not invent question numbers.
 - Include a questionLinks entry for every selected question so the app can open the PDF at the correct page.
-- NEVER REPEAT the same question for different assignments dates, unless the number total number of questions in the given past papers is not enough or is less than 7.
+- Avoid repeating exact questionReferences from the same paper that appear in Last 28 days exercise history.
+- Repeating a recent exact question is allowed only when the topic-based source metadata does not contain enough different questions for that topic.
+- NEVER REPEAT the same question for different assignment dates in the new plan, unless the total number of available matching questions is not enough.
 - An Exercise generation can have multiple papers references, for example assignedment date 1 from paper A and assignment date 2 paper B, this will give you multiple options to work with.
 `;
 
@@ -215,8 +221,8 @@ export const recommendExercises = async (payload = {}) => {
       return getFallbackRecommendations(payload);
     }
 
-    const callKiloText = httpsCallable(functions, 'callKiloText');
-    const result = await callKiloText({
+    const callGeminiText = httpsCallable(functions, 'callGeminiText');
+    const result = await callGeminiText({
       system: 'You return strict JSON only. Do not include markdown, comments, or explanatory text.',
       prompt: buildPrompt(payload),
       responseFormat: { type: 'json_object' },

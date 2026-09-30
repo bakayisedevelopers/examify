@@ -13,11 +13,16 @@ export {
 } from './kilo.js';
 
 export {
+  callGeminiText,
+} from './gemini.js';
+
+export {
   analyzeQuestionPaper,
   dispatchQuestionPaperAnalysis,
   prepareQuestionPaperAnalysis,
   analyzeQuestionPaperBatch,
   finalizeQuestionPaperAnalysis,
+  cancelQuestionPaperAnalysis,
 } from './questionPaperAnalysis.js';
 
 export { assignPeerMarkingOnSubmission } from './peerMarking.js';

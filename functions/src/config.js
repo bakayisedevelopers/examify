@@ -14,10 +14,18 @@ export const getAppConfig = () => {
 
 export const getKiloConfig = () => {
   return {
-    baseUrl: process.env.KILO_BASE_URL?.trim() || 'https://api.kilo.ai/api/openrouter',
+    baseUrl: process.env.KILO_BASE_URL?.trim() || 'https://api.kilo.ai/api/gateway',
     textModel: process.env.KILO_TEXT_MODEL?.trim() || 'thinkingmachines/inkling-small:free',
     fallbackTextModel: process.env.KILO_FALLBACK_TEXT_MODEL?.trim() || 'kilo-auto/free',
-    visionModel: process.env.KILO_VISION_MODEL?.trim() || 'dots-studio/dots-3-note-preview:free',
-    fallbackVisionModels: process.env.KILO_FALLBACK_VISION_MODELS?.trim() || 'qwen/qwen3.8-27b:free,stepfun/step-3.7-flash:free,openrouter/free',
+    visionModel: process.env.KILO_VISION_MODEL?.trim() || 'qwen/qwen3.8-27b:free',
+    fallbackVisionModels: process.env.KILO_FALLBACK_VISION_MODELS?.trim() || 'dots-studio/dots-3-note-preview:free,stepfun/step-3.7-flash:free,kilo-auto/free',
+  };
+};
+
+export const getGeminiConfig = () => {
+  return {
+    baseUrl: process.env.GEMINI_BASE_URL?.trim() || 'https://generativelanguage.googleapis.com/v1beta',
+    model: process.env.GEMINI_MODEL?.trim() || 'gemini-3.5-flash-lite',
+    hasApiKey: Boolean(process.env.GEMINI_API_KEY?.trim()),
   };
 };

@@ -14,8 +14,16 @@ import {
   saveTutorReport,
 } from '../../services/firestoreService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
+import { getTopicOptionGroups } from '../../data/topicCatalog';
 
-const emptyLessonForm = { selectedTopic: '', topicUnderstandingScores: [], topicReport: '' };
+const today = () => new Date().toISOString().slice(0, 10);
+const emptyLessonForm = { selectedTopic: '', topicUnderstandingScores: [], topicReport: '', lessonDate: today(), lessonType: 'online' };
+const emptyTopicGroups = { extracted: [], manual: [], all: [] };
+const hasValidScores = (entries = []) =>
+  entries.length > 0 && entries.every((entry) => {
+    const score = Number(entry.understandingLevel);
+    return Number.isFinite(score) && score >= 0 && score <= 10;
+  });
 
 export const TutorStudentDetailsPage = () => {
   const { studentId } = useParams();
@@ -27,25 +35,27 @@ export const TutorStudentDetailsPage = () => {
   const [reports, setReports] = useState([]);
   const [exercises, setExercises] = useState([]);
   const [lessons, setLessons] = useState([]);
-  const [topicOptions, setTopicOptions] = useState([]);
+  const [topicOptions, setTopicOptions] = useState(emptyTopicGroups);
   const [reportNote, setReportNote] = useState('');
   const [lessonForm, setLessonForm] = useState(emptyLessonForm);
   const [status, setStatus] = useState('');
 
   const load = async () => {
     if (!profile?.uid) return;
-    const [contexts, reportRows, exerciseRows, lessonRows, papers] = await Promise.all([
+    const [contexts, reportRows, exerciseRows, lessonRows] = await Promise.all([
       getTutorAssignedStudentContexts(profile.uid),
       getTutorReportsForAssignedStudents(profile.uid),
       getTutorExercisesForAssignedStudents(profile.uid),
       getTutorLessonsForAssignedStudents(profile.uid),
-      getQuestionPapers({ subject }),
     ]);
-    setStudent(contexts.find((item) => item.studentId === studentId && item.subject === subject) ?? null);
+    const studentContext = contexts.find((item) => item.studentId === studentId && item.subject === subject) ?? null;
+    const papers = await getQuestionPapers({ subject, grade: studentContext?.grade, region: studentContext?.province });
+    const extractedTopics = papers.flatMap((paper) => paper.topics ?? []).filter(Boolean);
+    setStudent(studentContext);
     setReports(reportRows.filter((item) => item.studentId === studentId && item.subject === subject));
     setExercises(exerciseRows.filter((item) => item.studentId === studentId && item.subject === subject));
     setLessons(lessonRows.filter((item) => item.studentId === studentId && item.subject === subject));
-    setTopicOptions([...new Set(papers.flatMap((paper) => paper.topics ?? []).filter(Boolean))].sort());
+    setTopicOptions(getTopicOptionGroups({ extractedTopics, subject, grade: studentContext?.grade }));
   };
 
   useEffect(() => {
@@ -71,8 +81,8 @@ export const TutorStudentDetailsPage = () => {
   };
 
   const completeLesson = async () => {
-    if (!lessonForm.topicUnderstandingScores.length || !lessonForm.topicReport.trim()) {
-      setStatus('Choose at least one analyzed topic and enter the lesson report.');
+    if (!lessonForm.topicUnderstandingScores.length || !lessonForm.topicReport.trim() || !lessonForm.lessonDate || !lessonForm.lessonType || !hasValidScores(lessonForm.topicUnderstandingScores)) {
+      setStatus('Choose at least one topic, date, lesson type, score from 0 to 10, and enter the lesson report.');
       return;
     }
     const topics = lessonForm.topicUnderstandingScores.map((entry) => entry.topic);
@@ -91,6 +101,9 @@ export const TutorStudentDetailsPage = () => {
       topicReport: lessonForm.topicReport,
       understandingLevel,
       studentName: student?.displayName || student?.name || 'Student',
+      lessonDate: lessonForm.lessonDate,
+      lessonType: lessonForm.lessonType,
+      status: 'completed',
     });
     const generation = await generateExercisePlanIfEligible({
       student: { uid: studentId, grade: student?.grade, province: student?.province, paymentCompleted: student?.paymentCompleted },
@@ -125,10 +138,15 @@ export const TutorStudentDetailsPage = () => {
       ) : (
         <section className="panel space-y-4 p-5">
           <SectionHeader eyebrow="Lesson complete" title="Save completed topics" description="Choose topics from analyzed papers, add scores, and save the lesson for AI generation." />
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="grid gap-2 text-sm font-semibold text-slate-700">Lesson date<input type="date" className="input" value={lessonForm.lessonDate} onChange={(event) => setLessonForm((current) => ({ ...current, lessonDate: event.target.value }))} /></label>
+            <label className="grid gap-2 text-sm font-semibold text-slate-700">Lesson type<select className="input" value={lessonForm.lessonType} onChange={(event) => setLessonForm((current) => ({ ...current, lessonType: event.target.value }))}><option value="online">Online</option><option value="inPerson">In-person</option></select></label>
+          </div>
           <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
-            <select className="input" value={lessonForm.selectedTopic} onChange={(event) => setLessonForm((current) => ({ ...current, selectedTopic: event.target.value }))} disabled={!topicOptions.length}>
-              <option value="">{topicOptions.length ? 'Choose analyzed topic' : 'No analyzed topics available'}</option>
-              {topicOptions.map((topic) => <option key={topic}>{topic}</option>)}
+            <select className="input" value={lessonForm.selectedTopic} onChange={(event) => setLessonForm((current) => ({ ...current, selectedTopic: event.target.value }))} disabled={!topicOptions.all.length}>
+              <option value="">{topicOptions.all.length ? 'Choose topic' : 'No topics available'}</option>
+              {topicOptions.extracted.length ? <optgroup label="Past paper extracted topics">{topicOptions.extracted.map((topic) => <option key={`paper-${topic}`}>{topic}</option>)}</optgroup> : null}
+              {topicOptions.manual.length ? <optgroup label="Manual topic list">{topicOptions.manual.map((topic) => <option key={`manual-${topic}`}>{topic}</option>)}</optgroup> : null}
             </select>
             <button type="button" className="btn-secondary" onClick={addTopic} disabled={!lessonForm.selectedTopic}>Add topic</button>
           </div>
@@ -140,13 +158,13 @@ export const TutorStudentDetailsPage = () => {
             </div>
           ))}
           <textarea className="input min-h-32" value={lessonForm.topicReport} onChange={(event) => setLessonForm((current) => ({ ...current, topicReport: event.target.value }))} placeholder="Lesson report" />
-          <button type="button" className="btn-primary" onClick={completeLesson} disabled={!lessonForm.topicUnderstandingScores.length || !lessonForm.topicReport.trim()}>Lesson completed</button>
+          <button type="button" className="btn-primary" onClick={completeLesson} disabled={!lessonForm.topicUnderstandingScores.length || !lessonForm.topicReport.trim() || !hasValidScores(lessonForm.topicUnderstandingScores)}>Lesson completed</button>
         </section>
       )}
 
       <section className="grid gap-6 xl:grid-cols-2">
         <div className="panel p-5"><SectionHeader eyebrow="Exercises" title="Assigned exercises" description="Click an exercise to view details and paper links." /><div className="space-y-3">{exercises.map((exercise) => <button key={exercise.id} type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}`)} className="block w-full rounded-2xl bg-slate-50 p-4 text-left"><p className="font-semibold text-slate-950">{exercise.title}</p><p className="text-sm text-slate-500">{exercise.subject} • {exercise.assignmentDate}</p></button>)}{!exercises.length ? <p className="text-sm text-slate-500">No exercises yet.</p> : null}</div></div>
-        <div className="panel p-5"><SectionHeader eyebrow="Lessons" title="Completed lessons" description="These completed topics feed AI exercise generation." /><div className="space-y-3">{lessons.map((lesson) => <Link key={lesson.id} to={`/tutor/lessons/${lesson.id}`} className="block rounded-2xl bg-slate-50 p-4"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><p className="text-sm text-slate-500">{lesson.completedOn}</p></Link>)}{!lessons.length ? <p className="text-sm text-slate-500">No completed lessons yet.</p> : null}</div></div>
+        <div className="panel p-5"><SectionHeader eyebrow="Lessons" title="Tutor lessons" description="Planned and completed lessons for this student." /><div className="space-y-3">{lessons.map((lesson) => <Link key={lesson.id} to={`/tutor/lessons/${lesson.id}`} className="block rounded-2xl bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600">{lesson.status === 'planned' ? 'Planned' : 'Completed'}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lesson.lessonType === 'inPerson' ? 'In-person' : 'Online'}</p></Link>)}{!lessons.length ? <p className="text-sm text-slate-500">No lessons yet.</p> : null}</div></div>
       </section>
     </AppShell>
   );
