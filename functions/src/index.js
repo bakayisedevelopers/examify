@@ -8,7 +8,6 @@ export { processSubscriptionRenewals } from './subscriptionRenewals.js';
 
 export {
   callKiloText,
-  callExerciseGenerationText,
   callKiloImage,
   callKiloDocument,
 } from './kilo.js';

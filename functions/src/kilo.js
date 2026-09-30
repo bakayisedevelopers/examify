@@ -3,12 +3,7 @@ import { logger } from 'firebase-functions';
 
 const kiloBaseUrl = () => process.env.KILO_BASE_URL?.trim() || 'https://api.kilo.ai/api/gateway';
 const kiloTextModel = () => process.env.KILO_TEXT_MODEL?.trim() || 'thinkingmachines/inkling-small:free';
-const kiloExerciseTextModels = () => (process.env.KILO_EXERCISE_MODELS?.trim() || 'qwen/qwen3.8-27b:free,dots-studio/dots-3-note-preview:free,thinkingmachines/inkling-small:free')
-  .split(',')
-  .map((model) => model.trim())
-  .filter(Boolean);
 const kiloFallbackTextModel = () => process.env.KILO_FALLBACK_TEXT_MODEL?.trim() || 'kilo-auto/free';
-const kiloExerciseFallbackTextModel = () => process.env.KILO_EXERCISE_FALLBACK_MODEL?.trim() || 'kilo-auto/free';
 const kiloVisionModel = () => process.env.KILO_VISION_MODEL?.trim() || 'qwen/qwen3.8-27b:free';
 const kiloFallbackVisionModels = () => (process.env.KILO_FALLBACK_VISION_MODELS?.trim() || 'dots-studio/dots-3-note-preview:free,stepfun/step-3.7-flash:free,kilo-auto/free')
   .split(',')
@@ -159,52 +154,47 @@ const buildVisionContent = ({ prompt, url, imageUrls = [] }) => {
 export const callKiloTextWithFallback = async ({ messages, maxTokens = 3000, temperature = 0.2, responseFormat, validateText } = {}) => {
   const primaryModel = kiloTextModel();
   const fallbackModel = kiloFallbackTextModel();
+
   try {
-    const primaryResult = await callKiloChat({ model: primaryModel, messages, maxTokens, temperature, responseFormat, mode: 'general' });
-    if (validateText && !validateText(primaryResult.text)) throw new HttpsError('unavailable', `Kilo text model ${primaryModel} returned an unusable response.`);
+    const primaryResult = await callKiloChat({
+      model: primaryModel,
+      messages,
+      maxTokens,
+      temperature,
+      responseFormat,
+      mode: 'general',
+    });
+    if (validateText && !validateText(primaryResult.text)) {
+      throw new HttpsError('unavailable', `Kilo text model ${primaryModel} returned an unusable response.`);
+    }
     return primaryResult;
   } catch (error) {
     if (primaryModel === fallbackModel) throw error;
-    logger.warn('Kilo text model failed, retrying fallback text model', { primaryModel, fallbackModel, message: error?.message });
-    const fallbackResult = await callKiloChat({ model: fallbackModel, messages, maxTokens, temperature, responseFormat, mode: 'general' });
-    if (validateText && !validateText(fallbackResult.text)) throw new HttpsError('unavailable', `Kilo text model ${fallbackModel} returned an unusable response.`);
-    return { ...fallbackResult, fallbackUsed: true, fallbackFrom: primaryModel };
-  }
-};
 
-const validateJsonArrayKey = (requiredJsonKey) => (text) => {
-  try {
-    const content = String(text ?? '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-    const first = content.indexOf('{');
-    const last = content.lastIndexOf('}');
-    const parsed = JSON.parse(first >= 0 && last > first ? content.slice(first, last + 1) : content);
-    const entries = parsed?.[requiredJsonKey];
-    return Array.isArray(entries) && entries.length > 0 && entries.every((entry) =>
-      Array.isArray(entry?.questionReferences) && entry.questionReferences.length > 0
-      || Array.isArray(entry?.topicBreakdown) && entry.topicBreakdown.some((topic) => topic?.questionReference || topic?.reference)
-      || Boolean(entry?.title)
-    );
-  } catch {
-    return false;
-  }
-};
+    logger.warn('Kilo text model failed, retrying fallback text model', {
+      primaryModel,
+      fallbackModel,
+      message: error?.message,
+    });
 
-export const callKiloExerciseTextWithFallback = async ({ messages, maxTokens = 3000, temperature = 0.2, responseFormat, requiredJsonKey = 'recommendations' } = {}) => {
-  const models = [...new Set([...kiloExerciseTextModels(), kiloExerciseFallbackTextModel()])];
-  const validateText = validateJsonArrayKey(requiredJsonKey);
-  let lastError = null;
-  for (const [index, model] of models.entries()) {
-    try {
-      const result = await callKiloChat({ model, messages, maxTokens, temperature, responseFormat, mode: 'general' });
-      if (!validateText(result.text)) throw new HttpsError('unavailable', `Kilo exercise model ${model} returned invalid recommendations.`);
-      logger.info('Exercise generation used Kilo text model', { model, attempt: index + 1, fallbackUsed: index > 0 });
-      return { ...result, fallbackUsed: index > 0, fallbackFrom: index > 0 ? models[index - 1] : '' };
-    } catch (error) {
-      lastError = error;
-      logger.warn('Kilo exercise model failed; trying next model', { model, attempt: index + 1, message: error?.message });
+    const fallbackResult = await callKiloChat({
+      model: fallbackModel,
+      messages,
+      maxTokens,
+      temperature,
+      responseFormat,
+      mode: 'general',
+    });
+    if (validateText && !validateText(fallbackResult.text)) {
+      throw new HttpsError('unavailable', `Kilo text model ${fallbackModel} returned an unusable response.`);
     }
+
+    return {
+      ...fallbackResult,
+      fallbackUsed: true,
+      fallbackFrom: primaryModel,
+    };
   }
-  throw lastError ?? new HttpsError('unavailable', 'All Kilo exercise models failed.');
 };
 
 export const callKiloText = onCall(async (request) => {
@@ -223,18 +213,6 @@ export const callKiloText = onCall(async (request) => {
     maxTokens,
     temperature,
     responseFormat,
-  });
-});
-
-export const callExerciseGenerationText = onCall({ timeoutSeconds: 300 }, async (request) => {
-  const { system, prompt, messages, maxTokens, temperature, responseFormat, requiredJsonKey } = request.data ?? {};
-  const normalizedMessages = normalizeMessages({ system, prompt, messages });
-  return callKiloExerciseTextWithFallback({
-    messages: normalizedMessages,
-    maxTokens,
-    temperature,
-    responseFormat,
-    requiredJsonKey,
   });
 });
 

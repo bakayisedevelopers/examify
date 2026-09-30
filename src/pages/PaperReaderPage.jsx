@@ -1,112 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
-import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
+import { useEffect, useMemo, useState } from 'react';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../components/common/AppShell';
 import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { ROLES } from '../lib/constants';
 import { getQuestionPaperById, subscribeQuestionPaperAnalysisActivity, updateQuestionPaper } from '../services/firestoreService';
-
-GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-
-const StudentFullPagePdf = ({ paper, pageNumber, questionReference, status, onPageChange, onBack }) => {
-  const viewerRef = useRef(null);
-  const canvasRef = useRef(null);
-  const [pdf, setPdf] = useState(null);
-  const [pageCount, setPageCount] = useState(0);
-  const [size, setSize] = useState({ width: 0, height: 0 });
-  const [pdfStatus, setPdfStatus] = useState('Loading PDF...');
-
-  useEffect(() => {
-    if (!paper?.paperUrl) {
-      setPdfStatus('This paper has no PDF file to display.');
-      return undefined;
-    }
-    let active = true;
-    const task = getDocument({ url: paper.paperUrl });
-    task.promise.then((document) => {
-      if (!active) return;
-      setPdf(document);
-      setPageCount(document.numPages);
-      setPdfStatus('');
-    }).catch((error) => {
-      if (active) setPdfStatus(error.message || 'Could not render this PDF.');
-    });
-    return () => {
-      active = false;
-      task.destroy().catch(() => {});
-    };
-  }, [paper?.paperUrl]);
-
-  useEffect(() => {
-    const viewer = viewerRef.current;
-    if (!viewer) return undefined;
-    const measure = () => setSize({ width: viewer.clientWidth, height: viewer.clientHeight });
-    const observer = new ResizeObserver(measure);
-    observer.observe(viewer);
-    measure();
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (pageCount && pageNumber > pageCount) onPageChange(pageCount);
-  }, [pageCount, pageNumber, onPageChange]);
-
-  useEffect(() => {
-    if (!pdf || !size.width || !size.height || !canvasRef.current || pageNumber > pageCount) return undefined;
-    let cancelled = false;
-    let renderTask;
-    setPdfStatus('Rendering PDF page...');
-    const renderPage = async () => {
-      try {
-        const page = await pdf.getPage(pageNumber);
-        if (cancelled) return;
-        const baseViewport = page.getViewport({ scale: 1 });
-        const fitScale = Math.max(0.1, Math.min((size.width - 32) / baseViewport.width, (size.height - 32) / baseViewport.height));
-        const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-        const viewport = page.getViewport({ scale: fitScale * pixelRatio });
-        const canvas = canvasRef.current;
-        const context = canvas.getContext('2d', { alpha: false });
-        canvas.width = Math.ceil(viewport.width);
-        canvas.height = Math.ceil(viewport.height);
-        canvas.style.width = `${viewport.width / pixelRatio}px`;
-        canvas.style.height = `${viewport.height / pixelRatio}px`;
-        renderTask = page.render({ canvasContext: context, viewport });
-        await renderTask.promise;
-        if (!cancelled) setPdfStatus('');
-      } catch (error) {
-        if (!cancelled && error?.name !== 'RenderingCancelledException') setPdfStatus(error.message || 'Could not render this PDF page.');
-      }
-    };
-    renderPage();
-    return () => {
-      cancelled = true;
-      renderTask?.cancel();
-    };
-  }, [pdf, pageNumber, pageCount, size]);
-
-  const title = paper?.displayName || `${paper?.subject || 'Question paper'} ${paper?.grade || ''}`.trim();
-  return (
-    <main className="fixed inset-0 z-50 flex h-[100dvh] flex-col bg-slate-900 text-slate-900">
-      <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-3 sm:px-5">
-        <button type="button" className="inline-flex min-h-10 items-center gap-2 rounded-md px-2 text-sm font-semibold text-slate-700 hover:bg-slate-100" onClick={onBack}>
-          <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back
-        </button>
-        <p className="min-w-0 flex-1 truncate text-center text-sm font-semibold text-slate-700">{title}{questionReference ? ` • Q${questionReference}` : ''}</p>
-        <div className="flex shrink-0 items-center gap-1">
-          <button type="button" className="grid h-10 w-10 place-items-center rounded-md text-slate-700 hover:bg-slate-100 disabled:opacity-40" onClick={() => onPageChange(pageNumber - 1)} disabled={pageNumber <= 1} aria-label="Previous PDF page"><ChevronLeft className="h-5 w-5" /></button>
-          <span className="min-w-14 text-center text-xs font-semibold text-slate-600">{pageCount ? `${pageNumber} / ${pageCount}` : pageNumber}</span>
-          <button type="button" className="grid h-10 w-10 place-items-center rounded-md text-slate-700 hover:bg-slate-100 disabled:opacity-40" onClick={() => onPageChange(pageNumber + 1)} disabled={pageCount > 0 && pageNumber >= pageCount} aria-label="Next PDF page"><ChevronRight className="h-5 w-5" /></button>
-        </div>
-      </header>
-      <div ref={viewerRef} className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3 sm:p-5">
-        {status || pdfStatus ? <p className="text-center text-sm text-white">{status || pdfStatus}</p> : <canvas ref={canvasRef} className="block max-h-full max-w-full bg-white shadow-xl" />}
-      </div>
-    </main>
-  );
-};
 
 const retryPaperAnalysis = async (paper) => updateQuestionPaper(paper.id, {
   analysisStatus: 'Analyzing',
@@ -343,7 +241,6 @@ const LiveModelActivity = ({ paper, activity }) => {
 
 export const PaperReaderPage = () => {
   const { paperId } = useParams();
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { profile, logout } = useAuth();
   const [paper, setPaper] = useState(null);
@@ -389,15 +286,8 @@ export const PaperReaderPage = () => {
     setSearchParams(next, { replace: true });
   };
 
-  const goBack = () => {
-    if (window.history.state?.idx > 0) navigate(-1);
-    else navigate('/student');
-  };
-
   const handleRetry = async () => {
     if (!paper) return;
-    const succeeded = paper.analysisStatus === 'Analyzed' || paper.availableForGeneration;
-    if (succeeded && !window.confirm(`This paper has already been analyzed. Run the analysis again for ${paper.displayName || paper.paperFileName || 'this paper'}?`)) return;
     try {
       setActionStatus('Adding analysis retry to the queue...');
       await retryPaperAnalysis(paper);
@@ -408,10 +298,6 @@ export const PaperReaderPage = () => {
       setActionStatus(error.message || 'Could not retry analysis.');
     }
   };
-
-  if (role === ROLES.STUDENT) {
-    return <StudentFullPagePdf paper={paper} pageNumber={pageNumber} questionReference={questionReference} status={paper ? '' : status} onPageChange={updatePage} onBack={goBack} />;
-  }
 
   return (
     <AppShell

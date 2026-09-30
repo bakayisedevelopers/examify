@@ -7,30 +7,6 @@ const getNotificationPermission = () => {
   return Notification.permission;
 };
 
-const getNotificationEnvironment = () => {
-  if (typeof navigator === 'undefined') return { ios: false, android: false, windows: false, safari: false, installed: false };
-  const userAgent = navigator.userAgent ?? '';
-  const ios = /iPhone|iPad|iPod/i.test(userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  const safari = /Safari/i.test(userAgent) && !/CriOS|FxiOS|EdgiOS|OPiOS/i.test(userAgent);
-  const installed = Boolean(navigator.standalone) || window.matchMedia?.('(display-mode: standalone)').matches === true;
-  const windows = /Windows/i.test(userAgent) || /Win/i.test(navigator.userAgentData?.platform ?? navigator.platform ?? '');
-  return { ios, android: /Android/i.test(userAgent), windows, safari, installed };
-};
-
-const getSettingsGuidance = () => {
-  const { ios, android, safari, installed } = getNotificationEnvironment();
-  if (ios && safari && !installed) {
-    return 'On iPhone or iPad, web notifications work from the installed web app. In Safari, tap Share, choose Add to Home Screen, open Examifying from its new Home Screen icon, then tap Enable notifications.';
-  }
-  if (ios && installed) {
-    return 'Open iPhone or iPad Settings, find Examifying under Notifications (or Settings > Notifications), and allow notifications. Return to the installed Examifying app and tap Check notification access.';
-  }
-  if (android) {
-    return 'In Chrome, open Examifying site settings and set Notifications to Allow. Also check Android Settings > Apps > Chrome > Notifications. Return here and tap Check notification access.';
-  }
-  return 'Open this site’s permissions from your browser’s address bar or site settings and allow notifications. Return here and tap Check notification access.';
-};
-
 const buildAssignmentText = (assignment) => {
   const subject = assignment.subject ? `${assignment.subject} ` : '';
   const title = assignment.title || 'exercise';
@@ -38,8 +14,6 @@ const buildAssignmentText = (assignment) => {
 };
 
 export const StudentNotificationGate = ({ profile, children, required = true }) => {
-  const { android, windows } = getNotificationEnvironment();
-  const requiresNotificationPermission = required && (android || windows);
   const [permission, setPermission] = useState(getNotificationPermission);
   const [error, setError] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
@@ -49,16 +23,6 @@ export const StudentNotificationGate = ({ profile, children, required = true }) 
 
   useEffect(() => {
     setPermission(getNotificationPermission());
-  }, []);
-
-  useEffect(() => {
-    const refreshPermission = () => setPermission(getNotificationPermission());
-    window.addEventListener('focus', refreshPermission);
-    document.addEventListener('visibilitychange', refreshPermission);
-    return () => {
-      window.removeEventListener('focus', refreshPermission);
-      document.removeEventListener('visibilitychange', refreshPermission);
-    };
   }, []);
 
   useEffect(() => {
@@ -94,59 +58,31 @@ export const StudentNotificationGate = ({ profile, children, required = true }) 
   const requestPermission = async () => {
     setError('');
     setDeviceRegistered(false);
+    setIsRegistering(true);
     if (getNotificationPermission() === 'unsupported') {
       setPermission('unsupported');
-      return;
-    }
-    if (Notification.permission === 'denied') {
-      setPermission('denied');
-      setError(getSettingsGuidance());
+      setIsRegistering(false);
       return;
     }
 
-    setIsRegistering(true);
     try {
-      // Keep the permission prompt directly inside the user's tap gesture.
+      const support = await getNotificationSupportState();
+      if (!support.supported) {
+        throw new Error('This browser cannot receive Examifying push notifications.');
+      }
+
       const result = await Notification.requestPermission();
       setPermission(result);
       if (result !== 'granted') {
-        setError(getSettingsGuidance());
+        setError('Notifications are required before students can access today’s exercises. Enable browser notifications for Examifying and try again.');
         return;
       }
 
-      const support = await getNotificationSupportState();
-      if (!support.supported) {
-        throw new Error('Permission is enabled, but this browser cannot register push notifications with the current notification service.');
-      }
       await registerStudentNotificationDevice(profile.uid);
       setDeviceRegistered(true);
     } catch (requestError) {
       setDeviceRegistered(false);
       setError(requestError?.message ?? 'Could not request notification permission.');
-    } finally {
-      setIsRegistering(false);
-    }
-  };
-
-  const checkNotificationAccess = async () => {
-    const currentPermission = getNotificationPermission();
-    setPermission(currentPermission);
-    setError('');
-    if (currentPermission !== 'granted') {
-      setError(getSettingsGuidance());
-      return;
-    }
-    if (!profile?.uid) return;
-    setIsRegistering(true);
-    try {
-      const support = await getNotificationSupportState();
-      if (!support.supported) {
-        throw new Error('Permission is enabled, but this browser cannot register push notifications with the current notification service.');
-      }
-      await registerStudentNotificationDevice(profile.uid);
-      setDeviceRegistered(true);
-    } catch (checkError) {
-      setError(checkError?.message ?? 'Could not register this browser for notifications.');
     } finally {
       setIsRegistering(false);
     }
@@ -164,18 +100,14 @@ export const StudentNotificationGate = ({ profile, children, required = true }) 
 
   if (permission === 'granted' && deviceRegistered) return children;
 
-  if (!requiresNotificationPermission) {
+  if (!required) {
     return (
       <>
         <div className="mx-auto max-w-7xl px-4 pt-4 lg:px-6">
           <div className="panel flex flex-wrap items-center justify-between gap-3 p-4 text-sm text-slate-600">
-            <div className="min-w-0 flex-1">
-              <p>Enable browser notifications to receive important Examifying alerts on this device.</p>
-              {permission === 'denied' ? <p className="mt-1 text-xs text-slate-500">{getSettingsGuidance()}</p> : null}
-              {error ? <p className="mt-1 text-xs font-medium text-rose-700">{error}</p> : null}
-            </div>
-            <button type="button" className="btn-secondary" onClick={permission === 'denied' ? checkNotificationAccess : requestPermission} disabled={isRegistering || permission === 'unsupported'}>
-              {isRegistering ? 'Enabling...' : permission === 'denied' ? 'Check notification access' : 'Enable notifications'}
+            <span>Enable browser notifications to receive important Examifying alerts on this device.</span>
+            <button type="button" className="btn-secondary" onClick={requestPermission} disabled={isRegistering || permission === 'unsupported' || permission === 'denied'}>
+              {isRegistering ? 'Enabling...' : 'Enable notifications'}
             </button>
           </div>
         </div>
@@ -197,7 +129,11 @@ export const StudentNotificationGate = ({ profile, children, required = true }) 
             This browser does not support notifications. Please use a browser that supports notifications to access student exercises.
           </p>
         ) : null}
-        {permission === 'denied' ? <p className="mt-4 rounded-2xl bg-rose-50 p-4 text-sm font-medium text-rose-700">{getSettingsGuidance()}</p> : null}
+        {permission === 'denied' ? (
+          <p className="mt-4 rounded-2xl bg-rose-50 p-4 text-sm font-medium text-rose-700">
+            Notifications are blocked in your browser settings. Open the site permissions for Examifying, allow notifications, then reload this page.
+          </p>
+        ) : null}
         {error ? (
           <div className="mt-4 rounded-2xl bg-rose-50 p-4 text-sm font-medium text-rose-700">
             <p>{error}</p>
@@ -211,10 +147,10 @@ export const StudentNotificationGate = ({ profile, children, required = true }) 
         <button
           type="button"
           className="btn-primary mt-6 w-full"
-          onClick={permission === 'denied' ? checkNotificationAccess : requestPermission}
-          disabled={isRegistering || permission === 'unsupported'}
+          onClick={requestPermission}
+          disabled={isRegistering || permission === 'unsupported' || permission === 'denied'}
         >
-          {isRegistering ? 'Enabling notifications...' : permission === 'denied' ? 'Check notification access' : error ? 'Retry notifications' : 'Enable notifications'}
+          {isRegistering ? 'Enabling notifications...' : error ? 'Retry notifications' : 'Enable notifications'}
         </button>
         <p className="mt-4 text-xs text-slate-500">
           Access to today’s exercises and peer marking will unlock after browser permission is granted and this device is saved for push notifications.

@@ -171,8 +171,6 @@ export const PastExamPapersPage = () => {
 
   const queuePaperReanalysis = async (paper) => {
     if (!paper?.id) return;
-    const succeeded = paper.analysisStatus === 'Analyzed' || paper.availableForGeneration;
-    if (succeeded && !window.confirm(`This paper has already been analyzed. Run the analysis again for ${paper.displayName || paper.paperFileName || 'this paper'}?`)) return;
     const patch = {
       analysisStatus: 'Analyzing',
       availableForGeneration: false,
@@ -199,7 +197,6 @@ export const PastExamPapersPage = () => {
 
   const stopPaperAnalysis = async (paper) => {
     if (!paper?.id) return;
-    if (!window.confirm(`Stop the analysis for ${paper.displayName || paper.paperFileName || 'this paper'}? Any queued work for this paper will be cancelled.`)) return;
     setStatus(`Stopping analysis for ${paper.displayName || paper.paperFileName || 'paper'}...`);
     await cancelQuestionPaperAnalysis(paper.id);
     const patch = {
