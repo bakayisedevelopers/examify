@@ -67,11 +67,11 @@ const ReadinessChecklist = ({ rows }) => {
               {Object.entries(row.checks).map(([key, passed]) => (
                 <div key={key} className="flex items-center justify-between gap-3 text-sm">
                   <span className="text-slate-600">{labels[key] ?? key}</span>
-                  <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${passed ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{passed ? 'Done' : 'Missing'}</span>
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${passed ? 'bg-lime-400/15 text-lime-300 border border-lime-400/30' : 'bg-amber-400/15 text-amber-300 border border-amber-400/30'}`}>{passed ? 'Done' : 'Missing'}</span>
                 </div>
               ))}
             </div>
-            {row.reason ? <p className="mt-3 rounded-xl bg-amber-50 p-3 text-xs font-medium text-amber-700">{row.reason}</p> : null}
+            {row.reason ? <p className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs font-medium text-amber-300">{row.reason}</p> : null}
             <p className="mt-3 text-xs text-slate-500">Papers available: {row.availablePaperCount}. Completed lessons: {row.completedLessonCount}.</p>
           </div>
         ))}

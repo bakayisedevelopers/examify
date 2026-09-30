@@ -190,9 +190,9 @@ export const GuidePage = ({ role }) => {
 
         <div className="mt-6 space-y-6">
           {content.questions.map((question, index) => (
-            <div key={question.id} className="rounded-3xl border border-slate-200 p-5">
-              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">Question {index + 1}</p>
-              <h3 className="mt-2 text-lg font-semibold text-slate-950">{question.prompt}</h3>
+            <div key={question.id} className="rounded-3xl border border-slate-800 bg-slate-900/60 p-5">
+              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-lime-400">Question {index + 1}</p>
+              <h3 className="mt-2 text-lg font-semibold text-white">{question.prompt}</h3>
               <div className="mt-4 grid gap-3">
                 {question.options.map((option) => {
                   const selected = answers[question.id] === option.id;
@@ -203,8 +203,8 @@ export const GuidePage = ({ role }) => {
                       onClick={() => handleSelect(question.id, option.id)}
                       className={`rounded-2xl border px-4 py-3 text-left text-sm transition ${
                         selected
-                          ? 'border-brand-600 bg-brand-50 text-brand-900'
-                          : 'border-slate-200 bg-white text-slate-700 hover:border-brand-300 hover:bg-slate-50'
+                          ? 'border-lime-400 bg-lime-400/20 text-lime-300 font-semibold shadow-[0_0_15px_rgba(163,230,53,0.15)]'
+                          : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-lime-400/40 hover:bg-slate-900'
                       }`}
                     >
                       {option.text}

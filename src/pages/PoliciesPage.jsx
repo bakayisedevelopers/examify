@@ -12,7 +12,7 @@ export const PoliciesPage = () => {
       {/* 🔙 BACK BUTTON */}
       <button
         onClick={() => navigate(-1)}
-        className="mb-6 text-sm font-semibold text-brand-700 hover:underline"
+        className="mb-6 text-sm font-semibold text-lime-400 hover:text-lime-300 hover:underline"
       >
         ← Back
       </button>
@@ -29,10 +29,10 @@ export const PoliciesPage = () => {
 
         {/* NAV */}
         <div className="flex flex-wrap gap-4 text-sm font-medium">
-          <button type="button" onClick={() => scrollToSection('terms')} className="text-brand-700 hover:underline">Terms of Service</button>
-          <button type="button" onClick={() => scrollToSection('refunds')} className="text-brand-700 hover:underline">Refund & Cancellation</button>
-          <button type="button" onClick={() => scrollToSection('privacy')} className="text-brand-700 hover:underline">Privacy Policy</button>
-          <button type="button" onClick={() => scrollToSection('contact')} className="text-brand-700 hover:underline">Contact Info</button>
+          <button type="button" onClick={() => scrollToSection('terms')} className="text-lime-400 hover:text-lime-300 hover:underline font-semibold">Terms of Service</button>
+          <button type="button" onClick={() => scrollToSection('refunds')} className="text-lime-400 hover:text-lime-300 hover:underline font-semibold">Refund & Cancellation</button>
+          <button type="button" onClick={() => scrollToSection('privacy')} className="text-lime-400 hover:text-lime-300 hover:underline font-semibold">Privacy Policy</button>
+          <button type="button" onClick={() => scrollToSection('contact')} className="text-lime-400 hover:text-lime-300 hover:underline font-semibold">Contact Info</button>
         </div>
 
         {/* ================= TERMS ================= */}

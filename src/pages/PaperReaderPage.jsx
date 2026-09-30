@@ -30,11 +30,11 @@ const formatValue = (value) => {
 
 const ExtractedQuestionsViewer = ({ questions, onOpenPage }) => (
   <div>
-    <h3 className="font-semibold text-slate-950">Extracted question metadata</h3>
-    <div className="mt-3 overflow-hidden rounded-2xl border border-slate-200">
+    <h3 className="font-semibold text-white">Extracted question metadata</h3>
+    <div className="mt-3 overflow-hidden rounded-2xl border border-slate-700 bg-slate-900/90">
       <div className="overflow-x-auto">
         <table className="min-w-[1040px] text-left text-sm">
-          <thead className="bg-slate-50 text-xs uppercase tracking-[0.2em] text-slate-500">
+          <thead className="bg-slate-800 text-xs uppercase tracking-[0.2em] text-slate-400">
             <tr>
               <th className="px-4 py-3">Ref</th>
               <th className="px-4 py-3">Parent</th>
@@ -45,24 +45,24 @@ const ExtractedQuestionsViewer = ({ questions, onOpenPage }) => (
               <th className="px-4 py-3">Source</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100">
+          <tbody className="divide-y divide-slate-800">
             {questions.map((question, index) => (
               <tr key={question.id || `${question.questionReference}-${index}`} className="align-top">
-                <td className="px-4 py-3 font-semibold text-slate-950">{formatValue(question.questionReference)}</td>
-                <td className="px-4 py-3 text-slate-600">{formatValue(question.parentQuestion)}</td>
+                <td className="px-4 py-3 font-semibold text-white">{formatValue(question.questionReference)}</td>
+                <td className="px-4 py-3 text-slate-400">{formatValue(question.parentQuestion)}</td>
                 <td className="px-4 py-3">
                   {question.pageNumber ? (
-                    <button type="button" className="font-semibold text-brand-700 hover:text-brand-800" onClick={() => onOpenPage(question.pageNumber, question.questionReference)}>
+                    <button type="button" className="font-semibold text-lime-400 hover:text-lime-300" onClick={() => onOpenPage(question.pageNumber, question.questionReference)}>
                       Page {question.pageNumber}
                     </button>
                   ) : '-'}
                 </td>
-                <td className="px-4 py-3 text-slate-600">{formatValue(question.marks)}</td>
-                <td className="px-4 py-3 text-slate-600">{formatValue(question.topic)}</td>
-                <td className="px-4 py-3 text-slate-600">{formatValue(question.section)}</td>
-                <td className="px-4 py-3 text-slate-600">
+                <td className="px-4 py-3 text-slate-400">{formatValue(question.marks)}</td>
+                <td className="px-4 py-3 text-slate-400">{formatValue(question.topic)}</td>
+                <td className="px-4 py-3 text-slate-400">{formatValue(question.section)}</td>
+                <td className="px-4 py-3 text-slate-400">
                   <p>{formatValue(question.sourceBatchId)}</p>
-                  <p className="text-xs text-slate-400">{formatValue(question.sourceDocumentType)}</p>
+                  <p className="text-xs text-slate-500">{formatValue(question.sourceDocumentType)}</p>
                 </td>
               </tr>
             ))}
@@ -203,14 +203,14 @@ const LiveModelActivity = ({ paper, activity }) => {
 
   return (
     <div>
-      <h3 className="font-semibold text-slate-950">Live model activity</h3>
-      <div className="mt-3 overflow-hidden rounded-2xl border border-slate-200">
+      <h3 className="font-semibold text-white">Live model activity</h3>
+      <div className="mt-3 overflow-hidden rounded-2xl border border-slate-700 bg-slate-900/90">
         <div className="overflow-x-auto">
           <table className="min-w-[760px] text-left text-sm">
-            <thead className="bg-slate-50 text-xs uppercase tracking-[0.2em] text-slate-500">
+            <thead className="bg-slate-800 text-xs uppercase tracking-[0.2em] text-slate-400">
               <tr><th className="px-4 py-3">Page</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Attempt</th><th className="px-4 py-3">Model</th><th className="px-4 py-3">Fallback / result</th></tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-800">
               {batches.map((batch) => {
                 const attempt = Number(batch.attemptCount ?? 0);
                 const inGeminiFallback = attempt >= 5 && batch.status === 'Processing';
@@ -222,11 +222,11 @@ const LiveModelActivity = ({ paper, activity }) => {
                   : batch.fallbackUsed ? `Fallback used${batch.fallbackFrom ? `: ${batch.fallbackFrom}` : ''}` : batch.error || '-';
                 return (
                   <tr key={`${batch.runId}-${batch.id}`} className="align-top">
-                    <td className="px-4 py-3 font-semibold text-slate-700">Page {batch.pages?.[0]?.pageNumber ?? '-'}</td>
-                    <td className="px-4 py-3 text-slate-600">{batch.status}</td>
-                    <td className="px-4 py-3 text-slate-600">{attempt || '-'}</td>
-                    <td className="px-4 py-3 text-slate-600">{model}</td>
-                    <td className="px-4 py-3 text-slate-600">{progression}</td>
+                    <td className="px-4 py-3 font-semibold text-white">Page {batch.pages?.[0]?.pageNumber ?? '-'}</td>
+                    <td className="px-4 py-3 text-slate-400">{batch.status}</td>
+                    <td className="px-4 py-3 text-slate-400">{attempt || '-'}</td>
+                    <td className="px-4 py-3 text-slate-400">{model}</td>
+                    <td className="px-4 py-3 text-slate-400">{progression}</td>
                   </tr>
                 );
               })}

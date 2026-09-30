@@ -37,7 +37,7 @@ export const SubmissionUpload = ({ exerciseId, onSubmit }) => {
         <UploadCloud className="h-4 w-4" />
         {loading ? 'Uploading…' : `Submit image`}
       </button>
-      {message ? <p className="text-sm text-red">{message}</p> : null}
+      {message ? <p className="text-sm font-medium text-rose-400">{message}</p> : null}
     </form>
   );
 };
