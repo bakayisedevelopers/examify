@@ -9,6 +9,7 @@ export const collections = {
   lessons: 'lessons',
   exercises: 'exercises',
   dailyExerciseAssignments: 'dailyExerciseAssignments',
+  exerciseGenerationStatus: 'exerciseGenerationStatus',
   submissions: 'submissions',
   peerReviews: 'peerReviews',
   peerMarkingAssignments: 'peerMarkingAssignments',

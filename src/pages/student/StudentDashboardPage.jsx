@@ -12,6 +12,7 @@ import {
   getPeerMarkingAssignmentsForStudent,
   getStudentAccessState,
   getTodayExercise,
+  subscribeToExerciseGenerationStatus,
 } from '../../services/firestoreService';
 import { uploadPeerReviewImage } from '../../services/storageService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
@@ -99,6 +100,15 @@ export const StudentDashboardPage = () => {
   const [generationProgress, setGenerationProgress] = useState(0);
   const [generationMessage, setGenerationMessage] = useState('');
   const [readinessRows, setReadinessRows] = useState([]);
+  const [exerciseGenerationStatuses, setExerciseGenerationStatuses] = useState({});
+
+  useEffect(() => {
+    if (!profile?.uid) return undefined;
+    const unsubscribes = availableSubjects.map((subject) => subscribeToExerciseGenerationStatus(profile.uid, subject, (status) => {
+      setExerciseGenerationStatuses((current) => ({ ...current, [subject]: status }));
+    }));
+    return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
+  }, [profile?.uid, availableSubjects]);
 
   useEffect(() => {
     setActiveTab(searchParams.get('tab') === 'mark' ? 'mark' : 'exercises');
@@ -213,6 +223,20 @@ export const StudentDashboardPage = () => {
       onLogout={logout}
     >
       {loadError ? <div className="panel p-4 text-sm text-amber-700">{loadError}</div> : null}
+
+      {Object.entries(exerciseGenerationStatuses).filter(([, status]) => {
+        if (!status) return false;
+        if (status.status === 'processing') return true;
+        return Date.now() - Number(status.finishedAtMs || 0) < 120000;
+      }).map(([subject, status]) => (
+        <div key={subject} role="status" aria-live="polite" className={`panel flex items-start gap-3 p-4 ${status.status === 'failed' ? 'text-rose-700' : 'text-slate-700'}`}>
+          {status.status === 'processing' ? <span className="mt-0.5 inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-current border-r-transparent" aria-hidden="true" /> : null}
+          <div>
+            <p className="font-semibold">{status.status === 'processing' ? `${subject}: AI is regenerating your exercises` : `${subject}: ${status.status === 'completed' ? 'Exercise regeneration complete' : 'Exercise regeneration did not complete'}`}</p>
+            <p className="mt-1 text-sm">{status.message}</p>
+          </div>
+        </div>
+      ))}
 
       {isGenerating ? (
         <div className="panel p-4">

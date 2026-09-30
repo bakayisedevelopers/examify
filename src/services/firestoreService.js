@@ -1714,6 +1714,17 @@ export const regenerateFutureUnsubmittedExercisesForTutor = async ({ tutorId, st
   const unsubmitted = eligible.filter((item) => !isExerciseSubmitted(item));
   if (!unsubmitted.length) return { generated: false, reason: 'There are no future unsubmitted exercises to regenerate.', assignments: [] };
 
+  const statusRef = doc(db, collections.exerciseGenerationStatus, `${student.uid}_${subject}`);
+  const saveStatus = (status, message) => setDoc(statusRef, {
+    studentId: student.uid,
+    tutorId,
+    subject,
+    status,
+    message,
+    updatedAt: serverTimestamp(),
+    ...(status === 'processing' ? { finishedAtMs: null } : { finishedAtMs: Date.now() }),
+  }, { merge: true });
+
   const idsByDate = new Map();
   unsubmitted.forEach((item) => {
     const ids = idsByDate.get(item.assignmentDate) ?? [];
@@ -1723,16 +1734,38 @@ export const regenerateFutureUnsubmittedExercisesForTutor = async ({ tutorId, st
   const targetAssignmentDates = [...idsByDate.keys()].sort();
   const dailyExerciseCaps = Object.fromEntries([...idsByDate.entries()].map(([date, ids]) => [date, Math.min(ids.length, MAX_DAILY_EXERCISES)]));
   const overrideExerciseIdsByDate = Object.fromEntries(idsByDate);
-  return generateExercisePlanIfEligible({
-    student: { ...assignedContext, ...student, uid: student.uid },
-    subject,
-    mode: 'weekly',
-    overrideFutureUnsubmitted: true,
-    targetAssignmentDates,
-    dailyExerciseCaps,
-    overrideExerciseIdsByDate,
-    onProgress,
-  });
+  await saveStatus('processing', 'Preparing analyzed paper metadata for exercise regeneration.');
+  try {
+    const result = await generateExercisePlanIfEligible({
+      student: { ...assignedContext, ...student, uid: student.uid },
+      subject,
+      mode: 'weekly',
+      overrideFutureUnsubmitted: true,
+      targetAssignmentDates,
+      dailyExerciseCaps,
+      overrideExerciseIdsByDate,
+      onProgress: async (message) => {
+        onProgress?.(message);
+        await saveStatus('processing', message);
+      },
+    });
+    const status = result.generated ? 'completed' : 'failed';
+    await saveStatus(status, result.reason || (result.generated ? 'Exercises regenerated.' : 'No exercises were regenerated.'));
+    return result;
+  } catch (error) {
+    await saveStatus('failed', error.message || 'Exercise regeneration failed.');
+    throw error;
+  }
+};
+
+export const subscribeToExerciseGenerationStatus = (studentId, subject, callback) => {
+  if (!studentId || !subject || !isFirebaseConfigured) return () => {};
+  ensureDb();
+  return onSnapshot(
+    doc(db, collections.exerciseGenerationStatus, `${studentId}_${subject}`),
+    (snapshot) => callback(snapshot.exists() ? snapshot.data() : null),
+    (error) => console.error('[Examifying][Firestore] exercise generation status subscription failed', error),
+  );
 };
 
 export const subscribeToAssignedStudentsForTutor = (tutorId, callback, subject = DEFAULT_SUBJECT) => {

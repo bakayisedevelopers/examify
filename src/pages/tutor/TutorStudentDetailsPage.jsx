@@ -128,7 +128,7 @@ export const TutorStudentDetailsPage = () => {
   };
 
   const regenerateExercises = async () => {
-    if (!student || !regenerableExercises.length) return;
+    if (isRegenerating || !student || !regenerableExercises.length) return;
     const confirmed = window.confirm(`Regenerate ${regenerableExercises.length} future unsubmitted exercise${regenerableExercises.length === 1 ? '' : 's'} for ${student.displayName || student.name || 'this student'}? Past exercises and submitted work will be kept.`);
     if (!confirmed) return;
     setIsRegenerating(true);
@@ -139,7 +139,9 @@ export const TutorStudentDetailsPage = () => {
         subject,
         onProgress: setStatus,
       });
-      setStatus(result.reason || (result.generated ? 'Future exercises regenerated.' : 'No exercises were regenerated.'));
+      setStatus(result.generated
+        ? `${result.reason} The student can now see the updated exercises.`
+        : `No exercises were replaced: ${result.reason || 'The model returned no complete replacement set.'}`);
       await load();
     } catch (error) {
       setStatus(error.message || 'Could not regenerate exercises.');
@@ -197,7 +199,7 @@ export const TutorStudentDetailsPage = () => {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <SectionHeader eyebrow="Exercises" title="Assigned exercises" description="Click an exercise to view details and paper links." />
             <button type="button" className="btn-secondary" onClick={regenerateExercises} disabled={!regenerableExercises.length || isRegenerating}>
-              {isRegenerating ? 'Regenerating...' : 'Regenerate future exercises'}
+              {isRegenerating ? <><span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-r-transparent" aria-hidden="true" /> Regenerating...</> : 'Regenerate future exercises'}
             </button>
           </div>
           <div className="space-y-3">{exercises.map((exercise) => <button key={exercise.id} type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}`)} className="block w-full rounded-2xl bg-slate-50 p-4 text-left"><p className="font-semibold text-slate-950">{exercise.title}</p><p className="text-sm text-slate-500">{exercise.subject} • {exercise.assignmentDate}{exercise.submittedImageUrl || exercise.submitted === 'Yes' ? ' • Submitted' : ''}</p></button>)}{!exercises.length ? <p className="text-sm text-slate-500">No exercises yet.</p> : null}</div>
