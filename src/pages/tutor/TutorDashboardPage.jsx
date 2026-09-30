@@ -30,7 +30,7 @@ const TutorReadinessPanel = ({ rows }) => {
               {Object.entries(row.checks).map(([key, passed]) => (
                 <div key={key} className="flex items-center justify-between gap-3 text-sm">
                   <span className="text-slate-600">{labels[key]}</span>
-                  <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${passed ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{passed ? 'Done' : 'Missing'}</span>
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${passed ? 'bg-lime-400/15 text-lime-300 border border-lime-400/30' : 'bg-amber-400/15 text-amber-300 border border-amber-400/30'}`}>{passed ? 'Done' : 'Missing'}</span>
                 </div>
               ))}
             </div>
@@ -133,8 +133,8 @@ export const TutorDashboardPage = () => {
                   <p className="mt-2 text-xs text-slate-500">{reportReady ? 'Initial report exists. Click to manage lessons and exercises.' : 'No initial report yet. Click to create the first report.'}</p>
                 </div>
                 <div className="flex flex-col items-end gap-2">
-                  <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.25em] ${student.paymentCompleted ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{student.paymentCompleted ? 'paid' : 'unpaid'}</span>
-                  <span className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] ${reportReady ? 'bg-sky-100 text-sky-700' : 'bg-slate-200 text-slate-700'}`}>{reportReady ? 'report ready' : 'report needed'}</span>
+                  <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.25em] ${student.paymentCompleted ? 'bg-lime-400/15 text-lime-400 border border-lime-400/30' : 'bg-amber-400/15 text-amber-300 border border-amber-400/30'}`}>{student.paymentCompleted ? 'paid' : 'unpaid'}</span>
+                  <span className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] ${reportReady ? 'bg-emerald-400/15 text-emerald-300 border border-emerald-400/30' : 'bg-slate-800 text-slate-400 border border-slate-700'}`}>{reportReady ? 'report ready' : 'report needed'}</span>
                 </div>
               </div>
             </button>

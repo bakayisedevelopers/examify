@@ -9,10 +9,10 @@ import { uploadQuestionPaperDocuments } from '../services/storageService';
 import { getApprovedTutorSubjects, getUserSubjects } from '../utils/tutorSubjects';
 
 const paperStatusStyles = {
-  Analyzing: 'bg-amber-50 text-amber-700',
-  Analyzed: 'bg-emerald-50 text-emerald-700',
-  Failed: 'bg-rose-50 text-rose-700',
-  Cancelled: 'bg-slate-100 text-slate-700',
+  Analyzing: 'bg-amber-400/15 text-amber-300 border border-amber-400/30',
+  Analyzed: 'bg-lime-400/15 text-lime-300 border border-lime-400/30',
+  Failed: 'bg-rose-400/15 text-rose-300 border border-rose-400/30',
+  Cancelled: 'bg-slate-800 text-slate-400 border border-slate-700',
 };
 
 const defaultPaperForm = (profile) => ({
@@ -415,10 +415,10 @@ export const PastExamPapersPage = () => {
           <div className="space-y-4">
             <label className="block"><span className="label">Bulk files</span><input type="file" className="input" multiple accept=".pdf,application/pdf" onChange={handleBulkFiles} /><span className="mt-1 block text-xs text-slate-500">Select PDF question papers and optional PDF memos together. The app will infer metadata and pair memos by filename similarity before upload.</span></label>
             {bulkRows.length ? (
-              <div className="w-full overflow-hidden rounded-2xl border border-slate-200 bg-white">
+              <div className="w-full overflow-hidden rounded-2xl border border-slate-700 bg-slate-900/90">
                 <div className="overflow-x-auto overscroll-x-contain">
                   <table className="min-w-[1180px] border-collapse text-left text-sm">
-                    <thead className="bg-slate-50 text-xs uppercase tracking-[0.2em] text-slate-500">
+                    <thead className="bg-slate-800 text-xs uppercase tracking-[0.2em] text-slate-400">
                       <tr>
                         <th className="w-12 px-4 py-3 font-semibold">#</th>
                         <th className="min-w-64 px-4 py-3 font-semibold">Question paper</th>
@@ -434,7 +434,7 @@ export const PastExamPapersPage = () => {
                         <th className="min-w-28 px-4 py-3 font-semibold">Action</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100">
+                    <tbody className="divide-y divide-slate-800">
                       {bulkRows.map((row, index) => (
                         <tr key={row.id} className="align-top">
                           <td className="px-4 py-3 font-semibold text-slate-500">{index + 1}</td>

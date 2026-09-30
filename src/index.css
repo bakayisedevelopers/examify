@@ -3,10 +3,10 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
   font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: #020617;
-  color: #e2e8f0;
+  color: #f1f5f9;
 }
 
 html {
@@ -25,9 +25,11 @@ body {
   min-width: 320px;
   min-height: 100vh;
   scrollbar-width: none;
+  color: #e2e8f0;
   background:
-    radial-gradient(circle at top, rgba(37, 99, 235, 0.15), transparent 30%),
-    linear-gradient(180deg, #020617 0%, #0f172a 25%, #f8fafc 25%, #f8fafc 100%);
+    radial-gradient(circle at 15% 10%, rgba(163, 230, 53, 0.12), transparent 35%),
+    radial-gradient(circle at 85% 25%, rgba(16, 185, 129, 0.08), transparent 40%),
+    linear-gradient(180deg, #020617 0%, #090d16 50%, #020617 100%);
 }
 
 #root {
@@ -42,27 +44,27 @@ body {
 
 @layer components {
   .panel {
-    @apply rounded-2xl border border-slate-200 bg-white shadow-sm;
+    @apply rounded-2xl border border-slate-800/80 bg-slate-900/85 text-slate-100 shadow-[0_4px_25px_rgba(0,0,0,0.45)] backdrop-blur;
   }
 
   .panel-dark {
-    @apply rounded-3xl border border-white/10 bg-slate-900/80 shadow-glow backdrop-blur;
+    @apply rounded-3xl border border-lime-500/20 bg-slate-900/90 shadow-[0_0_30px_rgba(0,0,0,0.7)] backdrop-blur;
   }
 
   .btn-primary {
-    @apply inline-flex items-center justify-center rounded-full bg-brand-600 px-5 py-3 text-sm font-semibold text-white transition-all transform hover:-translate-y-1 hover:shadow-[0_6px_0_0_#1d4ed8,0_10px_15px_-3px_rgba(0,0,0,0.1)] active:translate-y-0 active:shadow-none;
+    @apply inline-flex items-center justify-center rounded-full bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 px-5 py-3 text-sm font-bold text-slate-950 transition-all transform hover:-translate-y-0.5 hover:shadow-[0_0_25px_rgba(163,230,53,0.45)] active:translate-y-0 active:shadow-none;
   }
 
   .btn-secondary {
-    @apply inline-flex items-center justify-center rounded-full border border-slate-300 bg-white/5 backdrop-blur-md px-5 py-3 text-sm font-semibold text-slate-700 transition-all transform hover:-translate-y-1 hover:border-slate-400 hover:shadow-[0_6px_0_0_#cbd5e1,0_10px_15px_-3px_rgba(0,0,0,0.1)] active:translate-y-0 active:shadow-none;
+    @apply inline-flex items-center justify-center rounded-full border border-slate-700 bg-slate-800/80 backdrop-blur-md px-5 py-3 text-sm font-semibold text-slate-200 transition-all transform hover:-translate-y-0.5 hover:border-lime-400/50 hover:text-lime-300 hover:shadow-[0_0_20px_rgba(163,230,53,0.2)] active:translate-y-0 active:shadow-none;
   }
 
   .input {
-    @apply w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-brand-500 focus:ring-4 focus:ring-brand-100;
+    @apply w-full rounded-xl border border-slate-700/80 bg-slate-950 px-4 py-3 text-sm text-slate-100 placeholder-slate-500 outline-none transition focus:border-lime-400 focus:ring-4 focus:ring-lime-400/20;
   }
 
   .label {
-    @apply mb-2 block text-sm font-medium text-slate-700;
+    @apply mb-2 block text-sm font-medium text-slate-300;
   }
 
   .perspective-1000 {
@@ -92,6 +94,44 @@ body {
   }
 }
 
+/* Global Dark Theme Refinements */
+.panel h1, .panel h2, .panel h3, .panel h4 {
+  color: #ffffff;
+}
+
+.panel .text-slate-950 {
+  color: #ffffff !important;
+}
+
+.panel .text-slate-900 {
+  color: #f8fafc !important;
+}
+
+.panel .text-slate-800 {
+  color: #f1f5f9 !important;
+}
+
+.panel .text-slate-700 {
+  color: #e2e8f0 !important;
+}
+
+.panel .text-slate-600 {
+  color: #94a3b8 !important;
+}
+
+.panel .text-slate-500 {
+  color: #94a3b8 !important;
+}
+
+.panel .bg-slate-50, .panel .bg-slate-100 {
+  background-color: rgba(15, 23, 42, 0.75) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.panel .border-slate-200, .panel .border-slate-300 {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
 @keyframes float-fast {
   0%, 100% { transform: translateY(0) translateZ(50px) rotateX(15deg) rotateY(-20deg) scale(0.95); }
   50% { transform: translateY(-20px) translateZ(80px) rotateX(20deg) rotateY(-15deg) scale(1.05); }
@@ -114,6 +154,11 @@ body {
 
 @layer base {
   button:disabled {
-    @apply bg-slate-400 text-slate-200 cursor-not-allowed opacity-60;
+    @apply bg-slate-800 text-slate-500 cursor-not-allowed opacity-60 border-slate-700;
+  }
+
+  select option {
+    background-color: #090d16;
+    color: #f1f5f9;
   }
 }

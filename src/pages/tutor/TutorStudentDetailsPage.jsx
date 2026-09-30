@@ -89,6 +89,29 @@ export const TutorStudentDetailsPage = () => {
     await load();
   };
 
+  const regenerateExercises = async () => {
+    if (isRegenerating || !student || !regenerableExercises.length) return;
+    const confirmed = window.confirm(`Regenerate ${regenerableExercises.length} future unsubmitted exercise${regenerableExercises.length === 1 ? '' : 's'} for ${student.displayName || student.name || 'this student'}? Past exercises and submitted work will be kept.`);
+    if (!confirmed) return;
+    setIsRegenerating(true);
+    try {
+      const result = await regenerateFutureUnsubmittedExercisesForTutor({
+        tutorId: profile.uid,
+        student: { uid: studentId, grade: student.grade, province: student.province, paymentCompleted: student.paymentCompleted },
+        subject,
+        onProgress: setStatus,
+      });
+      setStatus(result.generated
+        ? `${result.reason} The student can now see the updated exercises.`
+        : `No exercises were replaced: ${result.reason || 'The model returned no complete replacement set.'}`);
+      await load();
+    } catch (error) {
+      setStatus(error.message || 'Could not regenerate exercises.');
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
   const completeLesson = async () => {
     if (!lessonForm.topicUnderstandingScores.length || !lessonForm.topicReport.trim() || !lessonForm.lessonDate || !lessonForm.lessonType || !hasValidScores(lessonForm.topicUnderstandingScores)) {
       setStatus('Choose at least one topic, date, lesson type, score from 0 to 10, and enter the lesson report.');
@@ -125,29 +148,6 @@ export const TutorStudentDetailsPage = () => {
     setLessonForm(emptyLessonForm);
     setStatus(generation.generated ? 'Lesson completed and exercises generated.' : 'Lesson completed and saved for future AI generation.');
     await load();
-  };
-
-  const regenerateExercises = async () => {
-    if (isRegenerating || !student || !regenerableExercises.length) return;
-    const confirmed = window.confirm(`Regenerate ${regenerableExercises.length} future unsubmitted exercise${regenerableExercises.length === 1 ? '' : 's'} for ${student.displayName || student.name || 'this student'}? Past exercises and submitted work will be kept.`);
-    if (!confirmed) return;
-    setIsRegenerating(true);
-    try {
-      const result = await regenerateFutureUnsubmittedExercisesForTutor({
-        tutorId: profile.uid,
-        student: { uid: studentId, grade: student.grade, province: student.province, paymentCompleted: student.paymentCompleted },
-        subject,
-        onProgress: setStatus,
-      });
-      setStatus(result.generated
-        ? `${result.reason} The student can now see the updated exercises.`
-        : `No exercises were replaced: ${result.reason || 'The model returned no complete replacement set.'}`);
-      await load();
-    } catch (error) {
-      setStatus(error.message || 'Could not regenerate exercises.');
-    } finally {
-      setIsRegenerating(false);
-    }
   };
 
   return (
@@ -204,7 +204,7 @@ export const TutorStudentDetailsPage = () => {
           </div>
           <div className="space-y-3">{exercises.map((exercise) => <button key={exercise.id} type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}`)} className="block w-full rounded-2xl bg-slate-50 p-4 text-left"><p className="font-semibold text-slate-950">{exercise.title}</p><p className="text-sm text-slate-500">{exercise.subject} • {exercise.assignmentDate}{exercise.submittedImageUrl || exercise.submitted === 'Yes' ? ' • Submitted' : ''}</p></button>)}{!exercises.length ? <p className="text-sm text-slate-500">No exercises yet.</p> : null}</div>
         </div>
-        <div className="panel p-5"><SectionHeader eyebrow="Lessons" title="Tutor lessons" description="Planned and completed lessons for this student." /><div className="space-y-3">{lessons.map((lesson) => <Link key={lesson.id} to={`/tutor/lessons/${lesson.id}`} className="block rounded-2xl bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600">{lesson.status === 'planned' ? 'Planned' : 'Completed'}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lesson.lessonType === 'inPerson' ? 'In-person' : 'Online'}</p></Link>)}{!lessons.length ? <p className="text-sm text-slate-500">No lessons yet.</p> : null}</div></div>
+        <div className="panel p-5"><SectionHeader eyebrow="Lessons" title="Tutor lessons" description="Planned and completed lessons for this student." /><div className="space-y-3">{lessons.map((lesson) => <Link key={lesson.id} to={`/tutor/lessons/${lesson.id}`} className="block rounded-2xl bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full bg-slate-800 border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-300">{lesson.status === 'planned' ? 'Planned' : 'Completed'}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lesson.lessonType === 'inPerson' ? 'In-person' : 'Online'}</p></Link>)}{!lessons.length ? <p className="text-sm text-slate-500">No lessons yet.</p> : null}</div></div>
       </section>
     </AppShell>
   );

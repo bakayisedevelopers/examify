@@ -4,7 +4,7 @@ import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
 import { APP_VERSION, ROLES } from '../../lib/constants';
 
-const cardClass = 'panel flex items-center gap-3 p-2.5 transition hover:bg-slate-50 md:block md:p-5 md:hover:-translate-y-1 md:hover:shadow-lg';
+const cardClass = 'panel flex items-center gap-3 p-2.5 transition hover:border-lime-500/40 hover:bg-slate-800/60 md:block md:p-5 md:hover:-translate-y-1 md:hover:shadow-lg';
 
 export const ProfileHubPage = ({ role }) => {
   const { profile, logout } = useAuth();

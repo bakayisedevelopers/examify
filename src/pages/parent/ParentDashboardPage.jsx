@@ -26,10 +26,10 @@ const EditDetailsForm = ({ student, onSave, onCancel }) => {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="p-4 bg-slate-50 rounded-xl space-y-4 shadow-sm mb-4">
-      <div className="flex justify-between items-center bg-brand-50 -mx-4 -mt-4 p-4 rounded-t-xl mb-2 border-b border-brand-100">
-        <h4 className="font-semibold text-brand-900">Edit Details</h4>
-        <button type="button" onClick={onCancel} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+    <form onSubmit={handleSubmit} className="p-4 bg-slate-900/90 border border-slate-700 rounded-xl space-y-4 shadow-sm mb-4">
+      <div className="flex justify-between items-center bg-lime-400/10 -mx-4 -mt-4 p-4 rounded-t-xl mb-2 border-b border-lime-400/20">
+        <h4 className="font-semibold text-white">Edit Details</h4>
+        <button type="button" onClick={onCancel} className="text-slate-400 hover:text-slate-200"><X className="w-5 h-5"/></button>
       </div>
       <div>
         <label className="label">Name</label>
@@ -270,17 +270,17 @@ export const ParentDashboardPage = () => {
       </div>
       
       {status && (
-        <div className="mb-6 p-4 rounded-xl bg-slate-100 text-brand-700 flex items-center gap-2 text-sm font-medium">
+        <div className="mb-6 p-4 rounded-xl border border-lime-400/30 bg-lime-400/10 text-lime-300 flex items-center gap-2 text-sm font-medium">
           <AlertCircle className="w-4 h-4" />
           {status}
         </div>
       )}
 
       {students.length > 0 && (
-        <div className="mb-6 flex justify-between items-center bg-brand-50 rounded-2xl p-6 border border-brand-100 shadow-sm">
+        <div className="mb-6 flex justify-between items-center bg-lime-400/10 rounded-2xl p-6 border border-lime-400/30 shadow-sm">
           <div>
-            <h3 className="font-bold text-slate-900 text-lg">Payments</h3>
-            <p className="text-slate-600 text-sm mt-1">You have {unpaidCount} student{unpaidCount !== 1 && 's'} requiring payment updates.</p>
+            <h3 className="font-bold text-white text-lg">Payments</h3>
+            <p className="text-slate-300 text-sm mt-1">You have {unpaidCount} student{unpaidCount !== 1 && 's'} requiring payment updates.</p>
           </div>
           {unpaidCount > 0 && (
             <button 
@@ -295,23 +295,23 @@ export const ParentDashboardPage = () => {
       )}
 
       {students.length === 0 ? (
-        <div className="py-12 bg-white rounded-2xl border border-dashed border-slate-300 flex flex-col items-center justify-center text-slate-500">
-          <Users className="h-12 w-12 text-slate-300 mb-4" />
-          <p className="text-lg font-medium text-slate-900">No students linked yet</p>
+        <div className="py-12 bg-slate-900/60 rounded-2xl border border-dashed border-slate-700 flex flex-col items-center justify-center text-slate-400">
+          <Users className="h-12 w-12 text-slate-500 mb-4" />
+          <p className="text-lg font-medium text-white">No students linked yet</p>
           <p className="text-sm">Link your child's account above to view their progress and manage payments.</p>
         </div>
       ) : (
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {students.map((student) => (
             <div key={student.uid} className="panel p-0 flex flex-col overflow-hidden">
-              <div className="bg-slate-50 p-6 border-b border-slate-100 flex justify-between items-start">
+              <div className="bg-slate-900/90 p-6 border-b border-slate-800 flex justify-between items-start">
                 <div>
-                  <h3 className="text-lg font-bold text-slate-900">{student.displayName || student.email}</h3>
-                  <p className="text-sm text-slate-500">{student.grade || 'Unknown Grade'} • {student.province || 'Unknown Region'}</p>
+                  <h3 className="text-lg font-bold text-white">{student.displayName || student.email}</h3>
+                  <p className="text-sm text-slate-400">{student.grade || 'Unknown Grade'} • {student.province || 'Unknown Region'}</p>
                 </div>
                 <button 
                   onClick={() => setEditingStudentId(editingStudentId === student.uid ? null : student.uid)}
-                  className="p-2 bg-white border border-slate-200 rounded-lg text-slate-500 hover:text-brand-600 hover:border-brand-200 transition-colors"
+                  className="p-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-400 hover:text-lime-400 hover:border-lime-400/50 transition-colors"
                   title="Edit Profile"
                 >
                   <Edit className="w-4 h-4" />
