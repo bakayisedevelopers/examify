@@ -1081,6 +1081,7 @@ export const saveQuestionPaper = async (paper) => {
     copySuffix: copyNumber > 0 ? `(${copyNumber})` : '',
     displayName: getQuestionPaperDisplayName({ ...duplicateFields, copyNumber }),
     createdAt: serverTimestamp(),
+    ...(paper.analysisStatus === 'Analyzing' ? { analysisRequestedAt: serverTimestamp() } : {}),
   };
 
   const ref = await addDoc(collection(db, collections.questionPapers), payload);
@@ -1096,6 +1097,7 @@ export const updateQuestionPaper = async (paperId, patch) => {
   const paperRef = doc(db, collections.questionPapers, paperId);
   const payload = {
     ...patch,
+    ...(patch.analysisStatus === 'Analyzing' ? { analysisRequestedAt: serverTimestamp() } : {}),
     updatedAt: serverTimestamp(),
   };
   await updateDoc(paperRef, payload);

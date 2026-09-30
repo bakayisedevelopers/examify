@@ -137,6 +137,9 @@ export const getUreviewedExercises = async (studentId, subject) => {
 };
 
 export const uploadQuestionPaperDocuments = async ({ paperFile, memoFile, uploaderId, onProgress }) => {
+  const invalidFile = [paperFile, memoFile].find((file) => file && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf'));
+  if (invalidFile) throw new Error(`${invalidFile.name} is not a PDF. Question-paper analysis currently supports PDF files only.`);
+
   if (!isFirebaseConfigured) {
     return {
       paperUrl: paperFile ? URL.createObjectURL(paperFile) : '',

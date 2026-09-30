@@ -24,7 +24,7 @@ const AnalysisReviewPanel = ({ paper, onRetry }) => {
         <SectionHeader
           eyebrow="Admin review"
           title="Extracted analysis"
-          description="Review the stored extraction data. Retry keeps saved page batches and reuses them when possible."
+          description="Review the stored extraction data. Retry adds a fresh analysis run to the shared paper queue."
         />
         <button type="button" className="btn-primary" onClick={onRetry}>Retry analysis</button>
       </div>
@@ -137,11 +137,11 @@ export const PaperReaderPage = () => {
   const handleRetry = async () => {
     if (!paper) return;
     try {
-      setActionStatus('Retrying analysis...');
+      setActionStatus('Adding analysis retry to the queue...');
       await retryPaperAnalysis(paper);
       const refreshed = await getQuestionPaperById(paper.id);
       setPaper(refreshed);
-      setActionStatus('Analysis retry queued.');
+      setActionStatus('Analysis retry queued. It will start immediately when no other paper is being analyzed.');
     } catch (error) {
       setActionStatus(error.message || 'Could not retry analysis.');
     }

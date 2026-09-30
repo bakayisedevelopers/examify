@@ -151,12 +151,12 @@ const buildVisionContent = ({ prompt, url, imageUrls = [] }) => {
 };
 
 
-export const callKiloTextWithFallback = async ({ messages, maxTokens = 3000, temperature = 0.2, responseFormat } = {}) => {
+export const callKiloTextWithFallback = async ({ messages, maxTokens = 3000, temperature = 0.2, responseFormat, validateText } = {}) => {
   const primaryModel = kiloTextModel();
   const fallbackModel = kiloFallbackTextModel();
 
   try {
-    return await callKiloChat({
+    const primaryResult = await callKiloChat({
       model: primaryModel,
       messages,
       maxTokens,
@@ -164,6 +164,10 @@ export const callKiloTextWithFallback = async ({ messages, maxTokens = 3000, tem
       responseFormat,
       mode: 'general',
     });
+    if (validateText && !validateText(primaryResult.text)) {
+      throw new HttpsError('unavailable', `Kilo text model ${primaryModel} returned an unusable response.`);
+    }
+    return primaryResult;
   } catch (error) {
     if (primaryModel === fallbackModel) throw error;
 
@@ -181,6 +185,9 @@ export const callKiloTextWithFallback = async ({ messages, maxTokens = 3000, tem
       responseFormat,
       mode: 'general',
     });
+    if (validateText && !validateText(fallbackResult.text)) {
+      throw new HttpsError('unavailable', `Kilo text model ${fallbackModel} returned an unusable response.`);
+    }
 
     return {
       ...fallbackResult,

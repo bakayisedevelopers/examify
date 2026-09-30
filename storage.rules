@@ -2,7 +2,21 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
-    match /{allPaths=**} {
+    // Rendered analysis pages are server-only working files. Admin SDK access
+    // bypasses Storage Rules, while browser clients must never read or alter them.
+    match /questionPaperAnalysis/{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    match /submissions/{allPaths=**} {
+      allow read, write: if true;
+    }
+
+    match /questionPapers/{allPaths=**} {
+      allow read, write: if true;
+    }
+
+    match /tutorMarks/{allPaths=**} {
       allow read, write: if true;
     }
   }
