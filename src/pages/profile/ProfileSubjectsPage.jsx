@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
 import { ROLES, SUBJECTS } from '../../lib/constants';
 import { addStudentSubjects, getTutorMarksDocuments, removeUserSubject, updateUserSubjectAvailability } from '../../services/firestoreService';
 import { deleteTutorMarksDocument, retryTutorMarksDocument, uploadTutorMarksDocument } from '../../services/storageService';
 import { getApprovedTutorSubjects, getUserSubjects } from '../../utils/tutorSubjects';
+import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
 
 const statusStyles = {
   processing: 'bg-amber-50 text-amber-700',
@@ -22,15 +23,7 @@ const formatDate = (value) => {
 export const ProfileSubjectsPage = ({ role }) => {
   const { profile, logout, refreshProfile } = useAuth();
   const isTutorRole = role === ROLES.TUTOR || role === 'teacher';
-  const currentSubjects = useMemo(() => {
-    if (isTutorRole) return getApprovedTutorSubjects(profile);
-    return getUserSubjects(profile);
-  }, [profile, isTutorRole]);
-  const availableSubjects = SUBJECTS.filter((subject) => !currentSubjects.includes(subject));
-  const tutorMarkBySubject = useMemo(() => new Map(
-    (profile?.tutorSubjectMarks ?? []).map((item) => [item.subject, item.mark]),
-  ), [profile?.tutorSubjectMarks]);
-  const subjectAvailability = profile?.subjectAvailability ?? {};
+  const subscriptionState = useStudentSubscriptionState(role === ROLES.STUDENT ? profile : null);
   const [selectedSubjects, setSelectedSubjects] = useState([]);
   const [subjectToAdd, setSubjectToAdd] = useState('');
   const [file, setFile] = useState(null);
@@ -40,22 +33,37 @@ export const ProfileSubjectsPage = ({ role }) => {
   const [documents, setDocuments] = useState([]);
   const [activeDocumentId, setActiveDocumentId] = useState('');
   const tutorUploadFormRef = useRef(null);
+  const currentSubjects = useMemo(() => {
+    if (isTutorRole) return getApprovedTutorSubjects(profile);
+    return getUserSubjects(profile);
+  }, [profile, isTutorRole]);
+  const availableSubjects = SUBJECTS.filter((subject) => !currentSubjects.includes(subject));
+  const subjectLimit = Number(subscriptionState?.subscriptionSubjectCount) || 0;
+  const remainingSubjectSlots = Math.max(0, subjectLimit - currentSubjects.length - selectedSubjects.length);
+  const tutorMarkBySubject = useMemo(() => new Map(
+    (profile?.tutorSubjectMarks ?? []).map((item) => [item.subject, item.mark]),
+  ), [profile?.tutorSubjectMarks]);
+  const subjectAvailability = profile?.subjectAvailability ?? {};
 
-  const loadTutorDocuments = async () => {
+  const loadTutorDocuments = useCallback(async () => {
     if (!isTutorRole || !profile?.uid) return;
     const uploadedDocuments = await getTutorMarksDocuments(profile.uid);
     setDocuments(uploadedDocuments);
-  };
+  }, [isTutorRole, profile?.uid]);
 
   useEffect(() => {
     loadTutorDocuments().catch((error) => {
       console.error('[Examifying][TutorMarksDocuments] load:error', error);
       setStatus(error.message || 'Could not load uploaded tutor documents.');
     });
-  }, [profile?.uid, isTutorRole]);
+  }, [loadTutorDocuments]);
 
   const handleAddSubjectToSelection = () => {
     if (!subjectToAdd || selectedSubjects.includes(subjectToAdd)) return;
+    if (currentSubjects.length + selectedSubjects.length >= subjectLimit) {
+      setStatus(`Your subscription includes up to ${subjectLimit} subjects. Remove a current subject before adding another.`);
+      return;
+    }
     setSelectedSubjects((current) => [...current, subjectToAdd]);
     setSubjectToAdd('');
   };
@@ -68,6 +76,10 @@ export const ProfileSubjectsPage = ({ role }) => {
     event.preventDefault();
     if (!selectedSubjects.length) {
       setStatus('Choose at least one subject to add.');
+      return;
+    }
+    if (!subscriptionState?.paymentCompleted || currentSubjects.length + selectedSubjects.length > subjectLimit) {
+      setStatus(`Your active subscription allows up to ${subjectLimit} subjects. Remove a current subject or update your subscription first.`);
       return;
     }
 
@@ -193,7 +205,10 @@ export const ProfileSubjectsPage = ({ role }) => {
   return (
     <AppShell title="Subjects" subtitle="Manage the subjects connected to your Examifying account." role={role} user={profile} onLogout={logout}>
       <section className="panel p-5">
-        <p className="text-sm font-semibold text-slate-950">Current subjects</p>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm font-semibold text-slate-950">Current subjects</p>
+          {role === ROLES.STUDENT && subscriptionState?.paymentCompleted ? <p className="text-xs font-medium text-slate-500">{currentSubjects.length} of {subjectLimit} included subjects selected</p> : null}
+        </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {currentSubjects.length ? currentSubjects.map((subject) => {
             const isStudentSubjectActive = subjectAvailability[subject] !== false;
@@ -243,25 +258,25 @@ export const ProfileSubjectsPage = ({ role }) => {
         </div>
       </section>
 
-      {role === ROLES.STUDENT ? (
+      {role === ROLES.STUDENT && subscriptionState?.paymentCompleted ? (
         <form onSubmit={handleAddStudentSubjects} className="panel space-y-4 p-5">
           <div>
             <p className="text-sm font-semibold text-slate-950">Add subjects</p>
-            <p className="mt-1 text-sm text-slate-500">Choose a subject from the dropdown, add it to the selection list, then save.</p>
+            <p className="mt-1 text-sm text-slate-500">Your plan allows {subjectLimit} registered {subjectLimit === 1 ? 'subject' : 'subjects'}. Remove a current subject to make room for a replacement.</p>
           </div>
           <div className="grid gap-3 md:grid-cols-[1fr_auto]">
             <select
               className="input"
               value={subjectToAdd}
               onChange={(event) => setSubjectToAdd(event.target.value)}
-              disabled={!availableSubjects.length}
+              disabled={!availableSubjects.length || remainingSubjectSlots === 0}
             >
               <option value="">Select a subject</option>
               {availableSubjects
                 .filter((subject) => !selectedSubjects.includes(subject))
                 .map((subject) => <option key={subject} value={subject}>{subject}</option>)}
             </select>
-            <button type="button" className="btn-secondary" onClick={handleAddSubjectToSelection} disabled={!subjectToAdd}>
+            <button type="button" className="btn-secondary" onClick={handleAddSubjectToSelection} disabled={!subjectToAdd || remainingSubjectSlots === 0}>
               Add to list
             </button>
           </div>
@@ -281,8 +296,10 @@ export const ProfileSubjectsPage = ({ role }) => {
               )) : <span className="text-sm text-slate-500">No subjects selected yet.</span>}
             </div>
           </div>
-          <button className="btn-primary w-full md:w-auto" disabled={saving || !selectedSubjects.length}>Add selected subjects</button>
+          <button className="btn-primary w-full md:w-auto" disabled={saving || !selectedSubjects.length || selectedSubjects.length > subjectLimit - currentSubjects.length}>Save subjects</button>
         </form>
+      ) : role === ROLES.STUDENT ? (
+        <div className="panel p-5 text-sm text-slate-600">Choose Circle or Personalized to manage registered subjects.</div>
       ) : null}
 
       {isTutorRole ? (

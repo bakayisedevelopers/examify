@@ -80,10 +80,11 @@ export const SignupPage = () => {
       const targetRoute = form.role === 'teacher' ? '/teacher' : `/${result.profile.role}`;
       const selection = new URLSearchParams(location.search);
       const planId = selection.get('planId');
-      if (form.role === ROLES.STUDENT && ['free', 'circle', 'personalized'].includes(planId)) {
+      if (form.role === ROLES.STUDENT) {
+        const selectedPlanId = ['free', 'circle', 'personalized'].includes(planId) ? planId : 'free';
         const billingPeriod = selection.get('billingPeriod') === 'yearly' ? 'yearly' : 'monthly';
-        const subjectCount = selection.get('subjectCount') || '1';
-        navigate(`/student/billing?planId=${planId}&billingPeriod=${billingPeriod}&subjectCount=${encodeURIComponent(subjectCount)}`);
+        const subjectCount = selection.get('subjectCount') || '2';
+        navigate(`/student/billing?planId=${selectedPlanId}&billingPeriod=${billingPeriod}&subjectCount=${encodeURIComponent(subjectCount)}`);
       } else {
         navigate(targetRoute);
       }

@@ -1,7 +1,5 @@
 import {
   addDoc,
-  arrayRemove,
-  arrayUnion,
   collection,
   deleteDoc,
   doc,
@@ -34,7 +32,8 @@ import {
   mockGuideQuizResults,
 } from '../data/mockData';
 import { DEFAULT_SUBJECT, MAX_AI_SOURCE_PAPERS, MAX_DAILY_EXERCISES, MIN_AI_SOURCE_PAPERS, WEEKLY_EXERCISE_DAYS } from '../lib/constants';
-import { getApprovedTutorSubjects, getUserSubjects } from '../utils/tutorSubjects';
+import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../utils/tutorSubjects';
+import { calculateSubscriptionQuote, getEffectiveSubscriptionState } from '../utils/subscriptionPlans';
 
 const emptyDashboardData = {
   student: {
@@ -72,11 +71,8 @@ const demoGuideQuizResults = [...mockGuideQuizResults];
 const GENERATION_HISTORY_LIMIT = 40;
 const EXERCISE_REGENERATION_LOCK_TIMEOUT_MS = 20 * 60 * 1000;
 
-const buildTutorAssignmentId = ({ studentId, tutorId, subject }) => `${studentId}_${tutorId}_${subject}`;
-const buildStaffAccessId = ({ studentId, tutorId, subject }) => `${studentId}_${tutorId}_${subject}`;
 const STAFF_ACCESS_ROLES = ['co-owner', 'marker', 'viewer'];
 const isTeacherProfile = (profile) => profile?.isTeacher === true || profile?.isTeacher === 'true' || profile?.role === 'teacher';
-const isTutorOrTeacherProfile = (profile) => profile?.role === 'tutor' || isTeacherProfile(profile);
 const getApprovedTutorOrTeacherProfiles = (profiles, subject) => {
   const approved = (profile) => getApprovedTutorSubjects(profile).includes(subject);
   const tutors = profiles.filter((profile) => profile.role === 'tutor' && approved(profile));
@@ -112,19 +108,27 @@ const toDateOnly = (value) => {
 const buildStudentGenerationStatus = ({
   latestReport,
   availablePapers,
-  paymentCompleted,
+  paidSubscriptionActive,
+  subscriptionPlanId = 'free',
+  subscriptionPlanName = 'Free',
+  subscriptionId = null,
+  subscriptionPaymentReference = null,
   completedLessons = [],
   hasInitialGeneration = false,
 }) => {
-  const initialReady = Boolean(paymentCompleted && latestReport && availablePapers.length >= 2 && completedLessons.length > 0);
-  const weeklyReady = Boolean(hasInitialGeneration && paymentCompleted && completedLessons.length > 0 && availablePapers.length >= 2);
+  const initialReady = Boolean(paidSubscriptionActive && latestReport && availablePapers.length >= 2 && completedLessons.length > 0);
+  const weeklyReady = Boolean(hasInitialGeneration && paidSubscriptionActive && completedLessons.length > 0 && availablePapers.length >= 2);
 
   return {
-    paymentCompleted,
+    paidSubscriptionActive,
+    subscriptionPlanId,
+    subscriptionPlanName,
+    subscriptionId,
+    subscriptionPaymentReference,
     initial: {
       ready: initialReady,
       checks: {
-        paymentCompleted,
+        paidSubscriptionActive,
         latestTutorReportExists: Boolean(latestReport),
         minimumQuestionPaperCountMet: availablePapers.length >= 2,
         lessonCompleted: completedLessons.length > 0,
@@ -133,7 +137,7 @@ const buildStudentGenerationStatus = ({
     weekly: {
       ready: weeklyReady,
       checks: {
-        paymentCompleted,
+        paidSubscriptionActive,
         initialGenerationExists: hasInitialGeneration,
         lessonCompleted: completedLessons.length > 0,
         minimumQuestionPaperCountMet: availablePapers.length >= 2,
@@ -320,24 +324,40 @@ const buildStudentDashboard = (studentId, subject = DEFAULT_SUBJECT) => {
   const availablePapers = filterQuestionPapers(mockQuestionPapers, { grade: student?.grade, region: student?.province, subject });
   const latestReport = student?.latestReport || getLatestTutorReportFromList(student?.uid, mockTutorReports.filter((report) => (report.subject ?? DEFAULT_SUBJECT) === subject))?.note || '';
   const assignmentHistory = (mockDashboardData.student.exerciseHistory ?? []).filter((assignment) => (assignment.subject ?? DEFAULT_SUBJECT) === subject);
+  const subscriptionState = getEffectiveSubscriptionState({
+    subscription: {
+      planId: student?.subscriptionPlanId,
+      status: student?.subscriptionStatus,
+      billingPeriod: student?.subscriptionBillingPeriod,
+      subjectCount: student?.subscriptionSubjectCount,
+      renewalDate: student?.subscriptionRenewalDate,
+    },
+  });
+  const paidSubscriptionActive = subscriptionState.paymentCompleted &&
+    getUserSubjects(student).slice(0, subscriptionState.subscriptionSubjectCount).includes(subject);
+  const subscriptionPaymentReference = student?.latestPaymentReference || (paidSubscriptionActive ? 'demo-payment-reference' : null);
   const generationStatus = buildStudentGenerationStatus({
-    student,
     latestReport,
     availablePapers,
-    paymentCompleted: Boolean(student?.paymentCompleted),
+    paidSubscriptionActive,
+    subscriptionPlanId: subscriptionState.subscriptionPlanId,
+    subscriptionPlanName: subscriptionState.subscriptionPlanName,
+    subscriptionId: student?.uid ?? null,
+    subscriptionPaymentReference,
     completedLessons: mockCompletedLessons.filter((lesson) => lesson.studentId === student?.uid && (lesson.subject ?? DEFAULT_SUBJECT) === subject),
     hasInitialGeneration: assignmentHistory.some((assignment) => assignment?.generationMode === 'initial'),
   });
 
   return {
     ...mockDashboardData.student,
-    paymentCompleted: Boolean(student?.paymentCompleted),
+    paymentCompleted: paidSubscriptionActive,
+    paidSubscriptionActive,
     generationStatus,
     stats: [
       { label: 'Average mark', value: `${student?.latestMark ?? 0}%`, detail: 'Current learning signal' },
       { label: 'Previous year mark', value: `${student?.previousYearMark ?? 0}%`, detail: 'Entered by student' },
       { label: 'Completed topics', value: String(mockCompletedLessons.filter((lesson) => lesson.studentId === student?.uid && (lesson.subject ?? DEFAULT_SUBJECT) === subject).length), detail: subject },
-      { label: 'Subscription', value: student?.paymentCompleted ? 'Active' : 'Pending', detail: student?.paymentCompleted ? 'Paid and unlocked' : 'Payment required' },
+      { label: 'Subscription', value: paidSubscriptionActive ? 'Active' : 'Pending', detail: paidSubscriptionActive ? 'Paid plan verified' : 'Paid subscription required' },
     ],
   };
 };
@@ -697,6 +717,7 @@ const buildAiQuestionPlan = ({ mode, topicSummaries = [], assignmentDates = [], 
 const buildAssignmentsFromAiRecommendations = ({
   recommendations = [],
   student,
+  subscriptionTrace = {},
   selectedPapers = [],
   generationBatchId,
   mode,
@@ -780,6 +801,11 @@ const buildAssignmentsFromAiRecommendations = ({
       generationMode: mode,
       generationBatchId,
       generationWeek,
+      paidSubscriptionActive: true,
+      subscriptionId: subscriptionTrace.subscriptionId ?? null,
+      subscriptionPlanId: subscriptionTrace.subscriptionPlanId ?? 'free',
+      subscriptionPlanName: subscriptionTrace.subscriptionPlanName ?? 'Free',
+      subscriptionPaymentReference: subscriptionTrace.subscriptionPaymentReference ?? null,
       paperIds: Array.isArray(recommendation?.paperIdsUsed) && recommendation.paperIdsUsed.length
         ? recommendation.paperIdsUsed.filter(Boolean)
         : selectedPapers.map((paper) => paper.id),
@@ -802,11 +828,133 @@ const buildAssignmentsFromAiRecommendations = ({
   });
 };
 
+const getSubscriptionLifecycleFields = (subscription) => ({
+  autoRenew: subscription?.autoRenew === true,
+  cancelAtPeriodEnd: subscription?.cancelAtPeriodEnd === true,
+  pendingPlan: subscription?.pendingPlan ?? null,
+  pendingPlanReference: subscription?.pendingPlanReference ?? null,
+  graceEndsAt: subscription?.graceEndsAt ?? null,
+  renewalAttemptCount: Number(subscription?.renewalAttemptCount) || 0,
+  renewalVerificationPending: ['processing', 'unknown'].includes(subscription?.renewalAttempt?.status),
+  nextRenewalAttemptAt: subscription?.nextRenewalAttemptAt ?? null,
+  manualPaymentRequired: subscription?.manualPaymentRequired === true,
+});
+
+const resolveVerifiedSubscriptionState = async ({ studentId, subscription }) => {
+  const state = getEffectiveSubscriptionState({ subscription });
+  const subscriptionPaymentReference = subscription?.latestReference ?? null;
+  const base = {
+    ...state,
+    ...getSubscriptionLifecycleFields(subscription),
+    paidSubscriptionActive: false,
+    subscriptionId: studentId,
+    subscriptionPaymentReference,
+    subscriptionPaymentVerified: false,
+  };
+  if (!state.paymentCompleted) return base;
+
+  if (!subscriptionPaymentReference) {
+    return {
+      ...getEffectiveSubscriptionState(),
+      ...getSubscriptionLifecycleFields(subscription),
+      paidSubscriptionActive: false,
+      subscriptionId: studentId,
+      subscriptionPaymentReference: null,
+      subscriptionPaymentVerified: false,
+      paymentVerificationFailed: true,
+    };
+  }
+
+  const paymentSnapshot = await getDoc(doc(db, collections.payments, subscriptionPaymentReference));
+  const payment = paymentSnapshot.exists() ? paymentSnapshot.data() : null;
+  let expectedQuote;
+  try {
+    expectedQuote = calculateSubscriptionQuote({
+      planId: subscription.planId,
+      billingPeriod: subscription.billingPeriod,
+      subjectCount: subscription.subjectCount,
+    });
+  } catch {
+    expectedQuote = null;
+  }
+  const paymentMatchesSubscription = Boolean(expectedQuote && payment
+    && payment.status === 'success'
+    && payment.reference === subscriptionPaymentReference
+    && payment.studentId === studentId
+    && payment.planId === subscription.planId
+    && payment.billingPeriod === subscription.billingPeriod
+    && Number(payment.subjectCount) === Number(subscription.subjectCount)
+    && Number(payment.amount) === expectedQuote.amount
+    && payment.currency === expectedQuote.currency);
+
+  if (!paymentMatchesSubscription) {
+    return {
+      ...getEffectiveSubscriptionState(),
+      ...getSubscriptionLifecycleFields(subscription),
+      paidSubscriptionActive: false,
+      subscriptionId: studentId,
+      subscriptionPaymentReference,
+      subscriptionPaymentVerified: false,
+      paymentVerificationFailed: true,
+    };
+  }
+
+  return { ...base, paymentCompleted: true, paidSubscriptionActive: true, subscriptionPaymentVerified: true };
+};
+
+export const getStudentSubscriptionState = async (student) => {
+  if (!student?.uid) return getEffectiveSubscriptionState();
+
+  if (!isFirebaseConfigured) {
+    const state = getEffectiveSubscriptionState({
+      subscription: {
+        planId: student.subscriptionPlanId,
+        status: student.subscriptionStatus,
+        billingPeriod: student.subscriptionBillingPeriod,
+        subjectCount: student.subscriptionSubjectCount,
+        renewalDate: student.subscriptionRenewalDate,
+        graceEndsAt: student.graceEndsAt,
+      },
+    });
+    return {
+      ...state,
+      ...getSubscriptionLifecycleFields({
+        autoRenew: student.autoRenew,
+        cancelAtPeriodEnd: student.cancelAtPeriodEnd,
+        pendingPlan: student.pendingPlan,
+        graceEndsAt: student.graceEndsAt,
+        renewalAttemptCount: student.renewalAttemptCount,
+        nextRenewalAttemptAt: student.nextRenewalAttemptAt,
+        manualPaymentRequired: student.manualPaymentRequired,
+      }),
+      paidSubscriptionActive: state.paymentCompleted,
+      subscriptionId: student.uid,
+      subscriptionPaymentReference: student.latestPaymentReference || (state.paymentCompleted ? 'demo-payment-reference' : null),
+      subscriptionPaymentVerified: state.paymentCompleted,
+    };
+  }
+
+  ensureDb();
+  const snapshot = await getDoc(doc(db, collections.subscriptions, student.uid));
+  return resolveVerifiedSubscriptionState({
+    studentId: student.uid,
+    subscription: snapshot.exists() ? snapshot.data() : null,
+  });
+};
+
 export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT) => {
   if (!student) {
     return {
       paymentCompleted: false,
+      paidSubscriptionActive: false,
       paymentRequired: true,
+      subscriptionPlanId: 'free',
+      subscriptionPlanName: 'Free',
+      subscriptionId: null,
+      subscriptionPaymentReference: null,
+      subscriptionPaymentVerified: false,
+      subscriptionStatus: 'plan_required',
+      requiresSubscriptionSelection: true,
       initialGenerationReady: false,
       weeklyGenerationReady: false,
       matchingQuestionPapers: [],
@@ -819,23 +967,58 @@ export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT) 
   }
 
   if (!isFirebaseConfigured) {
+    const rawSubscriptionState = getEffectiveSubscriptionState({
+      subscription: {
+        planId: student.subscriptionPlanId,
+        status: student.subscriptionStatus,
+        billingPeriod: student.subscriptionBillingPeriod,
+        subjectCount: student.subscriptionSubjectCount,
+        renewalDate: student.subscriptionRenewalDate,
+        graceEndsAt: student.graceEndsAt,
+      },
+    });
+    const subscriptionState = {
+      ...rawSubscriptionState,
+      ...getSubscriptionLifecycleFields({
+        autoRenew: student.autoRenew,
+        cancelAtPeriodEnd: student.cancelAtPeriodEnd,
+        pendingPlan: student.pendingPlan,
+        graceEndsAt: student.graceEndsAt,
+        renewalAttemptCount: student.renewalAttemptCount,
+        nextRenewalAttemptAt: student.nextRenewalAttemptAt,
+        manualPaymentRequired: student.manualPaymentRequired,
+      }),
+      paidSubscriptionActive: rawSubscriptionState.paymentCompleted,
+      subscriptionId: student.uid,
+      subscriptionPaymentReference: student.latestPaymentReference || (rawSubscriptionState.paymentCompleted ? 'demo-payment-reference' : null),
+      subscriptionPaymentVerified: rawSubscriptionState.paymentCompleted,
+    };
     const matchingQuestionPapers = filterQuestionPapers(mockQuestionPapers, { grade: student.grade, region: student.province, subject });
+    const normalizedSubject = normalizeEligibleSubject(subject) ?? subject;
+    const coveredSubjects = getUserSubjects(student).slice(0, subscriptionState.subscriptionSubjectCount).map((item) => normalizeEligibleSubject(item) ?? item);
+    const paidSubscriptionActive = subscriptionState.paidSubscriptionActive && coveredSubjects.includes(normalizedSubject);
     const subjectReports = mockTutorReports.filter((report) => (!student.uid || report.studentId === student.uid) && (report.subject ?? DEFAULT_SUBJECT) === subject);
     const latestTutorReport = student.latestReportsBySubject?.[subject] || getLatestTutorReportFromList(student.uid, subjectReports)?.note || (subject === DEFAULT_SUBJECT ? student.latestReport : '') || '';
     const completedLessons = mockCompletedLessons.filter((lesson) => lesson.studentId === student.uid && (lesson.subject ?? DEFAULT_SUBJECT) === subject);
     const assignmentHistory = await getAssignmentHistory(student.uid, subject);
     const generationStatus = buildStudentGenerationStatus({
-      student,
       latestReport: latestTutorReport,
       availablePapers: matchingQuestionPapers,
-      paymentCompleted: Boolean(student.paymentCompleted),
+      paidSubscriptionActive,
+      subscriptionPlanId: subscriptionState.subscriptionPlanId,
+      subscriptionPlanName: subscriptionState.subscriptionPlanName,
+      subscriptionId: subscriptionState.subscriptionId,
+      subscriptionPaymentReference: subscriptionState.subscriptionPaymentReference,
       completedLessons,
       hasInitialGeneration: assignmentHistory.some((assignment) => assignment?.generationMode === 'initial'),
     });
 
     return {
-      paymentCompleted: Boolean(student.paymentCompleted),
-      paymentRequired: !student.paymentCompleted,
+      ...subscriptionState,
+      paymentCompleted: paidSubscriptionActive,
+      paidSubscriptionActive,
+      paymentRequired: !paidSubscriptionActive,
+      subjectNotIncluded: subscriptionState.paidSubscriptionActive && !coveredSubjects.includes(normalizedSubject),
       initialGenerationReady: generationStatus.initial.ready,
       weeklyGenerationReady: generationStatus.weekly.ready,
       generationStatus,
@@ -859,21 +1042,33 @@ export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT) 
     getAssignmentHistory(student.uid, subject),
     getDoc(doc(db, collections.exerciseGenerationStatus, `${student.uid}_${subject}`)),
   ]);
-  const paymentCompleted = subscriptionSnapshot.exists() ? subscriptionSnapshot.data().status === 'active' : Boolean(student.paymentCompleted);
   const studentData = studentSnapshot.exists() ? studentSnapshot.data() : student;
+  const subscriptionState = await resolveVerifiedSubscriptionState({
+    studentId: student.uid,
+    subscription: subscriptionSnapshot.exists() ? subscriptionSnapshot.data() : null,
+  });
+  const normalizedSubject = normalizeEligibleSubject(subject) ?? subject;
+  const coveredSubjects = getUserSubjects(studentData).slice(0, subscriptionState.subscriptionSubjectCount).map((item) => normalizeEligibleSubject(item) ?? item);
+  const paidSubscriptionActive = subscriptionState.paidSubscriptionActive && coveredSubjects.includes(normalizedSubject);
   const latestTutorReport = studentData?.latestReportsBySubject?.[subject] || reports[0]?.note || (subject === DEFAULT_SUBJECT ? (studentData?.latestReport || '') : '');
   const generationStatus = buildStudentGenerationStatus({
-    student,
     latestReport: latestTutorReport,
     availablePapers: papers,
-    paymentCompleted,
+    paidSubscriptionActive,
+    subscriptionPlanId: subscriptionState.subscriptionPlanId,
+    subscriptionPlanName: subscriptionState.subscriptionPlanName,
+    subscriptionId: subscriptionState.subscriptionId,
+    subscriptionPaymentReference: subscriptionState.subscriptionPaymentReference,
     completedLessons: lessons,
     hasInitialGeneration: assignmentHistory.some((assignment) => assignment?.generationMode === 'initial'),
   });
 
   return {
-    paymentCompleted,
-    paymentRequired: !paymentCompleted,
+    ...subscriptionState,
+    paymentCompleted: paidSubscriptionActive,
+    paidSubscriptionActive,
+    paymentRequired: !paidSubscriptionActive,
+    subjectNotIncluded: subscriptionState.paidSubscriptionActive && !coveredSubjects.includes(normalizedSubject),
     initialGenerationReady: generationStatus.initial.ready,
     weeklyGenerationReady: generationStatus.weekly.ready,
     generationStatus,
@@ -933,7 +1128,7 @@ export const getTutorReports = async (studentId, subject = DEFAULT_SUBJECT) => {
 };
 
 export const saveTutorReport = async ({ reportId, studentId, tutorId, note, studentName, subject = DEFAULT_SUBJECT, reportType = 'general' }) => {
-  await requireCoOwnerAccess({ tutorId, studentId, subject });
+  const accessContext = await requireCoOwnerAccess({ tutorId, studentId, subject });
   if (!isFirebaseConfigured) {
     return {
       id: reportId ?? `mock-report-${Date.now()}`,
@@ -955,6 +1150,7 @@ export const saveTutorReport = async ({ reportId, studentId, tutorId, note, stud
     note,
     studentName,
     reportType,
+    assignmentPeriodId: accessContext.assignmentPeriodId,
     updatedAt: serverTimestamp(),
     createdAt: serverTimestamp(),
   };
@@ -1126,7 +1322,7 @@ export const saveCompletedLesson = async ({
   lessonType = 'online',
   status = 'completed',
 }) => {
-  await requireCoOwnerAccess({ tutorId, studentId, subject });
+  const accessContext = await requireCoOwnerAccess({ tutorId, studentId, subject });
   const completedOn = status === 'completed' ? (lessonDate || new Date().toISOString().slice(0, 10)) : '';
   const scheduledFor = lessonDate || new Date().toISOString().slice(0, 10);
   if (!isFirebaseConfigured) {
@@ -1162,9 +1358,10 @@ export const saveCompletedLesson = async ({
     studentName,
     lessonDate: scheduledFor,
     lessonType,
-    status,
-    completedOn,
-    createdAt: serverTimestamp(),
+      status,
+      completedOn,
+      assignmentPeriodId: accessContext.assignmentPeriodId,
+      createdAt: serverTimestamp(),
   });
   return { id: ref.id, studentId, tutorId, subject, topic, topics: topics ?? (topic ? [topic] : []), topicUnderstandingScores, topicReport, understandingLevel, studentName, lessonDate: scheduledFor, lessonType, status, completedOn };
 };
@@ -1175,37 +1372,8 @@ export const assignStudentToTutor = async ({ studentId, tutorId, subject = DEFAU
   }
   ensureDb();
 
-  const existing = await getDocs(
-    query(
-      collection(db, collections.tutorStudentAssignments),
-      where('studentId', '==', studentId),
-      where('subject', '==', subject),
-      where('active', '==', true),
-      limit(1),
-    ),
-  );
-
-  if (!existing.empty) {
-    throw new Error(`This student already has an active ${subject} tutor assignment.`);
-  }
-
-  const assignmentId = buildTutorAssignmentId({ studentId, tutorId, subject });
-  const ref = doc(db, collections.tutorStudentAssignments, assignmentId);
-  await setDoc(ref, {
-    studentId,
-    tutorId,
-    subject,
-    active: true,
-    assignedAt: serverTimestamp(),
-  });
-
-  await updateDoc(doc(db, collections.users, studentId), {
-    assignedTutorIds: arrayUnion(tutorId),
-    assignedSubjects: arrayUnion(subject),
-    updatedAt: serverTimestamp(),
-  });
-
-  return { id: ref.id, studentId, tutorId, subject };
+  const callable = httpsCallable(functions, 'assignStudentToTutor');
+  return (await callable({ studentId, tutorId, subject })).data;
 };
 
 export const getAdminSubjectAssignmentData = async (subject = DEFAULT_SUBJECT) => {
@@ -1262,7 +1430,7 @@ export const getAdminSubjectAssignmentData = async (subject = DEFAULT_SUBJECT) =
       tutorName: tutor?.displayName ?? tutor?.email ?? 'Tutor',
       tutorRoleLabel: isTeacher ? 'Teacher' : 'Tutor',
     };
-  });
+  }).filter((assignment) => studentMap.has(assignment.studentId));
   const assignedStudentIds = new Set(assignments.map((assignment) => assignment.studentId));
 
   return {
@@ -1375,7 +1543,7 @@ export const subscribeQuestionPapers = (callback) => {
     return () => {};
   }
   ensureDb();
-  return onSnapshot(query(collection(db, collections.questionPapers), orderBy('year', 'desc')), (snapshot) => {
+  return onSnapshot(collection(db, collections.questionPapers), (snapshot) => {
     callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
   });
 };
@@ -1851,6 +2019,22 @@ export const getSubmissionForExercise = async (exerciseId) => {
 
 const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_SUBJECT, latestTutorReport, completedLesson, understandingLevel, availablePapers, onProgress, overrideFutureUnsubmitted = false, targetAssignmentDates = null, dailyExerciseCaps = {}, overrideExerciseIdsByDate = {}, plannedGenerationWeek = null }) => {
   const studentState = await getStudentAccessState(student, subject);
+  const subscriptionTrace = {
+    paidSubscriptionActive: Boolean(studentState.paidSubscriptionActive && studentState.subscriptionPaymentVerified),
+    subscriptionId: studentState.subscriptionId ?? student?.uid ?? null,
+    subscriptionPlanId: studentState.subscriptionPlanId ?? 'free',
+    subscriptionPlanName: studentState.subscriptionPlanName ?? 'Free',
+    subscriptionPaymentReference: studentState.subscriptionPaymentReference ?? null,
+  };
+  if (!subscriptionTrace.paidSubscriptionActive) {
+    return {
+      generated: false,
+      reason: `An active paid subscription covering ${subject} is required for exercise generation.`,
+      criteria: { ...studentState.generationStatus, ...subscriptionTrace },
+      assignments: [],
+    };
+  }
+
   const papers = availablePapers ?? studentState.matchingQuestionPapers;
   const readyCompletedLesson = completedLesson && isCompletedLessonReadyForGeneration(completedLesson) ? completedLesson : null;
   const completedLessons = readyCompletedLesson
@@ -1877,7 +2061,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     return {
       generated: false,
       reason: `Criteria not met for ${mode} generation`,
-      criteria: studentState.generationStatus,
+      criteria: { ...studentState.generationStatus, ...subscriptionTrace },
       assignments: [],
     };
   }
@@ -1923,6 +2107,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       reason: 'No analyzed question metadata matched the completed topics.',
       criteria: {
         ...studentState.generationStatus,
+        ...subscriptionTrace,
         excludedRecentPaperIds: recentPaperIds,
         reusedRecentPapers,
         analyzedPaperCount,
@@ -1955,6 +2140,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
   });
   const generationBatchId = `${mode}-${student.uid}-${Date.now()}`;
   const aiResponse = await recommendExercises({
+    studentId: student.uid,
     grade: student?.grade,
     region: student?.province,
     subject,
@@ -2011,6 +2197,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
   const assignments = buildAssignmentsFromAiRecommendations({
     recommendations: aiResponse?.recommendations ?? [],
     student,
+    subscriptionTrace,
     selectedPapers,
     generationBatchId,
     mode,
@@ -2030,6 +2217,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       assignments,
       criteria: {
         ...studentState.generationStatus,
+        ...subscriptionTrace,
         selectedPaperIds: selectedPapers.map((paper) => paper.id),
         excludedRecentPaperIds: recentPaperIds,
         reusedRecentPapers,
@@ -2039,6 +2227,16 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
   }
 
   ensureDb();
+  const currentAssignmentSnapshot = await getDocs(query(
+    collection(db, collections.tutorStudentAssignments),
+    where('studentId', '==', student.uid),
+    where('subject', '==', subject),
+    where('active', '==', true),
+  ));
+  const assignmentPeriodId = currentAssignmentSnapshot.docs[0]?.data().currentPeriodId ?? null;
+  assignments.forEach((assignment) => {
+    if (assignmentPeriodId) assignment.assignmentPeriodId = assignmentPeriodId;
+  });
   const createdAssignments = [];
   const existingCounts = new Map();
   for (const assignment of assignments) {
@@ -2106,7 +2304,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       generated: true,
       reason: `Regenerated ${replacementRows.length} uncompleted exercises within the next 7 days.`,
       assignments: replacementRows,
-      criteria: { ...studentState.generationStatus, selectedPaperIds: selectedPapers.map((paper) => paper.id) },
+      criteria: { ...studentState.generationStatus, ...subscriptionTrace, selectedPaperIds: selectedPapers.map((paper) => paper.id) },
     };
   }
 
@@ -2116,6 +2314,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     assignments: createdAssignments,
     criteria: {
       ...studentState.generationStatus,
+      ...subscriptionTrace,
       selectedPaperIds: selectedPapers.map((paper) => paper.id),
       excludedRecentPaperIds: recentPaperIds,
       reusedRecentPapers,
@@ -2171,6 +2370,11 @@ export const generateExercisePlanIfEligible = async (options = {}) => {
     await setDoc(statusRef, {
       status: result.generated ? 'completed' : 'failed',
       message: result.reason || (result.generated ? 'Exercise generation completed.' : 'Exercise generation did not produce assignments.'),
+      paidSubscriptionActive: Boolean(result.criteria?.paidSubscriptionActive),
+      subscriptionId: result.criteria?.subscriptionId ?? null,
+      subscriptionPlanId: result.criteria?.subscriptionPlanId ?? 'free',
+      subscriptionPlanName: result.criteria?.subscriptionPlanName ?? 'Free',
+      subscriptionPaymentReference: result.criteria?.subscriptionPaymentReference ?? null,
       finishedAtMs: Date.now(),
       expiresAtMs: Date.now(),
       updatedAt: serverTimestamp(),
@@ -2310,12 +2514,16 @@ export const getAssignedSubjectsForStudent = async (studentId) => {
       .map((assignment) => assignment.subject ?? DEFAULT_SUBJECT))];
   }
   ensureDb();
-  const snapshot = await getDocs(query(
-    collection(db, collections.tutorStudentAssignments),
-    where('studentId', '==', studentId),
-    where('active', '==', true),
-  ));
-  return [...new Set(snapshot.docs.map((item) => item.data().subject ?? DEFAULT_SUBJECT).filter(Boolean))];
+  const [snapshot, studentSnapshot] = await Promise.all([
+    getDocs(query(
+      collection(db, collections.tutorStudentAssignments),
+      where('studentId', '==', studentId),
+      where('active', '==', true),
+    )),
+    getDoc(doc(db, collections.users, studentId)),
+  ]);
+  const subjects = new Set(studentSnapshot.exists() ? getUserSubjects(studentSnapshot.data()) : []);
+  return [...new Set(snapshot.docs.map((item) => item.data().subject ?? DEFAULT_SUBJECT).filter((subject) => subjects.has(subject)))];
 };
 
 export const getTutorAssignedStudentContexts = async (tutorId) => {
@@ -2338,16 +2546,20 @@ export const getTutorAssignedStudentContexts = async (tutorId) => {
   const shared = sharedSnapshot.docs.map((item) => ({ id: item.id, ...item.data(), isPrimaryTutor: false }));
   const records = [...primary, ...shared];
   const studentSnapshots = await Promise.all(records.map((assignment) => getDoc(doc(db, collections.users, assignment.studentId))));
-  const contexts = records.map((assignment, index) => ({
-    ...(studentSnapshots[index].exists() ? studentSnapshots[index].data() : {}),
+  const contexts = records.map((assignment, index) => {
+    const student = studentSnapshots[index].exists() ? studentSnapshots[index].data() : {};
+    return {
+    ...student,
     studentId: assignment.studentId,
     uid: assignment.studentId,
     subject: assignment.subject ?? DEFAULT_SUBJECT,
     assignmentId: assignment.id,
+    assignmentPeriodId: assignment.currentPeriodId ?? null,
     accessRole: assignment.accessRole,
     isPrimaryTutor: assignment.isPrimaryTutor,
     accessGrantedBy: assignment.createdBy ?? null,
-  }));
+  };
+  }).filter((context) => getUserSubjects(context).includes(context.subject));
   const unique = new Map();
   contexts.forEach((context) => {
     const key = `${context.studentId}:${context.subject}`;
@@ -2355,6 +2567,111 @@ export const getTutorAssignedStudentContexts = async (tutorId) => {
     if (!current || context.isPrimaryTutor) unique.set(key, context);
   });
   return [...unique.values()];
+};
+
+const toAssignmentDateKey = (value) => {
+  if (!value) return '';
+  const date = value?.toDate ? value.toDate() : (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? null : new Date(value));
+  if (!date) return value;
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+};
+
+const recordFallsWithinPeriod = (record, period) => {
+  if (period.periodId && record.assignmentPeriodId === period.periodId) return true;
+  const recordDate = toAssignmentDateKey(record.assignmentDate || record.completedOn || record.lessonDate || record.updatedAt || record.createdAt);
+  if (!recordDate) return true;
+  const startDate = toAssignmentDateKey(period.startedAt || period.assignedAt);
+  const endDate = toAssignmentDateKey(period.endedAt);
+  return (!startDate || recordDate >= startDate) && (!endDate || recordDate <= endDate);
+};
+
+export const getTutorAssignmentHistoryContexts = async (tutorId, studentId = null) => {
+  if (!tutorId || !isFirebaseConfigured) return [];
+  ensureDb();
+  const [primaryHistory, sharedHistory, primaryPointers, sharedPointers] = await Promise.all([
+    getDocs(query(collection(db, collections.tutorStudentAssignmentPeriods), where('tutorId', '==', tutorId))),
+    getDocs(query(collection(db, collections.staffStudentAccessPeriods), where('tutorId', '==', tutorId))),
+    getDocs(query(collection(db, collections.tutorStudentAssignments), where('tutorId', '==', tutorId), where('active', '==', true))),
+    getDocs(query(collection(db, collections.staffStudentAccess), where('tutorId', '==', tutorId), where('active', '==', true))),
+  ]);
+  const periods = [
+    ...primaryHistory.docs.map((item) => ({ id: item.id, ...item.data(), isPrimaryTutor: true })),
+    ...sharedHistory.docs.map((item) => ({ id: item.id, ...item.data(), isPrimaryTutor: false })),
+  ].filter((period) => period.active === false && period.endedAt && (!studentId || period.studentId === studentId));
+  const legacyPointers = [...primaryPointers.docs, ...sharedPointers.docs]
+    .map((item) => ({ id: item.id, ...item.data(), isPrimaryTutor: item.ref.parent.id === collections.tutorStudentAssignments }))
+    .filter((pointer) => !studentId || pointer.studentId === studentId);
+  const studentIds = [...new Set([...periods, ...legacyPointers].map((item) => item.studentId).filter(Boolean))];
+  const studentSnapshots = await Promise.all(studentIds.map((id) => getDoc(doc(db, collections.users, id))));
+  const studentMap = new Map(studentSnapshots.map((snapshot) => [snapshot.id, snapshot.exists() ? snapshot.data() : {}]));
+  const legacyPeriods = legacyPointers.flatMap((pointer) => {
+    const student = studentMap.get(pointer.studentId) ?? {};
+    if (getUserSubjects(student).includes(pointer.subject)) return [];
+    const estimatedEnd = student.updatedAt || pointer.updatedAt || pointer.assignedAt || null;
+    return [{
+      ...pointer,
+      id: `legacy-${pointer.id}`,
+      periodId: `legacy-${pointer.id}`,
+      assignmentType: pointer.isPrimaryTutor ? 'primary' : 'shared',
+      accessRole: pointer.isPrimaryTutor ? 'co-owner' : pointer.accessRole,
+      startedAt: pointer.assignedAt || pointer.createdAt || null,
+      endedAt: estimatedEnd,
+      endReason: 'subject_removed_before_history_tracking',
+      active: false,
+      legacyArchive: true,
+      endDateEstimated: true,
+    }];
+  });
+  const rows = [...periods, ...legacyPeriods].map((period) => ({
+    ...studentMap.get(period.studentId),
+    studentId: period.studentId,
+    uid: period.studentId,
+    subject: period.subject ?? DEFAULT_SUBJECT,
+    assignmentId: period.pointerId || period.id,
+    assignmentPeriodId: period.periodId || period.id,
+    accessRole: period.accessRole || (period.isPrimaryTutor ? 'co-owner' : 'viewer'),
+    isPrimaryTutor: period.isPrimaryTutor || period.assignmentType === 'primary',
+    assignmentStartedAt: period.startedAt || null,
+    assignmentEndedAt: period.endedAt || null,
+    assignmentEndReason: period.endReason || 'access_ended',
+    legacyArchive: Boolean(period.legacyArchive || period.migratedFromLegacy),
+    endDateEstimated: Boolean(period.endDateEstimated),
+  }));
+  return rows.sort((left, right) => new Date(right.assignmentEndedAt?.toDate?.() ?? right.assignmentEndedAt ?? 0) - new Date(left.assignmentEndedAt?.toDate?.() ?? left.assignmentEndedAt ?? 0));
+};
+
+export const getTutorAssignmentHistoryData = async ({ tutorId, studentId, periodId }) => {
+  const period = (await getTutorAssignmentHistoryContexts(tutorId, studentId))
+    .find((item) => item.assignmentPeriodId === periodId);
+  if (!period) throw new Error('This assignment history is not available to your account.');
+  const [exerciseSnapshot, reportSnapshot, lessonSnapshot, peerMarkingSnapshot] = await Promise.all([
+    getDocs(query(collection(db, collections.dailyExerciseAssignments), where('studentId', '==', studentId), where('subject', '==', period.subject))),
+    getDocs(query(collection(db, collections.tutorReports), where('studentId', '==', studentId), where('subject', '==', period.subject))),
+    getDocs(query(collection(db, collections.coveredTopics), where('studentId', '==', studentId), where('subject', '==', period.subject))),
+    getDocs(query(collection(db, collections.peerMarkingAssignments), where('reviewerId', '==', studentId))),
+  ]);
+  const inPeriod = (snapshot) => snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .filter((item) => recordFallsWithinPeriod(item, {
+      startedAt: period.assignmentStartedAt,
+      endedAt: period.assignmentEndedAt,
+      periodId: period.assignmentPeriodId,
+    }));
+  return {
+    period,
+    exercises: inPeriod(exerciseSnapshot).sort((left, right) => String(left.assignmentDate || '').localeCompare(String(right.assignmentDate || ''))),
+    reports: inPeriod(reportSnapshot).sort((left, right) => new Date(right.updatedAt?.toDate?.() ?? right.updatedAt ?? 0) - new Date(left.updatedAt?.toDate?.() ?? left.updatedAt ?? 0)),
+    lessons: inPeriod(lessonSnapshot).sort((left, right) => String(right.completedOn || right.lessonDate || '').localeCompare(String(left.completedOn || left.lessonDate || ''))),
+    peerMarkedWork: await Promise.all(peerMarkingSnapshot.docs
+      .map((item) => ({ id: item.id, ...item.data() }))
+      .filter((item) => item.subject === period.subject && item.status === 'completed' && item.reviewImageUrl)
+      .filter((item) => recordFallsWithinPeriod(item, {
+        startedAt: period.assignmentStartedAt,
+        endedAt: period.assignmentEndedAt,
+        periodId: period.assignmentPeriodId,
+      }))
+      .map(async (item) => ({ ...item, targetExercise: item.exerciseId ? await getExerciseAssignmentById(item.exerciseId) : null }))),
+  };
 };
 
 export const getStaffMembersForAccess = async ({ tutorId, subject = DEFAULT_SUBJECT }) => {
@@ -2371,15 +2688,8 @@ export const setStaffStudentAccess = async ({ actorId, studentId, tutorId, subje
   if (!actor.isPrimaryTutor && actor.accessRole !== 'co-owner') throw new Error('Only a co-owner can manage staff access.');
   if (!isFirebaseConfigured) throw new Error('Staff access management requires a connected Firebase project.');
   ensureDb();
-  const staffSnapshot = await getDoc(doc(db, collections.users, tutorId));
-  if (!staffSnapshot.exists() || !isTutorOrTeacherProfile(staffSnapshot.data())) throw new Error('Choose a registered tutor or teacher account.');
-  if (tutorId === actorId) throw new Error('You already have co-owner access to this student.');
-  const id = buildStaffAccessId({ studentId, tutorId, subject });
-  await setDoc(doc(db, collections.staffStudentAccess, id), {
-    studentId, tutorId, subject, accessRole, active: true,
-    createdBy: actorId, updatedAt: serverTimestamp(), createdAt: serverTimestamp(),
-  });
-  return { id, studentId, tutorId, subject, accessRole, active: true };
+  const callable = httpsCallable(functions, 'manageStaffStudentAccess');
+  return (await callable({ action: 'grant', actorId, studentId, tutorId, subject, accessRole })).data;
 };
 
 export const getStaffStudentAccess = async ({ studentId, subject = DEFAULT_SUBJECT, tutorId }) => {
@@ -2395,10 +2705,8 @@ export const revokeStaffStudentAccess = async ({ actorId, studentId, subject = D
   await requireCoOwnerAccess({ tutorId: actorId, studentId, subject });
   if (!isFirebaseConfigured) throw new Error('Staff access management requires a connected Firebase project.');
   ensureDb();
-  const ref = doc(db, collections.staffStudentAccess, accessId);
-  const snapshot = await getDoc(ref);
-  if (!snapshot.exists() || snapshot.data().studentId !== studentId || snapshot.data().subject !== subject) throw new Error('Staff access record not found.');
-  await updateDoc(ref, { active: false, updatedAt: serverTimestamp(), revokedBy: actorId });
+  const callable = httpsCallable(functions, 'manageStaffStudentAccess');
+  await callable({ action: 'revoke', actorId, studentId, subject, accessId });
 };
 
 export const getTutorReportsForAssignedStudents = async (tutorId) => {
@@ -2736,12 +3044,8 @@ export const addStudentSubjects = async ({ studentId, subjects }) => {
   }
 
   ensureDb();
-  await updateDoc(doc(db, collections.users, studentId), {
-    subjects: arrayUnion(...cleanSubjects),
-    subject: DEFAULT_SUBJECT,
-    updatedAt: serverTimestamp(),
-  });
-  return { studentId, subjects: cleanSubjects };
+  const callable = httpsCallable(functions, 'updateStudentSubjects');
+  return (await callable({ studentId, action: 'add', subjects: cleanSubjects })).data;
 };
 
 export const addStudentSubject = async ({ studentId, subject }) => addStudentSubjects({ studentId, subjects: [subject] });
@@ -2756,20 +3060,8 @@ export const removeUserSubject = async ({ uid, subject }) => {
   }
 
   ensureDb();
-  const userRef = doc(db, collections.users, uid);
-  const snapshot = await getDoc(userRef);
-  const profile = snapshot.exists() ? snapshot.data() : {};
-  const remainingSubjects = (Array.isArray(profile.subjects) ? profile.subjects : []).filter((item) => item !== subject);
-  const remainingMarks = (Array.isArray(profile.tutorSubjectMarks) ? profile.tutorSubjectMarks : []).filter((item) => item.subject !== subject);
-
-  await updateDoc(userRef, {
-    subjects: arrayRemove(subject),
-    tutorSubjectMarks: remainingMarks,
-    subject: profile.subject === subject ? (remainingSubjects[0] ?? null) : (profile.subject ?? null),
-    updatedAt: serverTimestamp(),
-  });
-
-  return { uid, subject };
+  const callable = httpsCallable(functions, 'updateStudentSubjects');
+  return (await callable({ studentId: uid, action: 'remove', subject })).data;
 };
 
 

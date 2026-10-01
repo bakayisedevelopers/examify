@@ -1,6 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
 import { jsonrepair } from 'jsonrepair';
+import { assertPaidExerciseGenerationAccess } from './exerciseAccess.js';
 
 const kiloBaseUrl = () => process.env.KILO_BASE_URL?.trim() || 'https://api.kilo.ai/api/gateway';
 const kiloTextModel = () => process.env.KILO_TEXT_MODEL?.trim() || 'thinkingmachines/inkling-small:free';
@@ -235,7 +236,12 @@ export const callKiloText = onCall(async (request) => {
 });
 
 export const callExerciseGenerationText = onCall({ timeoutSeconds: 300 }, async (request) => {
-  const { system, prompt, messages, maxTokens, temperature, responseFormat, requiredJsonKey } = request.data ?? {};
+  const { system, prompt, messages, maxTokens, temperature, responseFormat, requiredJsonKey, exerciseGenerationContext } = request.data ?? {};
+  await assertPaidExerciseGenerationAccess({
+    authUid: request.auth?.uid,
+    studentId: exerciseGenerationContext?.studentId,
+    subject: exerciseGenerationContext?.subject,
+  });
   const normalizedMessages = normalizeMessages({ system, prompt, messages });
   return callKiloExerciseTextWithFallback({
     messages: normalizedMessages,

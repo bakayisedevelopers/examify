@@ -123,7 +123,7 @@ const hasNewSubmission = (before, after) => Boolean(
 const statusChanged = (before, after) => before?.status !== after?.status;
 
 export const notifyNewUser = onDocumentCreated(
-  { document: 'users/{userId}', timeoutSeconds: 60, memory: '256MiB' },
+  { document: 'users/{userId}', timeoutSeconds: 60, memory: '256MiB', cpu: 'gcf_gen1' },
   async (event) => {
     const db = getDb();
     const user = event.data?.data();
@@ -142,7 +142,7 @@ export const notifyNewUser = onDocumentCreated(
 );
 
 export const notifyExerciseSubmission = onDocumentWritten(
-  { document: 'dailyExerciseAssignments/{exerciseId}', timeoutSeconds: 90, memory: '256MiB' },
+  { document: 'dailyExerciseAssignments/{exerciseId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
   async (event) => {
     const before = event.data?.before?.exists ? event.data.before.data() : null;
     const after = event.data?.after?.exists ? event.data.after.data() : null;
@@ -168,7 +168,7 @@ export const notifyExerciseSubmission = onDocumentWritten(
 );
 
 export const notifyPeerMarkingCompleted = onDocumentWritten(
-  { document: 'peerMarkingAssignments/{assignmentId}', timeoutSeconds: 90, memory: '256MiB' },
+  { document: 'peerMarkingAssignments/{assignmentId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
   async (event) => {
     const before = event.data?.before?.exists ? event.data.before.data() : null;
     const after = event.data?.after?.exists ? event.data.after.data() : null;
@@ -192,7 +192,7 @@ export const notifyPeerMarkingCompleted = onDocumentWritten(
 );
 
 export const notifyPaymentStatus = onDocumentWritten(
-  { document: 'payments/{paymentId}', timeoutSeconds: 90, memory: '256MiB' },
+  { document: 'payments/{paymentId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
   async (event) => {
     const before = event.data?.before?.exists ? event.data.before.data() : null;
     const after = event.data?.after?.exists ? event.data.after.data() : null;
@@ -218,12 +218,13 @@ export const notifyPaymentStatus = onDocumentWritten(
   }
 );
 
-export const notifyTutorAssignment = onDocumentCreated(
-  { document: 'tutorStudentAssignments/{assignmentId}', timeoutSeconds: 90, memory: '256MiB' },
+export const notifyTutorAssignment = onDocumentWritten(
+  { document: 'tutorStudentAssignments/{assignmentId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
   async (event) => {
     const db = getDb();
-    const assignment = event.data?.data();
-    if (!assignment?.studentId || !assignment?.tutorId) return;
+    const before = event.data?.before?.exists ? event.data.before.data() : null;
+    const assignment = event.data?.after?.exists ? event.data.after.data() : null;
+    if (!assignment?.studentId || !assignment?.tutorId || assignment.active !== true || before?.active === true) return;
     const parentIds = await getParentIdsForStudent(db, assignment.studentId);
     await sendNotificationToUsers({
       userIds: unique([assignment.studentId, assignment.tutorId, ...parentIds]),
@@ -238,7 +239,7 @@ export const notifyTutorAssignment = onDocumentCreated(
 );
 
 export const notifyTutorReport = onDocumentCreated(
-  { document: 'tutorReports/{reportId}', timeoutSeconds: 90, memory: '256MiB' },
+  { document: 'tutorReports/{reportId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
   async (event) => {
     const db = getDb();
     const report = event.data?.data();
@@ -257,7 +258,7 @@ export const notifyTutorReport = onDocumentCreated(
 );
 
 export const notifyCompletedLesson = onDocumentCreated(
-  { document: 'coveredTopics/{lessonId}', timeoutSeconds: 90, memory: '256MiB' },
+  { document: 'coveredTopics/{lessonId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
   async (event) => {
     const db = getDb();
     const lesson = event.data?.data();

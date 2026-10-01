@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { CheckCircle2, ChevronDown, LoaderCircle, RotateCcw, Search } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { AppShell } from '../components/common/AppShell';
 import { SectionHeader } from '../components/common/SectionHeader';
@@ -6,7 +7,7 @@ import { useAuth } from '../hooks/useAuth';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
 import { cancelQuestionPaperAnalysis, saveQuestionPaper, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
-import { getApprovedTutorSubjects, getUserSubjects } from '../utils/tutorSubjects';
+import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../utils/tutorSubjects';
 
 const paperStatusStyles = {
   Analyzing: 'bg-amber-400/15 text-amber-300 border border-amber-400/30',
@@ -109,11 +110,46 @@ const PaperAnalysisStatus = ({ paper, visible = true }) => {
   );
 };
 
+const MobilePaperAnalysisIndicator = ({ paper }) => {
+  const status = paper.analysisStatus;
+  if (status === 'Failed' || status === 'Cancelled') return null;
+  if (status === 'Analyzed' || (!status && paper.availableForGeneration)) {
+    return <CheckCircle2 className="h-5 w-5 text-emerald-500" aria-label="Analysis complete" title="Analysis complete" />;
+  }
+  if (status === 'Analyzing' || paper.activeAnalysisRunId || paper.queuedAnalysisRunId) {
+    return <LoaderCircle className="h-5 w-5 animate-spin text-orange-500" aria-label="Analysis processing" title="Analysis processing" />;
+  }
+  return null;
+};
+
 const canQueuePaperAnalysis = (paper) => paper?.analysisStatus !== 'Analyzing';
 const reanalysisButtonLabel = (paper) => paper?.analysisStatus === 'Failed' ? 'Retry analysis' : 'Run analysis again';
 const canManagePaperAnalysis = (role) => role === ROLES.ADMIN || role === ROLES.TUTOR;
 const canStopPaperAnalysis = (paper) =>
   paper?.analysisStatus === 'Analyzing' || Boolean(paper?.activeAnalysisRunId || paper?.queuedAnalysisRunId);
+const getPaperTitle = (paper) => paper.title || paper.paperName || paper.paperFileName?.replace(/\.[^.]+$/, '') ||
+  paper.paperTitle || paper.paperMetadata?.paperTitle || paper.displayName || `${paper.subject || 'Question paper'} • ${paper.grade || ''}`;
+const getPaperDateValue = (value) => value?.toMillis?.() ?? new Date(value?.toDate?.() ?? value ?? 0).getTime();
+const getPaperField = (paper, field) => paper?.[field] ?? paper?.paperMetadata?.[field] ?? '';
+const getPaperSearchText = (paper) => [
+  paper.displayName,
+  paper.title,
+  paper.paperName,
+  paper.paperTitle,
+  paper.paperFileName,
+  paper.memoFileName,
+  paper.subject,
+  paper.grade,
+  paper.region,
+  paper.examBoard,
+  paper.province,
+  paper.month,
+  paper.year,
+  paper.paperNumber,
+  paper.notes,
+  ...Object.entries(paper).filter(([, value]) => typeof value === 'string' || typeof value === 'number').map(([, value]) => value),
+  ...Object.values(paper.paperMetadata ?? {}),
+].filter(Boolean).join(' ').toLowerCase();
 
 export const PastExamPapersPage = () => {
   const { profile, logout } = useAuth();
@@ -124,8 +160,11 @@ export const PastExamPapersPage = () => {
   const [bulkRows, setBulkRows] = useState([]);
   const [bulkMemoFiles, setBulkMemoFiles] = useState([]);
   const [filters, setFilters] = useState({ subject: 'all', year: 'all' });
+  const [studentFilterOverrides, setStudentFilterOverrides] = useState({});
+  const [searchTerm, setSearchTerm] = useState('');
   const [editingPaper, setEditingPaper] = useState(null);
   const [editForm, setEditForm] = useState(null);
+  const [expandedPaperIds, setExpandedPaperIds] = useState({});
 
   const role = useMemo(() => profile?.role ?? ROLES.STUDENT, [profile]);
   const allowedSubjects = useMemo(() => {
@@ -134,17 +173,81 @@ export const PastExamPapersPage = () => {
     return getUserSubjects(profile);
   }, [profile, role]);
   const visibleSubjects = allowedSubjects.length ? allowedSubjects : SUBJECTS;
+  const studentSubjects = useMemo(() => getUserSubjects(profile), [profile]);
+  const studentGrade = SOUTH_AFRICAN_GRADES.includes(profile?.grade) && profile.grade !== 'Select Grade' ? profile.grade : '';
+  const isStudentExploring = Boolean(searchTerm.trim()) || Object.keys(studentFilterOverrides).length > 0;
+  const studentFilterValues = isStudentExploring
+    ? { subject: 'all', grade: 'all', year: 'all', region: 'all', month: 'all', paperNumber: 'all', ...studentFilterOverrides }
+    : {
+      subject: studentSubjects.length ? 'my-subjects' : 'all',
+      grade: studentGrade || 'all',
+      year: 'all',
+      region: 'all',
+      month: 'all',
+      paperNumber: 'all',
+    };
 
   useEffect(() => {
     const unsubscribe = subscribeQuestionPapers(setPapers);
     return unsubscribe;
   }, []);
 
-  const visiblePapers = useMemo(() => papers
-    .filter((paper) => role === ROLES.ADMIN || !visibleSubjects.length || visibleSubjects.includes(paper.subject))
-    .filter((paper) => filters.subject === 'all' || paper.subject === filters.subject)
-    .filter((paper) => filters.year === 'all' || String(paper.year) === String(filters.year)), [papers, role, visibleSubjects, filters]);
-  const years = useMemo(() => [...new Set(papers.map((paper) => paper.year).filter(Boolean))].sort((a, b) => Number(b) - Number(a)), [papers]);
+  const visiblePapers = useMemo(() => {
+    const orderedPapers = [...papers].sort((left, right) =>
+      Number(getPaperField(right, 'year') || 0) - Number(getPaperField(left, 'year') || 0) ||
+      getPaperDateValue(right.createdAt) - getPaperDateValue(left.createdAt));
+
+    if (role === ROLES.STUDENT) {
+      const matchingPapers = orderedPapers
+        .filter((paper) => {
+          if (!isStudentExploring) {
+            const matchesSubjects = !studentSubjects.length || studentSubjects.includes(normalizeEligibleSubject(getPaperField(paper, 'subject')) ?? getPaperField(paper, 'subject'));
+            const matchesGrade = !studentGrade || getPaperField(paper, 'grade') === studentGrade;
+            return matchesSubjects && matchesGrade;
+          }
+
+          const selectedSubject = studentFilterOverrides.subject ?? 'all';
+          const matchesSubject = selectedSubject === 'all' ||
+            (selectedSubject === 'my-subjects'
+              ? !studentSubjects.length || studentSubjects.includes(normalizeEligibleSubject(getPaperField(paper, 'subject')) ?? getPaperField(paper, 'subject'))
+              : (normalizeEligibleSubject(getPaperField(paper, 'subject')) ?? getPaperField(paper, 'subject')) === selectedSubject);
+          const matchesGrade = (studentFilterOverrides.grade ?? 'all') === 'all' || getPaperField(paper, 'grade') === studentFilterOverrides.grade;
+          const matchesYear = (studentFilterOverrides.year ?? 'all') === 'all' || String(getPaperField(paper, 'year')) === String(studentFilterOverrides.year);
+          const matchesRegion = (studentFilterOverrides.region ?? 'all') === 'all' || getPaperField(paper, 'region') === studentFilterOverrides.region;
+          const matchesMonth = (studentFilterOverrides.month ?? 'all') === 'all' || getPaperField(paper, 'month') === studentFilterOverrides.month;
+          const matchesPaperNumber = (studentFilterOverrides.paperNumber ?? 'all') === 'all' || getPaperField(paper, 'paperNumber') === studentFilterOverrides.paperNumber;
+          const tokens = searchTerm.trim().toLowerCase().split(/\s+/).filter(Boolean);
+          const searchText = getPaperSearchText(paper);
+          const matchesSearch = tokens.every((token) => searchText.includes(token));
+          return matchesSubject && matchesGrade && matchesYear && matchesRegion && matchesMonth && matchesPaperNumber && matchesSearch;
+        });
+
+      return isStudentExploring ? matchingPapers : matchingPapers.slice(0, 20);
+    }
+
+    return orderedPapers
+      .filter((paper) => role === ROLES.ADMIN || !visibleSubjects.length || visibleSubjects.includes(paper.subject))
+      .filter((paper) => filters.subject === 'all' || paper.subject === filters.subject)
+      .filter((paper) => filters.year === 'all' || String(paper.year) === String(filters.year));
+  }, [papers, role, visibleSubjects, filters, isStudentExploring, studentSubjects, studentGrade, studentFilterOverrides, searchTerm]);
+  const years = useMemo(() => [...new Set(papers.map((paper) => getPaperField(paper, 'year')).filter(Boolean))].sort((a, b) => Number(b) - Number(a)), [papers]);
+  const grades = useMemo(() => [...new Set([
+    ...SOUTH_AFRICAN_GRADES.filter((grade) => grade !== 'Select Grade'),
+    ...papers.map((paper) => getPaperField(paper, 'grade')).filter(Boolean),
+  ])].sort((left, right) => {
+    const leftOrder = SOUTH_AFRICAN_GRADES.indexOf(left);
+    const rightOrder = SOUTH_AFRICAN_GRADES.indexOf(right);
+    return (leftOrder < 0 ? Number.MAX_SAFE_INTEGER : leftOrder) - (rightOrder < 0 ? Number.MAX_SAFE_INTEGER : rightOrder) || left.localeCompare(right);
+  }), [papers]);
+  const regions = useMemo(() => [...new Set([...REGIONS, ...papers.map((paper) => getPaperField(paper, 'region')).filter(Boolean)])], [papers]);
+  const months = useMemo(() => [...new Set([...PAPER_MONTHS, ...papers.map((paper) => getPaperField(paper, 'month')).filter(Boolean)])], [papers]);
+  const paperNumbers = useMemo(() => [...new Set([...PAPER_NUMBERS, ...papers.map((paper) => getPaperField(paper, 'paperNumber')).filter(Boolean)])], [papers]);
+
+  const updateStudentFilter = (field, value) => setStudentFilterOverrides((current) => ({ ...current, [field]: value }));
+  const resetStudentFilters = () => {
+    setSearchTerm('');
+    setStudentFilterOverrides({});
+  };
 
 
   const startEditPaper = (paper) => {
@@ -362,25 +465,121 @@ export const PastExamPapersPage = () => {
   };
 
   return (
-    <AppShell title="Past exam papers" subtitle="Browse papers first, then upload one paper or review a bulk upload before analysis starts." role={role} user={profile} onLogout={logout}>
-      <SectionHeader eyebrow="Repository" title="Question papers" description="The list is scoped to your subjects. Use filters to narrow by subject or year." />
-      <div className="panel grid gap-3 p-4 md:grid-cols-2">
-        <select className="input" value={filters.subject} onChange={(event) => setFilters((current) => ({ ...current, subject: event.target.value }))}>
-          <option value="all">All subjects</option>
-          {visibleSubjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
-        </select>
-        <select className="input" value={filters.year} onChange={(event) => setFilters((current) => ({ ...current, year: event.target.value }))}>
-          <option value="all">All years</option>
-          {years.map((year) => <option key={year} value={year}>{year}</option>)}
-        </select>
-      </div>
+    <AppShell title="Past exam papers" subtitle={canManagePaperAnalysis(role) ? 'Browse, upload, and manage question papers for analysis.' : 'Browse question papers and memoranda for your subjects.'} role={role} user={profile} onLogout={logout}>
+      <SectionHeader
+        eyebrow="Repository"
+        title="Question papers"
+        description={role === ROLES.STUDENT
+          ? isStudentExploring
+            ? 'Search and filter all Examifying question papers.'
+            : 'Showing recent papers for your grade and subjects. Search or filter to explore the full Examifying collection.'
+          : 'The list is scoped to your subjects. Use filters to narrow by subject or year.'}
+      />
+      {role === ROLES.STUDENT ? (
+        <div className="panel grid gap-3 p-4">
+          <label className="relative block">
+            <span className="sr-only">Search all question papers</span>
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+            <input
+              type="search"
+              className="input pl-10"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search by year, subject, grade, region, paper..."
+            />
+          </label>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+            <select aria-label="Filter by subject" className="input" value={studentFilterValues.subject} onChange={(event) => updateStudentFilter('subject', event.target.value)}>
+              <option value="all">All subjects</option>
+              <option value="my-subjects">My subjects</option>
+              {SUBJECTS.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+            </select>
+            <select aria-label="Filter by grade" className="input" value={studentFilterValues.grade} onChange={(event) => updateStudentFilter('grade', event.target.value)}>
+              <option value="all">All grades</option>
+              {grades.map((grade) => <option key={grade} value={grade}>{grade}</option>)}
+            </select>
+            <select aria-label="Filter by year" className="input" value={studentFilterValues.year} onChange={(event) => updateStudentFilter('year', event.target.value)}>
+              <option value="all">All years</option>
+              {years.map((year) => <option key={year} value={year}>{year}</option>)}
+            </select>
+            <select aria-label="Filter by region" className="input" value={studentFilterValues.region} onChange={(event) => updateStudentFilter('region', event.target.value)}>
+              <option value="all">All regions</option>
+              {regions.map((region) => <option key={region} value={region}>{region}</option>)}
+            </select>
+            <select aria-label="Filter by month" className="input" value={studentFilterValues.month} onChange={(event) => updateStudentFilter('month', event.target.value)}>
+              <option value="all">All months</option>
+              {months.map((month) => <option key={month} value={month}>{month}</option>)}
+            </select>
+            <select aria-label="Filter by paper number" className="input" value={studentFilterValues.paperNumber} onChange={(event) => updateStudentFilter('paperNumber', event.target.value)}>
+              <option value="all">All papers</option>
+              {paperNumbers.map((paperNumber) => <option key={paperNumber} value={paperNumber}>{paperNumber}</option>)}
+            </select>
+          </div>
+          {isStudentExploring ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-3">
+              <p className="text-sm text-slate-500">{visiblePapers.length} matching paper{visiblePapers.length === 1 ? '' : 's'}</p>
+              <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={resetStudentFilters}>
+                <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                Reset filters
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="panel grid gap-3 p-4 md:grid-cols-2">
+          <select className="input" value={filters.subject} onChange={(event) => setFilters((current) => ({ ...current, subject: event.target.value }))}>
+            <option value="all">All subjects</option>
+            {visibleSubjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+          </select>
+          <select className="input" value={filters.year} onChange={(event) => setFilters((current) => ({ ...current, year: event.target.value }))}>
+            <option value="all">All years</option>
+            {years.map((year) => <option key={year} value={year}>{year}</option>)}
+          </select>
+        </div>
+      )}
+      {role === ROLES.STUDENT && !isStudentExploring ? <p className="text-xs text-slate-500">Showing up to 20 recent papers. Search or select a filter to browse all matching results.</p> : null}
 
       <div className="space-y-4">
         {visiblePapers.map((paper) => (
-          <div key={paper.id} className="panel p-5">
+          <div key={paper.id}>
+            {role === ROLES.STUDENT ? (
+              <div className="panel p-3 md:hidden">
+                <div className="flex items-start gap-3">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="break-words text-sm font-semibold text-slate-950">{getPaperTitle(paper)}</h3>
+                    <span className="mt-2 inline-flex max-w-full truncate rounded-full border border-lime-400/20 bg-lime-400/10 px-2.5 py-1 text-xs font-medium text-lime-300">{getPaperField(paper, 'subject') || 'Subject not listed'}</span>
+                  </div>
+                  <span className="flex h-10 w-8 flex-none items-center justify-center">
+                    <MobilePaperAnalysisIndicator paper={paper} />
+                  </span>
+                  <button
+                    type="button"
+                    className="btn-secondary h-10 w-10 flex-none p-0"
+                    aria-label={`${expandedPaperIds[paper.id] ? 'Hide' : 'Show'} ${paper.displayName || 'paper'} details`}
+                    aria-expanded={Boolean(expandedPaperIds[paper.id])}
+                    title={expandedPaperIds[paper.id] ? 'Hide paper details' : 'Show paper details'}
+                    onClick={() => setExpandedPaperIds((current) => ({ ...current, [paper.id]: !current[paper.id] }))}
+                  >
+                    <ChevronDown className={`mx-auto h-4 w-4 transition-transform ${expandedPaperIds[paper.id] ? 'rotate-180' : ''}`} aria-hidden="true" />
+                  </button>
+                </div>
+                {expandedPaperIds[paper.id] ? (
+                  <div className="mt-3 border-t border-slate-200 pt-3">
+                    <p className="text-xs text-slate-600">{getPaperField(paper, 'grade') || 'Grade not listed'} • {getPaperField(paper, 'region') || 'Region not listed'} • {getPaperField(paper, 'month')} {getPaperField(paper, 'year')} • {getPaperField(paper, 'paperNumber') || 'Paper 1'}</p>
+                    {paper.notes ? <p className="mt-2 text-sm text-slate-600">{paper.notes}</p> : null}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {paper.paperUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Paper</Link> : null}
+                      {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-sm text-slate-500">No memo uploaded</span>}
+                    </div>
+                    <PaperAnalysisStatus paper={paper} />
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            <div className={`${role === ROLES.STUDENT ? 'hidden md:block ' : ''}panel p-5`}>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h3 className="text-lg font-semibold text-slate-950">{paper.displayName || `${paper.subject} • ${paper.grade}`}</h3>
+                <h3 className="text-lg font-semibold text-slate-950">{paper.displayName || getPaperTitle(paper)}</h3>
                 <p className="mt-1 text-sm text-slate-500">{paper.region} • {paper.month} {paper.year} • {paper.paperNumber ?? 'Paper 1'}</p>
               </div>
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.25em] text-slate-600">{paper.subject}</span>
@@ -389,16 +588,17 @@ export const PastExamPapersPage = () => {
             <div className="mt-4 flex flex-wrap gap-3 text-sm">
               <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Open paper</Link>
               {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Open memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-slate-500">No memo uploaded</span>}
-              <button type="button" className="btn-secondary" onClick={() => startEditPaper(paper)}>Edit</button>
+              {canManagePaperAnalysis(role) ? <button type="button" className="btn-secondary" onClick={() => startEditPaper(paper)}>Edit</button> : null}
               {canManagePaperAnalysis(role) && canQueuePaperAnalysis(paper) ? <button type="button" className="btn-primary" onClick={() => queuePaperReanalysis(paper)}>{reanalysisButtonLabel(paper)}</button> : null}
               {canManagePaperAnalysis(role) && canStopPaperAnalysis(paper) ? <button type="button" className="btn-secondary text-rose-700 hover:text-rose-800" onClick={() => stopPaperAnalysis(paper).catch((error) => setStatus(error.message || 'Could not stop analysis.'))}>Stop analysis</button> : null}
+            </div>
             </div>
           </div>
         ))}
         {!visiblePapers.length ? <div className="panel p-5 text-sm text-slate-500">No papers match these filters.</div> : null}
       </div>
 
-      <section className="panel space-y-5 p-6">
+      {canManagePaperAnalysis(role) ? <section className="panel space-y-5 p-6">
         <div className="flex flex-wrap gap-2">
           <button type="button" className={uploadTab === 'single' ? 'btn-primary' : 'btn-secondary'} onClick={() => setUploadTab('single')}>Single upload</button>
           <button type="button" className={uploadTab === 'bulk' ? 'btn-primary' : 'btn-secondary'} onClick={() => setUploadTab('bulk')}>Bulk upload</button>
@@ -470,9 +670,9 @@ export const PastExamPapersPage = () => {
           </div>
         )}
         {status ? <p className="text-sm text-slate-600">{status}</p> : null}
-      </section>
+      </section> : null}
 
-      {editingPaper && editForm ? (
+      {canManagePaperAnalysis(role) && editingPaper && editForm ? (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-4">
           <form onSubmit={handleEditSubmit} className="panel max-h-[90dvh] w-full max-w-4xl overflow-y-auto p-6">
             <div className="flex flex-wrap items-start justify-between gap-3">

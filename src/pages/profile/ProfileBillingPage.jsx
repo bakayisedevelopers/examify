@@ -1,19 +1,20 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
 import { ROLES } from '../../lib/constants';
-import { getTutorBillingSummary } from '../../services/firestoreService';
+import { getStudentSubscriptionState, getTutorBillingSummary } from '../../services/firestoreService';
+import { SubscriptionLifecyclePanel } from '../../components/billing/SubscriptionLifecyclePanel';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
 import { initializeSubscriptionPayment } from '../../services/paymentsService';
 
 export const ProfileBillingPage = ({ role }) => {
-  const { profile, logout } = useAuth();
-  const { refreshProfile } = useAuth();
+  const { profile, logout, refreshProfile } = useAuth();
   const navigate = useNavigate();
   const [summary, setSummary] = useState(null);
   const [subscriptionStatus, setSubscriptionStatus] = useState('');
   const [isStartingSubscription, setIsStartingSubscription] = useState(false);
+  const [subscriptionState, setSubscriptionState] = useState(null);
 
   const continueSubscription = async (selection) => {
     setSubscriptionStatus('');
@@ -25,14 +26,19 @@ export const ProfileBillingPage = ({ role }) => {
         callbackUrl: `${window.location.origin}/student/billing`,
       });
       if (result.free) {
-        await refreshProfile(profile.uid);
+        const refreshedProfile = await refreshProfile(profile.uid);
+        setSubscriptionState(await getStudentSubscriptionState(refreshedProfile));
         setSubscriptionStatus('Free plan activated. Unlimited question papers are available.');
         navigate('/student/papers');
       } else if (result.scheduledChange) {
         await refreshProfile(profile.uid);
-        setSubscriptionStatus(`${result.quote.planName} will start on ${new Date(result.effectiveAt).toLocaleDateString()}.`);
+        setSubscriptionStatus(`${result.quote.planName} will start on ${new Date(result.effectiveAt).toLocaleDateString()}.${result.manualPaymentRequired ? ' Payment will be required then.' : ''}`);
+      } else if (result.pendingChangeCancelled) {
+        setSubscriptionStatus('Scheduled change cancelled. Your current plan will continue.');
       } else if (result.alreadyActive) {
-        setSubscriptionStatus(`${result.quote.planName} is already active.`);
+        setSubscriptionStatus(result.renewalCancelled
+          ? `${result.quote.planName} remains active until ${new Date(result.renewalDate).toLocaleDateString()}. Resume renewal in subscription management to keep it after that date.`
+          : `${result.quote.planName} is already active.`);
       } else if (result.authorizationUrl) {
         window.location.href = result.authorizationUrl;
       } else {
@@ -46,6 +52,24 @@ export const ProfileBillingPage = ({ role }) => {
   };
 
   useEffect(() => {
+    if (role === ROLES.STUDENT && profile?.uid) {
+      getStudentSubscriptionState(profile)
+        .then(setSubscriptionState)
+        .catch((error) => {
+          console.error('[Examifying][StudentBilling] subscription-state:error', error);
+          setSubscriptionState({
+            subscriptionPlanId: 'free',
+            subscriptionPlanName: 'Free',
+            subscriptionStatus: 'plan_required',
+            subscriptionSubjectCount: 0,
+            paymentCompleted: false,
+            requiresSubscriptionSelection: true,
+          });
+        });
+    }
+  }, [profile, role]);
+
+  useEffect(() => {
     if (role === ROLES.TUTOR && profile?.uid) {
       getTutorBillingSummary(profile.uid).then(setSummary).catch((error) => {
         console.error('[Examifying][TutorBilling] load:error', error);
@@ -56,18 +80,41 @@ export const ProfileBillingPage = ({ role }) => {
 
   if (role === ROLES.STUDENT) {
     return (
-      <AppShell title="Subscriptions" subtitle="Choose your plan and billing period." role={role} user={profile} onLogout={logout}>
-        <SubscriptionPlanSelector
+      <AppShell title="Subscription" subtitle="Choose your plan and billing period." role={role} user={profile} onLogout={logout}>
+        <div className="panel mb-5 p-4 text-sm">
+          {!subscriptionState ? <p role="status">Checking your current subscription…</p> : (
+            <>
+              <p>Current plan: <strong>{subscriptionState.subscriptionPlanName}</strong>{subscriptionState.paymentCompleted ? ` · ${subscriptionState.subscriptionSubjectCount} subjects` : ''}{subscriptionState.subscriptionRenewalDate ? ` · renews ${new Date(subscriptionState.subscriptionRenewalDate?.toDate?.() ?? subscriptionState.subscriptionRenewalDate).toLocaleDateString()}` : ''}</p>
+              {subscriptionState.subscriptionPlanId === 'free' ? <p className="mt-2 text-amber-700">{subscriptionState.requiresSubscriptionSelection ? 'Your account is on Free until you choose a subscription and complete payment.' : 'Free includes Past Papers. Choose a paid subscription to unlock the Examifying Program.'} Question papers remain available.</p> : null}
+            </>
+          )}
+        </div>
+        {subscriptionState ? (
+          <SubscriptionLifecyclePanel
+            studentId={profile.uid}
+            subscriptionState={subscriptionState}
+            onStateChange={setSubscriptionState}
+            onContinuePayment={() => {
+              const selection = subscriptionState.pendingPlan || subscriptionState;
+              continueSubscription({
+                planId: selection.planId || subscriptionState.subscriptionPlanId,
+                billingPeriod: selection.billingPeriod || subscriptionState.subscriptionBillingPeriod || 'monthly',
+                subjectCount: selection.subjectCount || subscriptionState.subscriptionSubjectCount || 2,
+              });
+            }}
+          />
+        ) : null}
+        {subscriptionState ? <SubscriptionPlanSelector
+          key={`${subscriptionState.pendingPlan?.planId || subscriptionState.subscriptionPlanId}-${subscriptionState.pendingPlan?.billingPeriod || subscriptionState.subscriptionBillingPeriod}-${subscriptionState.pendingPlan?.subjectCount || subscriptionState.subscriptionSubjectCount}`}
           initialSelection={{
-            planId: profile?.subscriptionPlanId,
-            billingPeriod: profile?.subscriptionBillingPeriod,
-            subjectCount: profile?.subscriptionSubjectCount,
+            planId: subscriptionState.pendingPlan?.planId || subscriptionState.subscriptionPlanId,
+            billingPeriod: subscriptionState.pendingPlan?.billingPeriod || subscriptionState.subscriptionBillingPeriod,
+            subjectCount: subscriptionState.pendingPlan?.subjectCount || subscriptionState.subscriptionSubjectCount || 2,
           }}
           onContinue={continueSubscription}
           isSubmitting={isStartingSubscription}
-        />
+        /> : null}
         {subscriptionStatus ? <div role="status" className="panel mt-5 p-4 text-sm">{subscriptionStatus}</div> : null}
-        <div className="mt-4 text-sm text-slate-400"><Link to="/student/billing" className="font-semibold text-lime-300 hover:underline">Open billing status</Link></div>
       </AppShell>
     );
   }

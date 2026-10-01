@@ -13,7 +13,7 @@ const roleTitles = {
 const pageTitles = {
   admin: { users: 'Users', payments: 'Payments', settings: 'Settings', papers: 'Question papers' },
   parent: { profile: 'Profile' },
-  student: { billing: 'Billing', exercises: 'Exercises', lessons: 'Lessons', papers: 'Question papers', 'peer-reviews': 'Peer reviews', profile: 'Profile', guide: 'Guide' },
+  student: { billing: 'Subscription', exercises: 'Exercises', lessons: 'Lessons', papers: 'Question papers', 'peer-reviews': 'Peer reviews', profile: 'Profile', guide: 'Guide' },
   teacher: { exercises: 'Exercises', guide: 'Guide', lessons: 'Lessons', papers: 'Question papers', profile: 'Profile', reports: 'Reports', students: 'Students' },
   tutor: { exercises: 'Exercises', guide: 'Guide', lessons: 'Lessons', papers: 'Question papers', profile: 'Profile', reports: 'Reports', students: 'Students' },
 };

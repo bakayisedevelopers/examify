@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, CreditCard } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { MarkingCanvas as ImageEditor } from '../../components/canvas/pictureEditorCanvas';
@@ -12,6 +12,7 @@ import {
   getAssignedSubjectsForStudent,
   getPeerMarkingAssignmentsForStudent,
   getStudentAccessState,
+  getStudentSubscriptionState,
   getTodayExercise,
   subscribeToExerciseGenerationStatus,
 } from '../../services/firestoreService';
@@ -49,7 +50,7 @@ const TodayExerciseCard = ({ exercise, onOpen }) => {
 const ReadinessChecklist = ({ rows, studentName }) => {
   if (!rows.length) return null;
   const labels = {
-    paymentCompleted: 'Payment active',
+    paidSubscriptionActive: 'Paid subscription active',
     latestTutorReportExists: 'Tutor initial report added',
     minimumQuestionPaperCountMet: 'At least 2 analyzed papers available',
     lessonCompleted: 'At least 1 completed lesson logged',
@@ -106,6 +107,9 @@ export const StudentDashboardPage = () => {
   const [generationMessage, setGenerationMessage] = useState('');
   const [readinessRows, setReadinessRows] = useState([]);
   const [exerciseGenerationStatuses, setExerciseGenerationStatuses] = useState({});
+  const [subscriptionPlanId, setSubscriptionPlanId] = useState('free');
+  const [subscriptionPlanName, setSubscriptionPlanName] = useState('Free');
+  const [requiresSubscriptionSelection, setRequiresSubscriptionSelection] = useState(true);
 
   useEffect(() => {
     if (!profile?.uid) return undefined;
@@ -193,7 +197,11 @@ export const StudentDashboardPage = () => {
           getStudentAccessState(profile, subject).then((access) => ({ subject, access })),
         ));
         if (!active) return;
-        const anyPaidSubject = accessStates.some(({ access }) => Boolean(access.paymentCompleted));
+        const effectiveSubscription = accessStates[0]?.access ?? await getStudentSubscriptionState(profile);
+        setSubscriptionPlanId(effectiveSubscription.subscriptionPlanId || 'free');
+        setSubscriptionPlanName(effectiveSubscription.subscriptionPlanName || 'Free');
+        setRequiresSubscriptionSelection(Boolean(effectiveSubscription.requiresSubscriptionSelection));
+        const anyPaidSubject = accessStates.some(({ access }) => Boolean(access.paidSubscriptionActive));
         setPaymentLocked(!anyPaidSubject);
         setIsCheckingAccess(false);
 
@@ -201,7 +209,7 @@ export const StudentDashboardPage = () => {
 
           const initialWasAttempted = access.generationRunStatus?.lastTrigger === 'initial'
             && ['completed', 'failed'].includes(access.generationRunStatus?.status);
-          const shouldGenerate = access.paymentCompleted
+          const shouldGenerate = access.paidSubscriptionActive
             && !access.hasInitialGeneration
             && access.initialGenerationReady
             && !initialWasAttempted;
@@ -231,6 +239,9 @@ export const StudentDashboardPage = () => {
         if (!active) return;
         setTodayExercises([]);
         setReadinessRows([]);
+        setSubscriptionPlanId('free');
+        setSubscriptionPlanName('Free');
+        setRequiresSubscriptionSelection(true);
         setPaymentLocked(true);
         setIsLoadingExercises(false);
         setIsLoadingPeerAssignments(false);
@@ -257,6 +268,50 @@ export const StudentDashboardPage = () => {
     setPeerAssignments(await getPeerMarkingAssignmentsForStudent(profile.uid));
     setReviewingAssignment(null);
   };
+
+  if (isCheckingAccess) {
+    return (
+      <AppShell title="Overview" subtitle="Checking your subscription access." role="student" user={profile} onLogout={logout}>
+        <div className="panel flex min-h-40 items-center justify-center gap-3 p-6 text-sm text-slate-500" role="status">
+          <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-lime-500 border-r-transparent" aria-hidden="true" />
+          Checking subscription...
+        </div>
+      </AppShell>
+    );
+  }
+
+  if (subscriptionPlanId === 'free') {
+    return (
+      <AppShell
+        title="Past papers"
+        subtitle="Your Free plan includes access to question papers."
+        role="student"
+        user={profile}
+        onLogout={logout}
+      >
+        <section className="panel mx-auto max-w-3xl space-y-4 p-6">
+          <div>
+            <p className="text-sm font-semibold text-lime-700">Current plan: {subscriptionPlanName}</p>
+            <h2 className="mt-2 text-xl font-bold text-slate-950">
+              {requiresSubscriptionSelection ? 'Choose a subscription to unlock the Examifying Program' : 'Your Free plan is active'}
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              {requiresSubscriptionSelection
+                ? 'Your account is on Free for now. Past papers remain available; choose Circle or Personalized and complete payment to unlock exercises, lessons, peer marking, and subject selection.'
+                : 'Past papers remain available on Free. Choose Circle or Personalized and complete payment to unlock the Examifying Program.'}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <button type="button" className="btn-primary inline-flex items-center gap-2" onClick={() => navigate('/student/billing')}>
+              <CreditCard className="h-4 w-4" aria-hidden="true" />
+              View subscriptions
+            </button>
+            <button type="button" className="btn-secondary" onClick={() => navigate('/student/papers')}>Browse Past Papers</button>
+          </div>
+        </section>
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell

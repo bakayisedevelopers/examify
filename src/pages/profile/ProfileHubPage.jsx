@@ -3,16 +3,18 @@ import { BookOpen, ChevronRight, CreditCard, FileSignature, LogOut, Scale, Setti
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
 import { APP_VERSION, ROLES } from '../../lib/constants';
+import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
 
 const cardClass = 'panel flex items-center gap-3 p-2.5 transition hover:border-lime-500/40 hover:bg-slate-800/60 md:block md:p-5 md:hover:-translate-y-1 md:hover:shadow-lg';
 
 export const ProfileHubPage = ({ role }) => {
   const { profile, logout } = useAuth();
+  const subscriptionState = useStudentSubscriptionState(role === ROLES.STUDENT ? profile : null);
   const basePath = `/${role}/profile`;
   const items = [
     { to: `${basePath}/details`, label: 'Personal details', description: 'Update your name, password, and profile information.', icon: UserRound },
-    { to: `${basePath}/subjects`, label: 'Subjects', description: role === ROLES.TUTOR ? 'Upload marks proof to add approved teaching subjects.' : 'Manage the subjects attached to your account.', icon: BookOpen },
-    { to: role === ROLES.STUDENT ? '/student/billing' : `${basePath}/billing`, label: 'Billing', description: role === ROLES.TUTOR ? 'View lesson totals and tutor billing context.' : 'Open billing and subscription information.', icon: CreditCard },
+    ...(role !== ROLES.STUDENT || subscriptionState?.paymentCompleted ? [{ to: `${basePath}/subjects`, label: 'Subjects', description: role === ROLES.TUTOR ? 'Upload marks proof to add approved teaching subjects.' : 'Manage the subjects attached to your account.', icon: BookOpen }] : []),
+    { to: role === ROLES.STUDENT ? '/student/billing' : `${basePath}/billing`, label: role === ROLES.STUDENT ? 'Subscription' : 'Billing', description: role === ROLES.STUDENT ? 'View your current plan and manage subscriptions.' : role === ROLES.TUTOR ? 'View lesson totals and tutor billing context.' : 'Open billing information.', icon: CreditCard },
     { to: `${basePath}/legal`, label: 'Legal', description: 'Open privacy policy, terms, refunds, and contact information.', icon: Scale },
     { to: `${basePath}/settings`, label: 'Settings', description: 'Manage account preferences for this workspace.', icon: Settings },
     ...(role === ROLES.TUTOR ? [{ to: `${basePath}/agreement`, label: 'Tutor agreement', description: 'Review and sign the tutor contract/agreement.', icon: FileSignature }] : []),

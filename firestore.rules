@@ -2,8 +2,45 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if true;
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function canReadAssignmentPeriod() {
+      return signedIn() && (
+        request.auth.uid == resource.data.tutorId
+        || request.auth.uid == resource.data.studentId
+        || isAdmin()
+        || get(/databases/$(database)/documents/users/$(resource.data.studentId)).data.parentId == request.auth.uid
+      );
+    }
+
+    match /{topLevelCollection}/{document=**} {
+      allow read: if topLevelCollection != 'subscriptionAuthorizations'
+        && topLevelCollection != 'tutorStudentAssignmentPeriods'
+        && topLevelCollection != 'staffStudentAccessPeriods';
+      allow write: if topLevelCollection != 'subscriptions'
+        && topLevelCollection != 'payments'
+        && topLevelCollection != 'subscriptionAuthorizations'
+        && topLevelCollection != 'tutorStudentAssignments'
+        && topLevelCollection != 'staffStudentAccess'
+        && topLevelCollection != 'tutorStudentAssignmentPeriods'
+        && topLevelCollection != 'staffStudentAccessPeriods';
+    }
+
+    match /tutorStudentAssignmentPeriods/{periodId} {
+      allow read: if canReadAssignmentPeriod();
+      allow write: if false;
+    }
+
+    match /staffStudentAccessPeriods/{periodId} {
+      allow read: if canReadAssignmentPeriod();
+      allow write: if false;
     }
   }
 }

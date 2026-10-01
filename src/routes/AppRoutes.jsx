@@ -37,6 +37,7 @@ import { ProfileLegalPage } from '../pages/profile/ProfileLegalPage';
 import { ProfileSettingsPage } from '../pages/profile/ProfileSettingsPage';
 import { TutorAgreementPage } from '../pages/profile/TutorAgreementPage';
 import { PaperReaderPage } from '../pages/PaperReaderPage';
+import { PaidStudentRoute } from '../components/common/PaidStudentRoute';
 
 export const AppRoutes = () => (
   <Routes>
@@ -49,21 +50,23 @@ export const AppRoutes = () => (
 
     <Route element={<ProtectedRoute allowedRoles={[ROLES.STUDENT]} />}>
       <Route path="/student" element={<StudentDashboardPage />} />
-      <Route path="/student/exercises" element={<StudentExercisesPage />} />
-      <Route path="/student/exercises/:exerciseId" element={<StudentExerciseDetailsPage />} />
-      <Route path="/student/lessons" element={<StudentLessonsPage />} />
-      <Route path="/student/lessons/:lessonId" element={<StudentLessonDetailsPage />} />
-      <Route path="/student/peer-reviews" element={<StudentPeerReviewsPage />} />
       <Route path="/student/billing" element={<StudentBillingPage />} />
       <Route path="/student/profile" element={<ProfileHubPage role={ROLES.STUDENT} />} />
       <Route path="/student/profile/details" element={<ProfilePersonalDetailsPage role={ROLES.STUDENT} />} />
-      <Route path="/student/profile/subjects" element={<ProfileSubjectsPage role={ROLES.STUDENT} />} />
       <Route path="/student/profile/legal" element={<ProfileLegalPage role={ROLES.STUDENT} />} />
       <Route path="/student/profile/settings" element={<ProfileSettingsPage role={ROLES.STUDENT} />} />
       <Route path="/student/profile/legacy" element={<StudentProfilePage />} />
       <Route path="/student/papers" element={<PastExamPapersPage />} />
       <Route path="/student/papers/:paperId" element={<PaperReaderPage />} />
-      <Route path="/student/guide" element={<GuidePage role="student" />} />
+      <Route element={<PaidStudentRoute />}>
+        <Route path="/student/exercises" element={<StudentExercisesPage />} />
+        <Route path="/student/exercises/:exerciseId" element={<StudentExerciseDetailsPage />} />
+        <Route path="/student/lessons" element={<StudentLessonsPage />} />
+        <Route path="/student/lessons/:lessonId" element={<StudentLessonDetailsPage />} />
+        <Route path="/student/peer-reviews" element={<StudentPeerReviewsPage />} />
+        <Route path="/student/guide" element={<GuidePage role="student" />} />
+        <Route path="/student/profile/subjects" element={<ProfileSubjectsPage role={ROLES.STUDENT} />} />
+      </Route>
       <Route path="/policies" element={<PoliciesPage />} />
     </Route>
 

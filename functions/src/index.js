@@ -1,9 +1,17 @@
 export {
   initializePaystackTransaction,
   verifyPaystackTransaction,
+  chargeStoredAuthorization,
+  manageStudentSubscription,
 } from './paystack.js';
 
 export { processSubscriptionRenewals } from './subscriptionRenewals.js';
+
+export {
+  assignStudentToTutor,
+  manageStaffStudentAccess,
+  updateStudentSubjects,
+} from './assignmentHistory.js';
 
 export {
   callKiloText,

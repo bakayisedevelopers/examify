@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
+import { SubscriptionLifecyclePanel } from '../../components/billing/SubscriptionLifecyclePanel';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
 import { 
   assignStudentToParent, 
@@ -85,6 +86,21 @@ export const ParentDashboardPage = () => {
             completedLessonsCount: accessState.completedLessons?.length || 0,
             todayExercise: todayExercise,
             paymentCompleted: accessState.paymentCompleted, 
+            subscriptionPlanId: accessState.subscriptionPlanId,
+            subscriptionPlanName: accessState.subscriptionPlanName,
+            subscriptionStatus: accessState.subscriptionStatus,
+            subscriptionBillingPeriod: accessState.subscriptionBillingPeriod,
+            subscriptionSubjectCount: accessState.subscriptionSubjectCount,
+            subscriptionRenewalDate: accessState.subscriptionRenewalDate,
+            requiresSubscriptionSelection: accessState.requiresSubscriptionSelection,
+            autoRenew: accessState.autoRenew,
+            cancelAtPeriodEnd: accessState.cancelAtPeriodEnd,
+            pendingPlan: accessState.pendingPlan,
+            pendingPlanReference: accessState.pendingPlanReference,
+            graceEndsAt: accessState.graceEndsAt,
+            renewalAttemptCount: accessState.renewalAttemptCount,
+            nextRenewalAttemptAt: accessState.nextRenewalAttemptAt,
+            manualPaymentRequired: accessState.manualPaymentRequired,
           };
         })
       );
@@ -187,11 +203,17 @@ export const ParentDashboardPage = () => {
         setSubscriptionStudent(null);
         await loadStudents();
       } else if (result.scheduledChange) {
-        setStatus(`${result.quote.planName} will start for ${student.displayName || 'the student'} on ${new Date(result.effectiveAt).toLocaleDateString()}.`);
+        setStatus(`${result.quote.planName} will start for ${student.displayName || 'the student'} on ${new Date(result.effectiveAt).toLocaleDateString()}.${result.manualPaymentRequired ? ' Payment will be required then.' : ''}`);
+        setSubscriptionStudent(null);
+        await loadStudents();
+      } else if (result.pendingChangeCancelled) {
+        setStatus(`The scheduled change for ${student.displayName || 'the student'} was cancelled.`);
         setSubscriptionStudent(null);
         await loadStudents();
       } else if (result.alreadyActive) {
-        setStatus(`${result.quote.planName} is already active for ${student.displayName || 'the student'}.`);
+        setStatus(result.renewalCancelled
+          ? `${result.quote.planName} is active until ${new Date(result.renewalDate).toLocaleDateString()}; automatic renewal is cancelled.`
+          : `${result.quote.planName} is already active for ${student.displayName || 'the student'}.`);
         setSubscriptionStudent(null);
       } else if (!result?.authorizationUrl) {
         throw new Error('No Paystack authorization URL was returned.');
@@ -321,8 +343,8 @@ export const ParentDashboardPage = () => {
                 <div className="mt-auto pt-4 border-t border-slate-100">
                   <div className="flex justify-between items-center mb-4 text-sm">
                     <span className="text-slate-500">Subscription Status</span>
-                    <span className={`font-semibold px-2 py-1 rounded-md text-xs ${student.paymentCompleted ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
-                      {student.paymentCompleted ? 'Active' : 'Pending Payment'}
+                    <span className={`font-semibold px-2 py-1 rounded-md text-xs ${student.subscriptionStatus === 'past_due' ? 'bg-amber-50 text-amber-700' : student.paymentCompleted ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                      {student.subscriptionStatus === 'past_due' ? 'Payment due' : student.cancelAtPeriodEnd ? 'Ends this period' : student.paymentCompleted ? 'Active' : 'Free'}
                     </span>
                   </div>
 
@@ -336,7 +358,7 @@ export const ParentDashboardPage = () => {
                     </button>
                   ) : (
                     <button className="btn-secondary w-full" onClick={() => setSubscriptionStudent(student)} disabled={loading}>
-                      {student.subscriptionPlanName || 'Subscription active'}
+                      {student.paymentCompleted ? 'Manage subscription' : 'Choose subscription'}
                     </button>
                   )}
                 </div>
@@ -355,11 +377,30 @@ export const ParentDashboardPage = () => {
               </div>
               <button type="button" className="btn-secondary h-11 w-11 p-0" onClick={() => setSubscriptionStudent(null)} aria-label="Close subscription plans"><X className="h-5 w-5" /></button>
             </div>
+            <div className="mb-5">
+              <SubscriptionLifecyclePanel
+                studentId={subscriptionStudent.uid}
+                subscriptionState={subscriptionStudent}
+                onStateChange={(nextState) => {
+                  setSubscriptionStudent((current) => current ? { ...current, ...nextState } : current);
+                  loadStudents();
+                }}
+                onContinuePayment={() => {
+                  const selection = subscriptionStudent.pendingPlan || subscriptionStudent;
+                  handlePayForStudent(subscriptionStudent, {
+                    planId: selection.planId || subscriptionStudent.subscriptionPlanId,
+                    billingPeriod: selection.billingPeriod || subscriptionStudent.subscriptionBillingPeriod || 'monthly',
+                    subjectCount: selection.subjectCount || subscriptionStudent.subscriptionSubjectCount || 2,
+                  });
+                }}
+              />
+            </div>
             <SubscriptionPlanSelector
+              key={`${subscriptionStudent.pendingPlan?.planId || subscriptionStudent.subscriptionPlanId}-${subscriptionStudent.pendingPlan?.billingPeriod || subscriptionStudent.subscriptionBillingPeriod}-${subscriptionStudent.pendingPlan?.subjectCount || subscriptionStudent.subscriptionSubjectCount}`}
               initialSelection={{
-                planId: subscriptionStudent.subscriptionPlanId,
-                billingPeriod: subscriptionStudent.subscriptionBillingPeriod,
-                subjectCount: subscriptionStudent.subscriptionSubjectCount,
+                planId: subscriptionStudent.pendingPlan?.planId || subscriptionStudent.subscriptionPlanId,
+                billingPeriod: subscriptionStudent.pendingPlan?.billingPeriod || subscriptionStudent.subscriptionBillingPeriod,
+                subjectCount: subscriptionStudent.pendingPlan?.subjectCount || subscriptionStudent.subscriptionSubjectCount,
               }}
               onContinue={(selection) => handlePayForStudent(subscriptionStudent, selection)}
               isSubmitting={loading}

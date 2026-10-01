@@ -1,6 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
 import { normalizeMessages } from './kilo.js';
+import { assertPaidExerciseGenerationAccess } from './exerciseAccess.js';
 
 const geminiApiKey = () => process.env.GEMINI_API_KEY?.trim();
 const geminiModel = () => process.env.GEMINI_MODEL?.trim() || 'gemini-3.5-flash-lite';
@@ -89,6 +90,15 @@ export const callGeminiText = onCall(async (request) => {
     temperature,
     responseFormat,
   } = request.data ?? {};
+
+  const exerciseGenerationContext = request.data?.exerciseGenerationContext;
+  if (exerciseGenerationContext) {
+    await assertPaidExerciseGenerationAccess({
+      authUid: request.auth?.uid,
+      studentId: exerciseGenerationContext.studentId,
+      subject: exerciseGenerationContext.subject,
+    });
+  }
 
   const normalizedMessages = normalizeMessages({ system, prompt, messages });
   return callGeminiGenerateContent({

@@ -28,6 +28,56 @@ export const SUBSCRIPTION_PLANS = {
   },
 };
 
+const asDate = (value) => {
+  if (value?.toDate) return value.toDate();
+  if (value instanceof Date) return value;
+  if (typeof value === 'string' || typeof value === 'number') return new Date(value);
+  return null;
+};
+
+export const getEffectiveSubscriptionState = ({ subscription, now = new Date() } = {}) => {
+  const storedPlanId = subscription?.planId;
+  const recognizedPlan = Boolean(SUBSCRIPTION_PLANS[storedPlanId]);
+  const renewalDate = asDate(subscription?.renewalDate);
+  const graceEndsAt = asDate(subscription?.graceEndsAt);
+  const subjectCount = Number(subscription?.subjectCount);
+  const isExplicitFree = storedPlanId === 'free' && subscription?.status === 'active';
+  const paidPlan = ['circle', 'personalized'].includes(storedPlanId);
+  const validPaidPlan = paidPlan
+    && Number.isInteger(subjectCount)
+    && subjectCount >= 2
+    && subjectCount <= 20;
+  const activePaidPlan = validPaidPlan
+    && subscription?.status === 'active'
+    && renewalDate instanceof Date
+    && !Number.isNaN(renewalDate.getTime())
+    && renewalDate > now;
+  const renewalGraceActive = validPaidPlan
+    && subscription?.status === 'past_due'
+    && renewalDate instanceof Date
+    && !Number.isNaN(renewalDate.getTime())
+    && renewalDate <= now
+    && graceEndsAt instanceof Date
+    && !Number.isNaN(graceEndsAt.getTime())
+    && graceEndsAt > now;
+  const isCurrentPaidPlan = activePaidPlan || renewalGraceActive;
+  const hasSelectedPlan = isExplicitFree || isCurrentPaidPlan;
+  const effectivePlanId = hasSelectedPlan ? storedPlanId : 'free';
+
+  return {
+    subscriptionPlanId: effectivePlanId,
+    subscriptionPlanName: SUBSCRIPTION_PLANS[effectivePlanId].name,
+    subscriptionStatus: renewalGraceActive ? 'past_due' : hasSelectedPlan ? 'active' : (subscription?.status === 'past_due' ? 'past_due' : 'plan_required'),
+    subscriptionBillingPeriod: hasSelectedPlan ? (subscription?.billingPeriod ?? 'monthly') : 'monthly',
+    subscriptionSubjectCount: isCurrentPaidPlan ? subjectCount : 0,
+    subscriptionRenewalDate: isCurrentPaidPlan ? subscription.renewalDate : null,
+    paymentCompleted: isCurrentPaidPlan,
+    renewalGraceActive,
+    requiresSubscriptionSelection: !hasSelectedPlan,
+    isLegacySubscription: !recognizedPlan,
+  };
+};
+
 export const calculateSubscriptionQuote = ({ planId, billingPeriod = 'monthly', subjectCount = 2 }) => {
   const plan = SUBSCRIPTION_PLANS[planId];
   if (!plan) throw new Error('Choose a valid subscription plan.');

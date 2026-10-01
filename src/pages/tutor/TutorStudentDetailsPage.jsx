@@ -9,6 +9,8 @@ import {
   generateExercisePlanIfEligible,
   getQuestionPapers,
   getTutorAssignedStudentContexts,
+  getTutorAssignmentHistoryContexts,
+  getTutorAssignmentHistoryData,
   getTutorExercisesForAssignedStudents,
   getTutorLessonsForAssignedStudents,
   getTutorReportsForAssignedStudents,
@@ -47,11 +49,14 @@ export const TutorStudentDetailsPage = () => {
   const { studentId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const subject = searchParams.get('subject') || DEFAULT_SUBJECT;
+  const periodId = searchParams.get('period');
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [student, setStudent] = useState(null);
   const [studentSubjects, setStudentSubjects] = useState([]);
+  const [currentAssignmentSubjects, setCurrentAssignmentSubjects] = useState([]);
+  const [assignmentHistory, setAssignmentHistory] = useState([]);
   const [reports, setReports] = useState([]);
   const [exercises, setExercises] = useState([]);
   const [peerMarkedWork, setPeerMarkedWork] = useState([]);
@@ -73,12 +78,44 @@ export const TutorStudentDetailsPage = () => {
   const [savingPeerReviewId, setSavingPeerReviewId] = useState('');
 
   useEffect(() => {
-    if (!studentId || !profile?.uid) return undefined;
+    if (!studentId || !profile?.uid || periodId) return undefined;
     return subscribeToExerciseGenerationStatus(studentId, subject, setRegenerationStatus);
-  }, [profile?.uid, studentId, subject]);
+  }, [profile?.uid, studentId, subject, periodId]);
 
   const load = async () => {
     if (!profile?.uid) return;
+    const historyRows = await getTutorAssignmentHistoryContexts(profile.uid, studentId);
+    setAssignmentHistory(historyRows);
+
+    if (periodId) {
+      const archivedContext = historyRows.find((item) => item.assignmentPeriodId === periodId);
+      if (!archivedContext) {
+        setStudent(null);
+        setStudentSubjects([]);
+        setExercises([]);
+        setReports([]);
+        setLessons([]);
+        setPeerMarkedWork([]);
+        setStatus('This assignment history is not available to your account.');
+        return;
+      }
+      const archivedData = await getTutorAssignmentHistoryData({ tutorId: profile.uid, studentId, periodId });
+      const currentContexts = await getTutorAssignedStudentContexts(profile.uid);
+      setCurrentAssignmentSubjects([...new Set(currentContexts.filter((item) => item.studentId === studentId).map((item) => item.subject))]);
+      const archivedSubject = archivedContext.subject;
+      setStudent({ ...archivedContext, accessRole: 'viewer', historicalAccessRole: archivedContext.accessRole });
+      setStudentSubjects([archivedSubject]);
+      setReports(archivedData.reports);
+      setExercises(archivedData.exercises);
+      setLessons(archivedData.lessons);
+      setPeerMarkedWork(archivedData.peerMarkedWork);
+      setStaffAccess([]);
+      setStaffMembers([]);
+      setStatus('Historical assignment records are read-only.');
+      if (subject !== archivedSubject) setSearchParams({ period: periodId, subject: archivedSubject }, { replace: true });
+      return;
+    }
+
     const [contexts, reportRows, exerciseRows, lessonRows] = await Promise.all([
       getTutorAssignedStudentContexts(profile.uid),
       getTutorReportsForAssignedStudents(profile.uid),
@@ -90,10 +127,11 @@ export const TutorStudentDetailsPage = () => {
       .map((item) => item.subject)
       .filter(Boolean))];
     setStudentSubjects(accessibleSubjects);
+    setCurrentAssignmentSubjects(accessibleSubjects);
     const activeSubject = accessibleSubjects.includes(subject) ? subject : accessibleSubjects[0];
     if (!activeSubject) {
       setStudent(null);
-      setStatus('You do not have access to this student.');
+      setStatus(historyRows.length ? 'No current access. Previous assignment records remain available below.' : 'You do not have access to this student.');
       return;
     }
     if (activeSubject !== subject) setSearchParams({ subject: activeSubject }, { replace: true });
@@ -123,9 +161,11 @@ export const TutorStudentDetailsPage = () => {
 
   useEffect(() => {
     load().catch((error) => setStatus(error.message || 'Could not load student details.'));
-  }, [profile?.uid, studentId, subject]);
+  }, [profile?.uid, studentId, subject, periodId]);
 
-  const latestReport = student?.latestReportsBySubject?.[subject] || reports[0]?.note || (subject === DEFAULT_SUBJECT ? student?.latestReport : '') || '';
+  const latestReport = student?.historicalAccessRole
+    ? reports[0]?.note || ''
+    : student?.latestReportsBySubject?.[subject] || reports[0]?.note || (subject === DEFAULT_SUBJECT ? student?.latestReport : '') || '';
   const canManage = student?.accessRole === 'co-owner';
   const canMark = canManage || student?.accessRole === 'marker';
   const hasInitialReport = Boolean(latestReport.trim());
@@ -314,7 +354,26 @@ export const TutorStudentDetailsPage = () => {
       ) : null}
       <Link to={`${basePath}`} className="hidden w-fit items-center gap-2 text-lime-400 hover:text-lime-300 sm:inline-flex"><span aria-hidden="true">&lt;</span><span>Assigned students</span></Link>
 
-      <div className="flex flex-wrap justify-center gap-2" role="tablist" aria-label="Student subjects">
+      {student?.historicalAccessRole ? <div className="panel border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-800">
+        Historical assignment · {student.historicalAccessRole} access · read-only{student.endDateEstimated ? ' · end date estimated from legacy data' : ''}
+      </div> : null}
+
+      {assignmentHistory.length ? <section className="panel space-y-3 p-4">
+        <div><h2 className="font-semibold text-slate-950">Previous access</h2><p className="text-sm text-slate-500">Ended assignments remain available as read-only records.</p></div>
+        <div className="flex flex-wrap gap-2">
+          {assignmentHistory.map((entry) => <button
+            key={entry.assignmentPeriodId}
+            type="button"
+            className={periodId === entry.assignmentPeriodId ? 'btn-primary' : 'btn-secondary'}
+            onClick={() => setSearchParams({ period: entry.assignmentPeriodId, subject: entry.subject })}
+          >
+            {entry.subject} · {entry.accessRole} · {entry.assignmentEndedAt?.toDate?.().toLocaleDateString?.() || (entry.assignmentEndedAt ? new Date(entry.assignmentEndedAt).toLocaleDateString() : 'Past access')}
+          </button>)}
+          {currentAssignmentSubjects.map((currentSubject) => <button key={`current-${currentSubject}`} type="button" className="btn-secondary" onClick={() => setSearchParams({ subject: currentSubject })}>Current · {currentSubject}</button>)}
+        </div>
+      </section> : null}
+
+      {!student?.historicalAccessRole ? <div className="flex flex-wrap justify-center gap-2" role="tablist" aria-label="Student subjects">
         {studentSubjects.map((studentSubject) => (
           <button
             key={studentSubject}
@@ -327,7 +386,7 @@ export const TutorStudentDetailsPage = () => {
             {studentSubject}
           </button>
         ))}
-      </div>
+      </div> : null}
 
       <div className="flex justify-end">
         <button type="button" className="btn-secondary" onClick={() => setIsDetailsOpen(true)}>Student details and lessons</button>
@@ -400,7 +459,7 @@ export const TutorStudentDetailsPage = () => {
 
       <section className="panel p-5">
         <SectionHeader eyebrow="Lessons" title="Tutor lessons" description="Planned and completed lessons for this student." />
-        <div className="space-y-3">{lessons.map((lesson) => <Link key={lesson.id} to={`${basePath}/lessons/${lesson.id}`} className="block rounded-2xl bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full bg-slate-800 border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-300">{lesson.status === 'planned' ? 'Planned' : 'Completed'}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lesson.lessonType === 'inPerson' ? 'In-person' : 'Online'}</p></Link>)}{!lessons.length ? <p className="text-sm text-slate-500">No lessons yet.</p> : null}</div>
+        <div className="space-y-3">{lessons.map((lesson) => student?.historicalAccessRole ? <div key={lesson.id} className="block rounded-lg bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full bg-slate-800 border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-300">{lesson.status === 'planned' ? 'Planned' : 'Completed'}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lesson.lessonType === 'inPerson' ? 'In-person' : 'Online'}</p></div> : <Link key={lesson.id} to={`${basePath}/lessons/${lesson.id}`} className="block rounded-lg bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full bg-slate-800 border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-300">{lesson.status === 'planned' ? 'Planned' : 'Completed'}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lesson.lessonType === 'inPerson' ? 'In-person' : 'Online'}</p></Link>)}{!lessons.length ? <p className="text-sm text-slate-500">No lessons yet.</p> : null}</div>
       </section>
       </section></div> : null}
 
@@ -413,7 +472,7 @@ export const TutorStudentDetailsPage = () => {
           </div>
           <div className="space-y-3">{sortedExercises.map((exercise) => (
             <div key={exercise.id} className="flex items-center gap-3 rounded-lg bg-slate-800/60 p-3">
-              <button type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}`)} className="min-w-0 flex-1 text-left">
+              <button type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}${student?.historicalAccessRole ? `?period=${periodId}` : ''}`)} className="min-w-0 flex-1 text-left">
                 <p className="font-semibold text-slate-100">{exercise.title}</p>
                 <p className="text-sm text-slate-400">{exercise.subject} • {exercise.assignmentDate}{exercise.submittedImageUrl || exercise.submitted === 'Yes' ? ' • Submitted' : ''}</p>
               </button>

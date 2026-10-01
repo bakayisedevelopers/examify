@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Trash2 } from 'lucide-react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { ExerciseCard } from '../../components/dashboard/ExerciseCard';
 import { useAuth } from '../../hooks/useAuth';
-import { deleteExerciseAssignmentForTutor, getExerciseAssignmentById, getStudentTopicScoresForTutor, getTutorAssignedStudentContexts } from '../../services/firestoreService';
+import { deleteExerciseAssignmentForTutor, getExerciseAssignmentById, getStudentTopicScoresForTutor, getTutorAssignedStudentContexts, getTutorAssignmentHistoryContexts, getTutorAssignmentHistoryData } from '../../services/firestoreService';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
 import { getExerciseAvailability } from '../../utils/exerciseRules';
 import { useEffectiveRole } from '../../utils/effectiveRole';
@@ -13,19 +13,40 @@ export const TutorExerciseDetailsPage = () => {
   const { exerciseId } = useParams();
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const periodId = searchParams.get('period');
   const { role, basePath } = useEffectiveRole();
   const [exercise, setExercise] = useState(null);
   const [status, setStatus] = useState('Loading exercise...');
   const [isDeleting, setIsDeleting] = useState(false);
   const [topicScores, setTopicScores] = useState({});
   const [accessRole, setAccessRole] = useState('viewer');
+  const [isHistorical, setIsHistorical] = useState(false);
 
   useEffect(() => {
     getExerciseAssignmentById(exerciseId)
       .then(async (result) => {
+        if (!result) {
+          setStatus('Exercise not found.');
+          return;
+        }
+        if (profile?.uid && periodId) {
+          const history = await getTutorAssignmentHistoryContexts(profile.uid, result.studentId);
+          if (!history.some((period) => period.assignmentPeriodId === periodId)) throw new Error('This assignment history is not available to your account.');
+          const archivedData = await getTutorAssignmentHistoryData({ tutorId: profile.uid, studentId: result.studentId, periodId });
+          const archivedExercise = archivedData.exercises.find((item) => item.id === exerciseId);
+          if (!archivedExercise) throw new Error('This exercise is not part of the selected assignment period.');
+          setExercise(archivedExercise);
+          setTopicScores(Object.fromEntries((archivedExercise.topicUnderstandingScores ?? []).map((entry) => [entry.topic, entry.understandingLevel])));
+          setAccessRole('viewer');
+          setIsHistorical(true);
+          setStatus('');
+          return;
+        }
+        setIsHistorical(false);
         setExercise(result);
-        setStatus(result ? '' : 'Exercise not found.');
-        if (result && profile?.uid) {
+        setStatus('');
+        if (profile?.uid) {
           const [scores, contexts] = await Promise.all([
             getStudentTopicScoresForTutor({ tutorId: profile.uid, studentId: result.studentId, subject: result.subject }),
             getTutorAssignedStudentContexts(profile.uid),
@@ -35,7 +56,7 @@ export const TutorExerciseDetailsPage = () => {
         }
       })
       .catch((error) => setStatus(error.message || 'Could not load exercise.'));
-  }, [exerciseId, profile?.uid]);
+  }, [exerciseId, profile?.uid, periodId]);
 
   const availability = exercise ? getExerciseAvailability(exercise.assignmentDate, Boolean(exercise.submittedImageUrl || exercise.submitted === 'Yes')) : null;
 
@@ -55,6 +76,7 @@ export const TutorExerciseDetailsPage = () => {
   return (
     <AppShell title="Exercise details" subtitle={exercise ? `${exercise.subject} • ${exercise.assignmentDate}` : status} role={role} user={profile} onLogout={logout}>
       {status ? <div className="panel p-5 text-sm text-slate-500">{status}</div> : null}
+      {isHistorical ? <div className="panel border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-800">Historical assignment record · read-only</div> : null}
       {exercise && availability ? (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">

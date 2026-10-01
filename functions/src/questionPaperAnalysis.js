@@ -617,6 +617,7 @@ export const dispatchQuestionPaperAnalysis = onTaskDispatched({
   ...TASK_OPTIONS,
   rateLimits: { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 },
   memory: '256MiB',
+  cpu: 'gcf_gen1',
   timeoutSeconds: 60,
 }, async () => {
   const db = getDb();

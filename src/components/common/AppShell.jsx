@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, BookOpen, ClipboardCheck, CreditCard, FileText, LogOut, Users, ShieldCheck, Menu, X, ChevronLeft, GraduationCap } from 'lucide-react';
 import { Logo } from './Logo';
 import { ROLES } from '../../lib/constants';
+import { useAuth } from '../../hooks/useAuth';
+import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
 
 const navigationByRole = {
   [ROLES.STUDENT]: [
@@ -54,10 +56,31 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const { role, isTeacher } = useEffectiveRole();
   const effectiveRole = propRole === 'teacher' || isTeacher ? 'teacher' : (propRole || role);
-  const navigation = getNavigationForRole(effectiveRole, effectiveRole === 'teacher');
+  const { profile, user: authUser } = useAuth();
+  const account = useMemo(() => ({ ...(authUser ?? {}), ...(profile ?? {}), ...(user ?? {}) }), [authUser, profile, user]);
+  const subscriptionState = useStudentSubscriptionState(effectiveRole === ROLES.STUDENT ? account : null);
+  const isFreeStudent = effectiveRole === ROLES.STUDENT && !subscriptionState?.paymentCompleted;
+  const roleNavigation = getNavigationForRole(effectiveRole, effectiveRole === 'teacher');
+  const navigation = isFreeStudent
+    ? roleNavigation.filter((item) => item.to === '/student/papers')
+    : roleNavigation;
+  const homePath = isFreeStudent ? '/student/papers' : `/${effectiveRole}`;
+  const profilePath = `/${effectiveRole}/profile`;
+  const displayName = account.displayName || account.name || account.fullName || 'Account';
+  const email = account.email || '';
+  const avatarUrl = account.photoURL || account.photoUrl || account.avatarUrl || account.profileImageUrl || account.avatar || '';
+  const initials = (displayName !== 'Account' ? displayName : email)
+    .split(/[\s@._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0].toUpperCase())
+    .join('') || 'U';
+  const identityLabel = effectiveRole === ROLES.STUDENT
+    ? (subscriptionState?.subscriptionPlanName || 'Checking subscription')
+    : ({ teacher: 'Teacher', tutor: 'Tutor', admin: 'Admin', parent: 'Parent' }[effectiveRole] || 'Account');
   const location = useLocation();
   const navigate = useNavigate();
-  const isRoleHome = location.pathname === `/${effectiveRole}` || location.pathname === '/teacher' || location.pathname === '/tutor';
+  const isRoleHome = location.pathname === `/${effectiveRole}`;
 
   return (
     <div className="fixed inset-0 overflow-hidden bg-slate-950 text-slate-100 selection:bg-lime-400 selection:text-slate-950 lg:static lg:h-screen">
@@ -67,7 +90,7 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
         <div className="panel z-30 grid flex-none grid-cols-[auto_1fr_auto] items-center gap-3 p-4 border-slate-800 bg-slate-900/95 lg:hidden">
           <div className="flex min-w-10 items-center justify-start">
             {isRoleHome ? (
-              <Link to={`/${role}`}>
+              <Link to={homePath}>
                 <Logo showText={false} />
               </Link>
             ) : (
@@ -109,9 +132,9 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
             ${isMobileMenuOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-[calc(100%+1.5rem)]'}
             lg:sticky lg:top-4 lg:h-[calc(100vh-2rem)] lg:w-auto lg:max-w-none lg:translate-x-0 lg:shadow-sm`}
         >
-          <div className="mb-8 flex items-center justify-between">
-            <Link to={`/${role}`} className="block" onClick={() => setIsMobileMenuOpen(false)}>
-              <Logo />
+          <div className="mb-5 flex items-center justify-between lg:hidden">
+            <Link to={homePath} className="block" onClick={() => setIsMobileMenuOpen(false)}>
+              <Logo showText={false} />
             </Link>
             <button
               onClick={() => setIsMobileMenuOpen(false)}
@@ -120,12 +143,27 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
               <X className="h-5 w-5" />
             </button>
           </div>
+          <Link
+            to={profilePath}
+            onClick={() => setIsMobileMenuOpen(false)}
+            className="mb-5 flex min-w-0 flex-col items-center border-b border-slate-800 pb-5 text-center transition hover:opacity-90"
+          >
+            <span className="relative flex h-14 w-14 flex-none items-center justify-center overflow-hidden rounded-full border border-slate-700 bg-slate-800 text-sm font-semibold text-lime-300">
+              {initials}
+              {avatarUrl ? <img src={avatarUrl} alt="" className="absolute inset-0 h-full w-full object-cover" onError={(event) => { event.currentTarget.style.display = 'none'; }} /> : null}
+            </span>
+            <span className="mt-3 w-full truncate text-sm font-semibold text-white">{displayName}</span>
+            {email ? <span className="mt-1 w-full truncate text-xs text-slate-400">{email}</span> : null}
+            <span className="mt-2 max-w-full truncate rounded-full border border-lime-400/20 bg-lime-400/10 px-2.5 py-1 text-xs font-medium text-lime-300">
+              {identityLabel}{effectiveRole === ROLES.STUDENT ? ' plan' : ''}
+            </span>
+          </Link>
           <nav className="space-y-2">
             {navigation.map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
                 to={to}
-                end={to === `/${role}`}
+                end={to === `/${effectiveRole}`}
                 onClick={() => setIsMobileMenuOpen(false)}
                 className={({ isActive }) =>
                   `flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-medium transition ${
@@ -142,19 +180,10 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
           </nav>
           <div className="mt-auto rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
             <p className="text-xs uppercase tracking-[0.25em] text-slate-400">Signed in</p>
-            <div className="mt-3 flex items-center justify-between gap-3">
-              <Link
-                to={`/${role}/profile`}
-                onClick={() => setIsMobileMenuOpen(false)}
-                className="min-w-0 truncate text-sm font-semibold text-white transition hover:text-lime-400"
-              >
-                {user?.displayName || 'Profile'}
-              </Link>
-              <button type="button" onClick={() => { setIsMobileMenuOpen(false); onLogout(); }} className="inline-flex flex-none items-center gap-2 text-sm font-semibold text-rose-400 hover:text-rose-300">
-                <LogOut className="h-4 w-4" />
-                Log out
-              </button>
-            </div>
+            <button type="button" onClick={() => { setIsMobileMenuOpen(false); onLogout(); }} className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-rose-400 hover:text-rose-300">
+              <LogOut className="h-4 w-4" />
+              Log out
+            </button>
           </div>
         </aside>
         <main className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain pb-[calc(2rem+env(safe-area-inset-bottom))] pr-1 lg:pb-4">

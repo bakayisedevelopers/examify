@@ -229,7 +229,7 @@ Additional mandatory generation rules:
 `;
 
 export const recommendExercises = async (payload = {}) => {
-  console.log('[Examifying][AI] recommendExercises:start', payload);
+  console.log('[Examifying][AI] recommendExercises:start', { studentId: payload.studentId, subject: payload.subject, mode: payload.mode });
 
   if (!isFirebaseConfigured) {
     return getFallbackRecommendations(payload);
@@ -243,6 +243,10 @@ export const recommendExercises = async (payload = {}) => {
   const request = {
     system: 'You return strict JSON only. Do not include markdown, comments, or explanatory text.',
     prompt: buildPrompt(payload),
+    exerciseGenerationContext: {
+      studentId: payload.studentId,
+      subject: payload.subject,
+    },
     responseFormat: { type: 'json_object' },
     maxTokens: 2000,
     temperature: 0.2,

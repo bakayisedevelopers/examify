@@ -27,3 +27,19 @@ export const verifySubscriptionPayment = async (reference) => {
   const response = await callable({ reference });
   return response.data;
 };
+
+export const manageStudentSubscription = async ({ studentId, action }) => {
+  if (!isFirebaseConfigured) return { action, status: 'success', demo: true };
+
+  const callable = httpsCallable(functions, 'manageStudentSubscription');
+  const response = await callable({ studentId, action });
+  return response.data;
+};
+
+export const retryStudentSubscriptionPayment = async (studentId) => {
+  if (!isFirebaseConfigured) return { status: 'success', charged: true, demo: true };
+
+  const callable = httpsCallable(functions, 'chargeStoredAuthorization');
+  const response = await callable({ studentId });
+  return response.data;
+};

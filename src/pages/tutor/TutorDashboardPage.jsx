@@ -4,16 +4,16 @@ import { Link, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
-import { getQuestionPapers, getTutorAssignedStudentContexts, getTutorLessonsForAssignedStudents, getTutorReportsForAssignedStudents } from '../../services/firestoreService';
+import { getQuestionPapers, getStudentSubscriptionState, getTutorAssignedStudentContexts, getTutorLessonsForAssignedStudents, getTutorReportsForAssignedStudents } from '../../services/firestoreService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
-import { getApprovedTutorSubjects } from '../../utils/tutorSubjects';
+import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../../utils/tutorSubjects';
 import { useEffectiveRole } from '../../utils/effectiveRole';
 
 
 const TutorReadinessPanel = ({ rows }) => {
   if (!rows.length) return null;
   const labels = {
-    paymentReady: 'Student payment active',
+    paidSubscriptionActive: 'Paid subscription active',
     reportReady: 'Initial tutor report added',
     lessonReady: 'At least 1 completed lesson logged',
     papersReady: 'At least 2 analyzed papers available',
@@ -55,6 +55,7 @@ export const TutorDashboardPage = () => {
   const [reports, setReports] = useState([]);
   const [lessons, setLessons] = useState([]);
   const [paperCounts, setPaperCounts] = useState({});
+  const [paidSubjectAccess, setPaidSubjectAccess] = useState({});
   const [status, setStatus] = useState('');
 
   const load = async () => {
@@ -65,15 +66,30 @@ export const TutorDashboardPage = () => {
       getTutorLessonsForAssignedStudents(profile.uid),
     ]);
     const uniqueContexts = [...new Map(studentRows.map((student) => [`${student.subject ?? DEFAULT_SUBJECT}-${student.grade ?? ''}-${student.province ?? ''}`, student])).values()];
-    const paperPairs = await Promise.all(uniqueContexts.map(async (student) => {
+    const studentsById = new Map(studentRows.map((student) => [student.studentId, student]));
+    const [paperPairs, subscriptionPairs] = await Promise.all([
+      Promise.all(uniqueContexts.map(async (student) => {
       const subject = student.subject ?? DEFAULT_SUBJECT;
       const papers = await getQuestionPapers({ grade: student.grade, region: student.province, subject });
       return [`${subject}-${student.grade ?? ''}-${student.province ?? ''}`, papers.length];
+      })),
+      Promise.all([...studentsById.entries()].map(async ([studentId, student]) => [studentId, await getStudentSubscriptionState({ ...student, uid: studentId })])),
+    ]);
+    const subscriptionsByStudent = Object.fromEntries(subscriptionPairs);
+    const accessBySubject = Object.fromEntries(studentRows.map((student) => {
+      const subject = student.subject ?? DEFAULT_SUBJECT;
+      const subscription = subscriptionsByStudent[student.studentId];
+      const includedSubjects = getUserSubjects(student)
+        .slice(0, subscription?.subscriptionSubjectCount ?? 0)
+        .map((item) => normalizeEligibleSubject(item) ?? item);
+      const normalizedSubject = normalizeEligibleSubject(subject) ?? subject;
+      return [`${student.studentId}:${normalizedSubject}`, Boolean(subscription?.paidSubscriptionActive && includedSubjects.includes(normalizedSubject))];
     }));
     setStudents(studentRows);
     setReports(reportRows);
     setLessons(lessonRows);
     setPaperCounts(Object.fromEntries(paperPairs));
+    setPaidSubjectAccess(accessBySubject);
   };
 
   useEffect(() => {
@@ -95,15 +111,16 @@ export const TutorDashboardPage = () => {
     const reportReady = hasReportFor(student);
     const lessonReady = lessons.some((lesson) => lesson.studentId === student.studentId && (lesson.subject ?? DEFAULT_SUBJECT) === subject);
     const papersReady = (paperCounts[`${subject}-${student.grade ?? ''}-${student.province ?? ''}`] ?? 0) >= 2;
-    const paymentReady = Boolean(student.paymentCompleted);
+    const normalizedSubject = normalizeEligibleSubject(subject) ?? subject;
+    const paymentReady = Boolean(paidSubjectAccess[`${student.studentId}:${normalizedSubject}`]);
     return {
       id: `${student.studentId}-${subject}`,
       studentName: student.displayName || student.name || student.email || 'Student',
       subject,
-      checks: { paymentReady, reportReady, lessonReady, papersReady },
+      checks: { paidSubscriptionActive: paymentReady, reportReady, lessonReady, papersReady },
       paperCount: paperCounts[`${subject}-${student.grade ?? ''}-${student.province ?? ''}`] ?? 0,
     };
-  }).filter((row) => !Object.values(row.checks).every(Boolean)), [students, lessons, paperCounts, reports]);
+  }).filter((row) => !Object.values(row.checks).every(Boolean)), [students, lessons, paperCounts, reports, paidSubjectAccess]);
   const studentList = useMemo(() => {
     const grouped = new Map();
     students.forEach((context) => {
