@@ -70,16 +70,6 @@ export const REGIONS = [
   'Western Cape',
 ];
 
-export const SESSION_PRICING = {
-  online: 220,
-  inPerson: 250,
-};
-
-export const SESSION_TYPE_LABELS = {
-  online: 'Online',
-  inPerson: 'In-person',
-};
-
 export const MAX_DAILY_EXERCISES = 3;
 export const WEEKLY_EXERCISE_DAYS = 7;
 export const MIN_AI_SOURCE_PAPERS = 2;

@@ -6,7 +6,13 @@ import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
 import { deleteExerciseAssignmentForTutor, getTutorAssignedStudentContexts, getTutorExercisesForAssignedStudents } from '../../services/firestoreService';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
+import { isExerciseSubmitted } from '../../services/exerciseGenerationPlan';
 import { useEffectiveRole } from '../../utils/effectiveRole';
+
+const getLocalDate = () => {
+  const now = new Date();
+  return [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
+};
 
 export const TutorExercisesPage = () => {
   const { profile, logout } = useAuth();
@@ -18,6 +24,7 @@ export const TutorExercisesPage = () => {
   const [subjectFilter, setSubjectFilter] = useState('all');
   const [status, setStatus] = useState('');
   const [deletingExerciseId, setDeletingExerciseId] = useState('');
+  const today = getLocalDate();
 
   useEffect(() => {
     if (!profile?.uid) return;
@@ -36,6 +43,7 @@ export const TutorExercisesPage = () => {
     (studentFilter === 'all' || exercise.studentId === studentFilter) &&
     (subjectFilter === 'all' || exercise.subject === subjectFilter)
   );
+  const canDeleteExercise = (exercise) => String(exercise.assignmentDate ?? '').slice(0, 10) > today && !isExerciseSubmitted(exercise);
 
   const removeExercise = async (exercise) => {
     if (!window.confirm(`Delete “${exercise.title || 'this exercise'}” for ${exercise.studentName || 'this student'}? This cannot be undone.`)) return;
@@ -77,9 +85,11 @@ export const TutorExercisesPage = () => {
               </div>
             </button>
             <span className="rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-300">{exercise.submittedImageUrl ? 'Submitted' : 'Not submitted'}</span>
-            <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={() => removeExercise(exercise)} disabled={deletingExerciseId === exercise.id} aria-label={`Delete ${exercise.title}`} title="Delete exercise">
-              <Trash2 className="h-4 w-4" aria-hidden="true" /> {deletingExerciseId === exercise.id ? 'Deleting...' : 'Delete'}
-            </button>
+            {canDeleteExercise(exercise) ? (
+              <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={() => removeExercise(exercise)} disabled={deletingExerciseId === exercise.id} aria-label={`Delete ${exercise.title}`} title="Delete future exercise">
+                <Trash2 className="h-4 w-4" aria-hidden="true" /> {deletingExerciseId === exercise.id ? 'Deleting...' : 'Delete'}
+              </button>
+            ) : null}
           </div>
         ))}
         {!filteredExercises.length ? <div className="panel p-5 text-sm text-slate-500">No exercises match this filter.</div> : null}

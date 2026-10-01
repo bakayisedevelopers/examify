@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { MarkingCanvas as ImageEditor } from '../../components/canvas/pictureEditorCanvas';
@@ -45,7 +46,7 @@ const TodayExerciseCard = ({ exercise, onOpen }) => {
 };
 
 
-const ReadinessChecklist = ({ rows }) => {
+const ReadinessChecklist = ({ rows, studentName }) => {
   if (!rows.length) return null;
   const labels = {
     paymentCompleted: 'Payment active',
@@ -57,24 +58,26 @@ const ReadinessChecklist = ({ rows }) => {
   return (
     <div className="panel space-y-4 p-5">
       <div>
-        <p className="text-sm font-semibold uppercase tracking-[0.25em] text-brand-700">AI readiness</p>
-        <h2 className="mt-2 text-xl font-bold text-slate-950">What is needed before exercises can generate</h2>
+        <h2 className="text-xl font-bold text-slate-950">Subjects missing requirements</h2>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         {rows.map((row) => (
-          <div key={`${row.subject}-${row.mode}`} className="rounded-2xl bg-slate-50 p-4">
-            <p className="font-semibold text-slate-950">{row.subject} • {row.mode === 'initial' ? 'First generation' : 'Weekly generation'}</p>
-            <div className="mt-3 space-y-2">
+          <details key={`${row.subject}-${row.mode}`} className="group rounded-2xl bg-slate-50 p-4">
+            <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3">
+              <span className="min-w-0 font-semibold text-slate-950">{studentName} • {row.subject}</span>
+              <span className="flex items-center gap-2"><span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">{Object.values(row.checks).filter((passed) => !passed).length ? `${Object.values(row.checks).filter((passed) => !passed).length} missing` : 'Ready'}</span><ChevronDown className="h-4 w-4 text-slate-500 transition-transform group-open:rotate-180" aria-hidden="true" /></span>
+            </summary>
+            <div className="mt-3 space-y-2 border-t border-slate-200 pt-3">
               {Object.entries(row.checks).map(([key, passed]) => (
                 <div key={key} className="flex items-center justify-between gap-3 text-sm">
                   <span className="text-slate-600">{labels[key] ?? key}</span>
                   <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${passed ? 'bg-lime-400/15 text-lime-300 border border-lime-400/30' : 'bg-amber-400/15 text-amber-300 border border-amber-400/30'}`}>{passed ? 'Done' : 'Missing'}</span>
                 </div>
               ))}
+              {row.reason ? <p className="rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs font-medium text-amber-300">{row.reason}</p> : null}
+              <p className="text-xs text-slate-500">Papers available: {row.availablePaperCount}. Completed lessons: {row.completedLessonCount}.</p>
             </div>
-            {row.reason ? <p className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs font-medium text-amber-300">{row.reason}</p> : null}
-            <p className="mt-3 text-xs text-slate-500">Papers available: {row.availablePaperCount}. Completed lessons: {row.completedLessonCount}.</p>
-          </div>
+          </details>
         ))}
       </div>
     </div>
@@ -92,10 +95,12 @@ export const StudentDashboardPage = () => {
   const [todayExercises, setTodayExercises] = useState([]);
   const [peerAssignments, setPeerAssignments] = useState([]);
   const [activeTab, setActiveTab] = useState(searchParams.get('tab') === 'mark' ? 'mark' : 'exercises');
-  const [markSubjectFilter, setMarkSubjectFilter] = useState('all');
   const [reviewingAssignment, setReviewingAssignment] = useState(null);
   const [loadError, setLoadError] = useState('');
-  const [paymentLocked, setPaymentLocked] = useState(false);
+  const [paymentLocked, setPaymentLocked] = useState(true);
+  const [isLoadingExercises, setIsLoadingExercises] = useState(true);
+  const [isLoadingPeerAssignments, setIsLoadingPeerAssignments] = useState(true);
+  const [isCheckingAccess, setIsCheckingAccess] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
   const [generationMessage, setGenerationMessage] = useState('');
@@ -147,15 +152,52 @@ export const StudentDashboardPage = () => {
       if (!profile?.uid) return;
       try {
         setLoadError('');
-        const loadedExercises = [];
+        setPaymentLocked(true);
+        setIsLoadingExercises(true);
+        setIsLoadingPeerAssignments(true);
+        setIsCheckingAccess(true);
         const readiness = [];
         const assignedSubjects = await getAssignedSubjectsForStudent(profile.uid);
         const subjectsToCheck = availableSubjects.filter((subject) => assignedSubjects.includes(subject));
-        let anyPaidSubject = false;
+        Promise.all(subjectsToCheck.map((subject) => getTodayExercise(profile.uid, subject)))
+          .then((rows) => {
+            if (active) {
+              setTodayExercises(rows.filter(Boolean).sort((left, right) => String(left.subject).localeCompare(String(right.subject))));
+              setIsLoadingExercises(false);
+            }
+            return rows;
+          })
+          .catch((error) => {
+            if (active) {
+              setLoadError(error?.message ?? 'Today’s exercises could not be loaded yet.');
+              setIsLoadingExercises(false);
+            }
+            return [];
+          });
+        getPeerMarkingAssignmentsForStudent(profile.uid)
+          .then((rows) => {
+            if (active) {
+              setPeerAssignments(rows);
+              setIsLoadingPeerAssignments(false);
+            }
+            return rows;
+          })
+          .catch((error) => {
+            if (active) {
+              setLoadError((current) => current || error?.message || 'Marking work could not be loaded yet.');
+              setIsLoadingPeerAssignments(false);
+            }
+            return [];
+          });
+        const accessStates = await Promise.all(subjectsToCheck.map((subject) =>
+          getStudentAccessState(profile, subject).then((access) => ({ subject, access })),
+        ));
+        if (!active) return;
+        const anyPaidSubject = accessStates.some(({ access }) => Boolean(access.paymentCompleted));
+        setPaymentLocked(!anyPaidSubject);
+        setIsCheckingAccess(false);
 
-        for (const subject of subjectsToCheck) {
-          const access = await getStudentAccessState(profile, subject);
-          anyPaidSubject = anyPaidSubject || Boolean(access.paymentCompleted);
+        for (const { subject, access } of accessStates) {
 
           const initialWasAttempted = access.generationRunStatus?.lastTrigger === 'initial'
             && ['completed', 'failed'].includes(access.generationRunStatus?.status);
@@ -180,20 +222,19 @@ export const StudentDashboardPage = () => {
             readiness.push({ subject, mode: 'initial', checks: access.generationStatus?.initial?.checks ?? {}, availablePaperCount: access.matchingQuestionPapers?.length ?? 0, completedLessonCount: access.completedLessons?.length ?? 0 });
           }
 
-          const today = await getTodayExercise(profile.uid, subject);
-          if (today) loadedExercises.push(today);
         }
 
         if (!active) return;
-        setPaymentLocked(!anyPaidSubject);
-        setTodayExercises(loadedExercises.sort((left, right) => String(left.subject).localeCompare(String(right.subject))));
-        setPeerAssignments(await getPeerMarkingAssignmentsForStudent(profile.uid));
         setReadinessRows(readiness);
         setGenerationProgress(100);
       } catch (error) {
         if (!active) return;
         setTodayExercises([]);
         setReadinessRows([]);
+        setPaymentLocked(true);
+        setIsLoadingExercises(false);
+        setIsLoadingPeerAssignments(false);
+        setIsCheckingAccess(false);
         setLoadError(error?.message ?? 'Some exercises could not be loaded yet.');
       } finally {
         if (active) setTimeout(() => setIsGenerating(false), 500);
@@ -204,15 +245,15 @@ export const StudentDashboardPage = () => {
     return () => { active = false; };
   }, [availableSubjects, profile]);
 
-  const markSubjects = [...new Set(peerAssignments.map((assignment) => assignment.subject).filter(Boolean))];
-  const visiblePeerAssignments = peerAssignments.filter((assignment) => markSubjectFilter === 'all' || assignment.subject === markSubjectFilter);
-
-  const handleSavePeerMarking = async (file) => {
+  const handleSavePeerMarking = async (files) => {
     if (!reviewingAssignment) return;
-    const reviewFileName = (reviewingAssignment.submittedFileName || 'submission.png').replace(/\.[^/.]+$/, '-peer-review.png');
-    const renamedFile = new File([file], reviewFileName, { type: file.type });
-    const upload = await uploadPeerReviewImage({ file: renamedFile, studentId: profile.uid, exerciseId: reviewingAssignment.exerciseId });
-    await completePeerMarkingAssignment({ assignmentId: reviewingAssignment.id, reviewImageUrl: upload.url, reviewFileName: upload.fileName });
+    const reviewImages = await Promise.all(files.map(async (file, index) => {
+      const reviewFileName = (file.name || reviewingAssignment.submittedFileName || 'submission.png').replace(/\.[^/.]+$/, `-peer-review-${index + 1}.png`);
+      const renamedFile = new File([file], reviewFileName, { type: file.type || 'image/png' });
+      const upload = await uploadPeerReviewImage({ file: renamedFile, studentId: profile.uid, exerciseId: reviewingAssignment.exerciseId });
+      return { ...upload, pageNumber: index + 1 };
+    }));
+    await completePeerMarkingAssignment({ assignmentId: reviewingAssignment.id, reviewerId: profile.uid, reviewImages });
     setPeerAssignments(await getPeerMarkingAssignmentsForStudent(profile.uid));
     setReviewingAssignment(null);
   };
@@ -250,8 +291,6 @@ export const StudentDashboardPage = () => {
         </div>
       ) : null}
 
-      {!isGenerating ? <ReadinessChecklist rows={readinessRows} /> : null}
-
       <div className="panel mx-auto flex w-fit justify-center gap-2 p-2">
         <button type="button" className={activeTab === 'exercises' ? 'btn-primary' : 'btn-secondary'} onClick={() => selectTab('exercises')}>Exercises</button>
         <button type="button" className={activeTab === 'mark' ? 'btn-primary' : 'btn-secondary'} onClick={() => selectTab('mark')}>Mark</button>
@@ -265,7 +304,12 @@ export const StudentDashboardPage = () => {
             description="Each card shows the subject and opens the exercise details page for uploads and paper links."
           />
           <section className="grid gap-4 lg:grid-cols-2">
-            {!paymentLocked && todayExercises.length ? todayExercises.map((exercise) => (
+            {isLoadingExercises || isCheckingAccess ? (
+              <div className="panel col-span-full flex min-h-40 items-center justify-center gap-3 p-6 text-sm text-slate-500" role="status">
+                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-lime-500 border-r-transparent" aria-hidden="true" />
+                Loading today’s exercises...
+              </div>
+            ) : !paymentLocked && todayExercises.length ? todayExercises.map((exercise) => (
               <TodayExerciseCard
                 key={exercise.id}
                 exercise={exercise}
@@ -273,42 +317,37 @@ export const StudentDashboardPage = () => {
               />
             )) : (
               <div className="panel col-span-full flex min-h-72 items-center justify-center p-6 text-center text-sm text-slate-500">
-                {paymentLocked ? 'Exercises are locked until payment is complete.' : 'No exercises have been assigned for today yet.'}
+                {isGenerating ? 'Your exercises are being prepared. This page will update when generation finishes.' : paymentLocked ? 'Exercises are locked until payment is complete.' : 'No exercises have been assigned for today yet.'}
               </div>
             )}
           </section>
+          {!isGenerating ? <ReadinessChecklist rows={readinessRows} studentName={profile?.displayName || profile?.name || profile?.email || 'Student'} /> : null}
         </>
       ) : (
         <>
           <SectionHeader eyebrow="Peer marking" title="Work to mark" description="Mark submitted work from learners in your grade and subject." />
-          <div className="panel flex flex-wrap items-center justify-between gap-3 p-4">
-            <p className="text-sm font-semibold text-slate-950">Filter marking work</p>
-            <select className="input max-w-xs" value={markSubjectFilter} onChange={(event) => setMarkSubjectFilter(event.target.value)}>
-              <option value="all">All subjects</option>
-              {markSubjects.map((subject) => <option key={subject}>{subject}</option>)}
-            </select>
-          </div>
           <section className="grid gap-4">
-            {visiblePeerAssignments.map((assignment) => (
-              <div key={assignment.id} className="panel p-5">
-                <div className="flex flex-wrap items-center justify-between gap-3">
+            {isLoadingPeerAssignments ? <div className="panel flex min-h-32 items-center justify-center gap-3 p-5 text-sm text-slate-500" role="status"><span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-lime-500 border-r-transparent" aria-hidden="true" />Loading marking work...</div> : null}
+            {!isLoadingPeerAssignments ? peerAssignments.map((assignment) => (
+              <div key={assignment.id} className="panel p-4">
+                <div className="flex flex-wrap items-center justify-between gap-4">
                   <div>
                     <p className="font-semibold text-slate-950">{assignment.title || 'Exercise submission'}</p>
                     <p className="mt-1 text-sm text-slate-500">{assignment.subject} • {assignment.grade} • {assignment.assignmentDate}</p>
-                    <p className="mt-2 text-sm text-slate-600">{assignment.topic}</p>
+                    <p className="mt-1 text-sm text-slate-600">{assignment.topic}</p>
                   </div>
-                  <button type="button" className="btn-primary" onClick={() => setReviewingAssignment(assignment)}>Mark</button>
+                  <button type="button" className="btn-primary" onClick={() => setReviewingAssignment((current) => current?.id === assignment.id ? null : assignment)}>{reviewingAssignment?.id === assignment.id ? 'Close marking' : 'Mark work'}</button>
                 </div>
                 {reviewingAssignment?.id === assignment.id ? (
                   <div className="mt-4">
-                    <ImageEditor imageUrl={assignment.submittedImageUrl} onSave={handleSavePeerMarking} />
-                    <button type="button" className="btn-secondary mt-2" onClick={() => setReviewingAssignment(null)}>Cancel</button>
+                    <ImageEditor imageUrls={assignment.submittedImages?.length ? assignment.submittedImages : [assignment.submittedImageUrl].filter(Boolean)} onSave={handleSavePeerMarking} onCancel={() => setReviewingAssignment(null)} />
                   </div>
                 ) : null}
               </div>
-            ))}
-            {!visiblePeerAssignments.length ? <div className="panel p-5 text-sm text-slate-500">No one to mark for yet. When learners in your grade and subject submit, marking work will appear here.</div> : null}
+            )) : null}
+            {!isLoadingPeerAssignments && !peerAssignments.length ? <div className="panel p-5 text-sm text-slate-500">No one to mark for yet. When learners in your grade and subject submit, marking work will appear here.</div> : null}
           </section>
+          {!isGenerating ? <ReadinessChecklist rows={readinessRows} studentName={profile?.displayName || profile?.name || profile?.email || 'Student'} /> : null}
         </>
       )}
     </AppShell>

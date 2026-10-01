@@ -37,19 +37,29 @@ const fileToDataUrl = (file) => new Promise((resolve, reject) => {
   reader.readAsDataURL(file);
 });
 
-export const uploadSubmissionImage = async ({ file, studentId, exerciseId }) => {
+export const uploadSubmissionImages = async ({ files, studentId, exerciseId }) => {
+  const imageFiles = (files ?? []).filter(Boolean);
+  if (!imageFiles.length) throw new Error('Choose at least one image page to submit.');
   if (!isFirebaseConfigured) {
-    return {
-      submittedFileName: file?.name ?? 'demo-upload.jpg',
-      submittedImageUrl: URL.createObjectURL(file),
-      exerciseId: 'mock-id',
-    };
+    const submittedImages = imageFiles.map((file, index) => ({
+      fileName: file.name ?? `page-${index + 1}.png`,
+      url: URL.createObjectURL(file),
+      pageNumber: index + 1,
+    }));
+    return { submittedFileName: submittedImages[0].fileName, submittedImageUrl: submittedImages[0].url, submittedImages, exerciseId };
   }
 
-  let uploadedFile = null;
+  const uploadedFiles = [];
   try {
-    uploadedFile = await uploadFile({ file, path: `submissions/${studentId}/${exerciseId}` });
-    const exerciseRef = doc(db, "dailyExerciseAssignments", exerciseId);
+    const uploads = await Promise.all(imageFiles.map(async (file, index) => {
+      const namedFile = new File([file], `page-${index + 1}-${file.name || 'submission.png'}`, { type: file.type || 'image/png' });
+      const upload = await uploadFile({ file: namedFile, path: `submissions/${studentId}/${exerciseId}` });
+      uploadedFiles[index] = upload;
+      return upload;
+    }));
+    const submittedImages = uploads.map((upload, index) => ({ ...upload, pageNumber: index + 1 }));
+    const firstImage = submittedImages[0];
+    const exerciseRef = doc(db, 'dailyExerciseAssignments', exerciseId);
     const exerciseSnapshot = await getDoc(exerciseRef);
     if (!exerciseSnapshot.exists()) throw new Error('This exercise could not be found.');
     const exercise = exerciseSnapshot.data();
@@ -57,14 +67,18 @@ export const uploadSubmissionImage = async ({ file, studentId, exerciseId }) => 
     if (exercise.submittedImageUrl || exercise.submitted === 'Yes' || exercise.submissionStatus === 'submitted') {
       throw new Error('Work has already been submitted for this exercise.');
     }
+
     const submittedAt = serverTimestamp();
+    const fileNames = submittedImages.map((image) => image.fileName);
     const submissionData = {
       studentId,
       exerciseId,
-      imageUrl: uploadedFile.url,
-      submittedImageUrl: uploadedFile.url,
-      fileName: uploadedFile.fileName,
-      submittedFileName: uploadedFile.fileName,
+      imageUrl: firstImage.url,
+      submittedImageUrl: firstImage.url,
+      submittedImages,
+      fileName: firstImage.fileName,
+      submittedFileName: firstImage.fileName,
+      submittedFileNames: fileNames,
       subject: exercise.subject ?? '',
       topic: exercise.topic ?? '',
       exerciseTitle: exercise.title ?? '',
@@ -79,8 +93,11 @@ export const uploadSubmissionImage = async ({ file, studentId, exerciseId }) => 
     batch.update(exerciseRef, {
       studentId,
       exerciseId,
-      submittedImageUrl: uploadedFile.url,
-      submittedFileName: uploadedFile.fileName,
+      submittedImageUrl: firstImage.url,
+      submittedImages,
+      submittedFileName: firstImage.fileName,
+      submittedFileNames: fileNames,
+      submissionPageCount: submittedImages.length,
       submittedAt,
       updatedAt: serverTimestamp(),
       peerReviewed: 'No',
@@ -94,7 +111,7 @@ export const uploadSubmissionImage = async ({ file, studentId, exerciseId }) => 
     await batch.commit();
 
     callKiloImage({
-      imageUrl: uploadedFile.url,
+      imageUrl: firstImage.url,
       prompt: [
         'Analyze this student answer image for tutor review.',
         `Subject: ${exercise.subject ?? 'Unknown'}.`,
@@ -110,23 +127,24 @@ export const uploadSubmissionImage = async ({ file, studentId, exerciseId }) => 
       console.warn('[Examifying][Storage] answer image analysis skipped:', error);
     });
 
-    return { 
-      submittedFileName: uploadedFile.fileName,
-      submittedImageUrl: uploadedFile.url,
-      exerciseId: exerciseId 
-    };
+    return { submittedFileName: firstImage.fileName, submittedImageUrl: firstImage.url, submittedImages, exerciseId };
   } catch (error) {
-    if (uploadedFile?.url) {
-      try {
-        await deleteObject(ref(storage, uploadedFile.url));
-      } catch (cleanupError) {
-        console.warn('[Examifying][Storage] Could not clean up an incomplete submission upload:', cleanupError?.code || cleanupError?.message);
-      }
+    if (uploadedFiles.some(Boolean)) {
+      await Promise.all(uploadedFiles.filter(Boolean).map(async (uploadedFile) => {
+        try {
+          await deleteObject(ref(storage, uploadedFile.url));
+        } catch (cleanupError) {
+          console.warn('[Examifying][Storage] Could not clean up an incomplete submission upload:', cleanupError?.code || cleanupError?.message);
+        }
+      }));
     }
-    console.error("Upload/Update failed:", error);
+    console.error('Upload/Update failed:', error);
     throw error;
   }
 };
+
+export const uploadSubmissionImage = async ({ file, studentId, exerciseId }) =>
+  uploadSubmissionImages({ files: [file], studentId, exerciseId });
 
 export const uploadTutorMarkedWork = async ({ file, studentId, exerciseId }) => {
   if (!isFirebaseConfigured) {

@@ -54,33 +54,16 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
   return { user: credential.user, profile };
 };
 
-export const updateStudentOnboarding = async ({ uid, previousYearMark, sessionType }) => {
+export const updateStudentOnboarding = async ({ uid, previousYearMark }) => {
   if (!isFirebaseConfigured) {
-    return { uid, previousYearMark, latestMark: previousYearMark, sessionType, paymentCompleted: false, subscriptionStatus: 'pending' };
+    return { uid, previousYearMark, latestMark: previousYearMark, paymentCompleted: false, subscriptionStatus: 'pending' };
   }
 
   const payload = {
     previousYearMark: Number(previousYearMark),
     latestMark: Number(previousYearMark),
-    sessionType,
     paymentCompleted: false,
     subscriptionStatus: 'pending',
-    updatedAt: serverTimestamp(),
-  };
-
-  await updateDoc(doc(db, collections.users, uid), payload);
-  return { uid, ...payload };
-};
-
-export const markStudentPaymentComplete = async ({ uid, reference }) => {
-  if (!isFirebaseConfigured) {
-    return { uid, paymentCompleted: true, subscriptionStatus: 'active', latestPaymentReference: reference };
-  }
-
-  const payload = {
-    paymentCompleted: true,
-    subscriptionStatus: 'active',
-    latestPaymentReference: reference,
     updatedAt: serverTimestamp(),
   };
 

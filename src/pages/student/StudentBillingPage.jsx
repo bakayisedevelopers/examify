@@ -1,42 +1,32 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
-import { SectionHeader } from '../../components/common/SectionHeader';
+import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
 import { useAuth } from '../../hooks/useAuth';
 import { generateExercisePlanIfEligible, getStudentAccessState } from '../../services/firestoreService';
-import {
-  getSubscriptionQuote,
-  initializeSubscriptionPayment,
-  verifySubscriptionPayment,
-} from '../../services/paymentsService';
-import { DEFAULT_SUBJECT, SESSION_TYPE_LABELS } from '../../lib/constants';
+import { initializeSubscriptionPayment, verifySubscriptionPayment } from '../../services/paymentsService';
+import { DEFAULT_SUBJECT } from '../../lib/constants';
 
 export const StudentBillingPage = () => {
-  const { profile, logout, refreshProfile, isDemoMode } = useAuth();
+  const { profile, logout, refreshProfile } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
 
   const [status, setStatus] = useState('');
-  const [accessState, setAccessState] = useState(null);
-  const [isInitializingPayment, setIsInitializingPayment] = useState(false);
   const [isVerifyingPayment, setIsVerifyingPayment] = useState(false);
+  const [isStartingSubscription, setIsStartingSubscription] = useState(false);
 
   const lastVerifiedReferenceRef = useRef(null);
-
-  const quote = useMemo(
-    () =>
-      getSubscriptionQuote({
-        latestMark:  profile?.previousYearMark ?? 0,
-        sessionType: profile?.sessionType ?? 'online',
-      }),
-    [profile],
-  );
-
-  const refreshAccess = async () => {
-    const snapshot = await getStudentAccessState(profile, DEFAULT_SUBJECT);
-    setAccessState(snapshot);
-    return snapshot;
+  const params = new URLSearchParams(location.search);
+  const initialSelection = {
+    planId: params.get('planId'),
+    billingPeriod: params.get('billingPeriod'),
+    subjectCount: params.get('subjectCount'),
   };
+
+  const refreshAccess = useCallback(async () => {
+    return getStudentAccessState(profile, DEFAULT_SUBJECT);
+  }, [profile]);
 
   const formatRenewalDate = (value) => {
     if (!value) return 'N/A';
@@ -56,7 +46,7 @@ export const StudentBillingPage = () => {
     }
   };
 
-  const completeStudentAccessFlow = async (reference) => {
+  const completeStudentAccessFlow = useCallback(async (reference) => {
     await refreshProfile(profile?.uid);
     const snapshot = await refreshAccess();
 
@@ -79,31 +69,36 @@ export const StudentBillingPage = () => {
     } else {
       setStatus('Payment verified successfully. Initial exercise generation is still waiting for the remaining criteria.');
     }
-  };
+  }, [profile, refreshAccess, refreshProfile]);
 
-  const handlePaymentStart = async () => {
+  const handleContinue = async (selection) => {
+    if (!profile?.uid) return;
+    setIsStartingSubscription(true);
+    setStatus('');
     try {
-      setIsInitializingPayment(true);
-      setStatus('');
-
       const result = await initializeSubscriptionPayment({
-        email: profile?.email,
-        studentId: profile?.uid,
-        latestMark:  profile?.previousYearMark ?? 0,
-        sessionType: profile?.sessionType ?? 'online',
-        callbackUrl: `${window.location.origin}${location.pathname}`,
+        studentId: profile.uid,
+        ...selection,
+        callbackUrl: `${window.location.origin}/student/billing`,
       });
-
-      if (!result?.authorizationUrl) {
-        throw new Error('No Paystack authorization URL was returned.');
+      if (result.free) {
+        await refreshProfile(profile.uid);
+        setStatus('Free subscription activated. Unlimited question papers are available.');
+        navigate('/student/papers');
+      } else if (result.scheduledChange) {
+        setStatus(`Your ${result.quote.planName} plan will begin on ${formatRenewalDate(result.effectiveAt)}.`);
+        await refreshProfile(profile.uid);
+      } else if (result.alreadyActive) {
+        setStatus(`Your ${result.quote.planName} subscription is already active.`);
+      } else if (result.authorizationUrl) {
+        window.location.href = result.authorizationUrl;
+      } else {
+        throw new Error('Could not start subscription checkout.');
       }
-
-      setStatus('Redirecting you to Paystack...');
-      window.location.href = result.authorizationUrl;
     } catch (error) {
-      setStatus(error?.message || 'Unable to initialize payment right now.');
+      setStatus(error?.message || 'Could not start subscription checkout.');
     } finally {
-      setIsInitializingPayment(false);
+      setIsStartingSubscription(false);
     }
   };
 
@@ -148,98 +143,25 @@ export const StudentBillingPage = () => {
     };
 
     runVerification();
-  }, [location.pathname, location.search, navigate, profile?.uid]);
+  }, [completeStudentAccessFlow, location.pathname, location.search, navigate, profile?.uid]);
 
   return (
     <AppShell
       title="Billing"
-      subtitle="Manage subscription logic, payment completion, and the exercise-unlock workflow."
+      subtitle="Choose a subscription and manage your billing period."
       role="student"
       user={profile}
       onLogout={logout}
     >
-      <SectionHeader
-        eyebrow="Subscription"
-        title="Current recommendation"
-        description="Examifying calculates the monthly amount from the student-entered previous year mark until fresh learning data is available."
-      />
-
-      <div className="grid gap-4 md:grid-cols-4">
-        <div className="panel p-5">
-          <p className="text-sm text-slate-500">Session type</p>
-          <p className="mt-2 text-2xl font-bold text-slate-950">
-            {SESSION_TYPE_LABELS[quote.sessionType]}
-          </p>
+      {profile?.subscriptionPlanId ? (
+        <div className="panel mb-5 p-4 text-sm">
+          Current plan: <strong>{profile.subscriptionPlanName || 'Free'}</strong>{profile?.subscriptionRenewalDate ? ` · renews ${formatRenewalDate(profile.subscriptionRenewalDate)}` : ''}
         </div>
-
-        <div className="panel p-5">
-          <p className="text-sm text-slate-500">Previous year mark</p>
-          <p className="mt-2 text-2xl font-bold text-slate-950">
-            {profile?.previousYearMark ?? 0}%
-          </p>
-        </div>
-
-        <div className="panel p-5">
-          <p className="text-sm text-slate-500">Sessions</p>
-          <p className="mt-2 text-2xl font-bold text-slate-950">{quote.sessionCount}</p>
-        </div>
-
-        <div className="panel p-5">
-          <p className="text-sm text-slate-500">Monthly amount</p>
-          <p className="mt-2 text-2xl font-bold text-slate-950">R{quote.amount.toFixed(2)}</p>
-        </div>
-      </div>
-
-      <div className="panel mt-6 space-y-4 p-5 text-sm leading-7 text-slate-600">
-        <p>Complete payment here to unlock the student learning flow and keep your subscription active.</p>
-
-        <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={handlePaymentStart}
-            disabled={isInitializingPayment || isVerifyingPayment || profile?.paymentCompleted}
-          >
-            {isInitializingPayment
-              ? 'Initializing Payment...'
-              : isVerifyingPayment
-              ? 'Verifying Payment...'
-              : 'Pay Now'}
-          </button>
-
-          {profile?.paymentCompleted && (
-            <>
-              <button type="button" className="btn-secondary" disabled>
-                Payment Done ✅
-              </button>
-
-              <button type="button" className="btn-secondary" disabled>
-                Renews on: {formatRenewalDate(profile?.subscriptionRenewalDate)}
-              </button>
-            </>
-          )}
-        </div>
-
-        {status ? (
-          <div className="rounded-2xl bg-slate-50 p-4">
-            <p className="font-medium text-slate-900">{status}</p>
-          </div>
-        ) : null}
-
-        {accessState ? (
-          <div className="rounded-2xl bg-slate-50 p-4">
-            <p className="font-semibold text-slate-900">Access checks</p>
-            <p className="mt-2">Payment completed: {String(accessState.paymentCompleted)}</p>
-            <p>Initial generation ready: {String(accessState.initialGenerationReady)}</p>
-            <p>Weekly generation ready: {String(accessState.weeklyGenerationReady)}</p>
-          </div>
-        ) : null}
-
-        <p>
-          {isDemoMode
-            ? 'Demo mode is active.'
-            : 'Live mode is active. Payment verification is handled automatically after Paystack redirects back.'}
-        </p>
+      ) : null}
+      <SubscriptionPlanSelector onContinue={handleContinue} isSubmitting={isStartingSubscription || isVerifyingPayment} initialSelection={initialSelection} />
+      <div className="mt-5 space-y-3">
+        {status ? <div role="status" className="panel p-4 text-sm text-slate-700">{status}</div> : null}
+        {isVerifyingPayment ? <p role="status" className="text-sm text-slate-600">Verifying your payment…</p> : null}
       </div>
     </AppShell>
   );

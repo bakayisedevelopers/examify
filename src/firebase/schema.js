@@ -3,6 +3,7 @@ export const collections = {
   students: 'students',
   tutors: 'tutors',
   tutorStudentAssignments: 'tutorStudentAssignments',
+  staffStudentAccess: 'staffStudentAccess',
   studentProfiles: 'studentProfiles',
   studentPerformance: 'studentPerformance',
   coveredTopics: 'coveredTopics',

@@ -73,6 +73,30 @@ const GENERATION_HISTORY_LIMIT = 40;
 const EXERCISE_REGENERATION_LOCK_TIMEOUT_MS = 20 * 60 * 1000;
 
 const buildTutorAssignmentId = ({ studentId, tutorId, subject }) => `${studentId}_${tutorId}_${subject}`;
+const buildStaffAccessId = ({ studentId, tutorId, subject }) => `${studentId}_${tutorId}_${subject}`;
+const STAFF_ACCESS_ROLES = ['co-owner', 'marker', 'viewer'];
+const isTeacherProfile = (profile) => profile?.isTeacher === true || profile?.isTeacher === 'true' || profile?.role === 'teacher';
+const isTutorOrTeacherProfile = (profile) => profile?.role === 'tutor' || isTeacherProfile(profile);
+const getApprovedTutorOrTeacherProfiles = (profiles, subject) => {
+  const approved = (profile) => getApprovedTutorSubjects(profile).includes(subject);
+  const tutors = profiles.filter((profile) => profile.role === 'tutor' && approved(profile));
+  const teachers = profiles.filter((profile) => isTeacherProfile(profile) && approved(profile));
+  return [...new Map([...tutors, ...teachers].map((profile) => [profile.uid, profile])).values()];
+};
+
+const getTutorAccessContext = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT }) => {
+  const contexts = await getTutorAssignedStudentContexts(tutorId);
+  return contexts.find((context) => context.studentId === studentId && context.subject === subject) ?? null;
+};
+
+const requireTutorAccess = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT, allowedRoles = ['co-owner', 'marker'] }) => {
+  const context = await getTutorAccessContext({ tutorId, studentId, subject });
+  if (!context) throw new Error('You do not have access to this student for the selected subject.');
+  if (!allowedRoles.includes(context.accessRole)) throw new Error('Your access role does not allow this action.');
+  return context;
+};
+
+const requireCoOwnerAccess = (params) => requireTutorAccess({ ...params, allowedRoles: ['co-owner'] });
 
 const normalizeQuestionReferenceTitle = (references = []) =>
   references
@@ -152,6 +176,7 @@ const getLessonTopicEntries = (lesson = {}, lessonIndex = 0) => {
       .map((entry) => ({
         topic: String(entry?.topic || '').trim(),
         understandingLevel: Number(entry?.understandingLevel ?? lesson?.understandingLevel ?? 5),
+        exerciseScores: Array.isArray(entry?.exerciseScores) ? entry.exerciseScores : [],
         reportSnippet: entry?.topicReport ?? lesson?.topicReport ?? lesson?.note ?? '',
         completedOn: lesson?.completedOn ?? lesson?.createdAt ?? '',
         firstSeenIndex: lessonIndex,
@@ -825,14 +850,16 @@ export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT) 
   }
 
   ensureDb();
-  const studentSnapshot = await getDoc(doc(db, collections.users, student.uid));
-  const subscriptionSnapshot = await getDoc(doc(db, collections.subscriptions, student.uid));
+  const [studentSnapshot, subscriptionSnapshot, papers, reports, lessons, assignmentHistory, generationRunSnapshot] = await Promise.all([
+    getDoc(doc(db, collections.users, student.uid)),
+    getDoc(doc(db, collections.subscriptions, student.uid)),
+    getQuestionPapers({ grade: student.grade, region: student.province, subject }),
+    getTutorReports(student.uid, subject),
+    getCompletedLessons(student.uid, subject),
+    getAssignmentHistory(student.uid, subject),
+    getDoc(doc(db, collections.exerciseGenerationStatus, `${student.uid}_${subject}`)),
+  ]);
   const paymentCompleted = subscriptionSnapshot.exists() ? subscriptionSnapshot.data().status === 'active' : Boolean(student.paymentCompleted);
-  const papers = await getQuestionPapers({ grade: student.grade, region: student.province, subject });
-  const reports = await getTutorReports(student.uid, subject);
-  const lessons = await getCompletedLessons(student.uid, subject);
-  const assignmentHistory = await getAssignmentHistory(student.uid, subject);
-  const generationRunSnapshot = await getDoc(doc(db, collections.exerciseGenerationStatus, `${student.uid}_${subject}`));
   const studentData = studentSnapshot.exists() ? studentSnapshot.data() : student;
   const latestTutorReport = studentData?.latestReportsBySubject?.[subject] || reports[0]?.note || (subject === DEFAULT_SUBJECT ? (studentData?.latestReport || '') : '');
   const generationStatus = buildStudentGenerationStatus({
@@ -886,25 +913,8 @@ export const getUnassignedStudents = async (subject = DEFAULT_SUBJECT) => {
 };
 
 export const getAssignedStudentsForTutor = async (tutorId, subject = DEFAULT_SUBJECT) => {
-  if (!isFirebaseConfigured) {
-    const assignedIds = new Set(
-      mockStudentAssignments
-        .filter((assignment) => assignment.tutorId === tutorId && assignment.active !== false && (assignment.subject ?? DEFAULT_SUBJECT) === subject)
-        .map((assignment) => assignment.studentId),
-    );
-    return demoUsers.filter((user) => user.role === 'student' && assignedIds.has(user.uid));
-  }
-
-  ensureDb();
-  const assignmentsSnapshot = await getDocs(query(
-    collection(db, collections.tutorStudentAssignments),
-    where('tutorId', '==', tutorId),
-    where('subject', '==', subject),
-    where('active', '==', true),
-  ));
-  const studentIds = assignmentsSnapshot.docs.map((item) => item.data().studentId).filter(Boolean);
-  const students = await Promise.all(studentIds.map((studentId) => getDoc(doc(db, collections.users, studentId))));
-  return students.filter((snapshot) => snapshot.exists()).map((snapshot) => snapshot.data());
+  const contexts = await getTutorAssignedStudentContexts(tutorId);
+  return contexts.filter((context) => context.subject === subject);
 };
 
 export const getTutorReports = async (studentId, subject = DEFAULT_SUBJECT) => {
@@ -923,6 +933,7 @@ export const getTutorReports = async (studentId, subject = DEFAULT_SUBJECT) => {
 };
 
 export const saveTutorReport = async ({ reportId, studentId, tutorId, note, studentName, subject = DEFAULT_SUBJECT, reportType = 'general' }) => {
+  await requireCoOwnerAccess({ tutorId, studentId, subject });
   if (!isFirebaseConfigured) {
     return {
       id: reportId ?? `mock-report-${Date.now()}`,
@@ -984,10 +995,7 @@ export const getCompletedLessons = async (studentId, subject = DEFAULT_SUBJECT) 
 
 export const getStudentTopicScoresForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT }) => {
   if (!tutorId || !studentId) throw new Error('Tutor and student are required.');
-  const contexts = await getTutorAssignedStudentContexts(tutorId);
-  if (!contexts.some((context) => context.studentId === studentId && context.subject === subject)) {
-    throw new Error('This student is not assigned to you for this subject.');
-  }
+  await requireTutorAccess({ tutorId, studentId, subject, allowedRoles: ['co-owner', 'marker'] });
   const lessons = await getCompletedLessons(studentId, subject);
   const scores = {};
   lessons.forEach((lesson) => {
@@ -998,10 +1006,10 @@ export const getStudentTopicScoresForTutor = async ({ tutorId, studentId, subjec
   return scores;
 };
 
-export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT, topic, understandingLevel }) => {
+export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT, topic, exerciseId, peerAssignmentId, understandingLevel }) => {
   const topicName = String(topic || '').trim();
   const score = Number(understandingLevel);
-  if (!tutorId || !studentId || !topicName) throw new Error('Tutor, student, and topic are required.');
+  if (!tutorId || !studentId || !topicName || !exerciseId) throw new Error('Tutor, student, topic, and exercise are required.');
   if (!Number.isFinite(score) || score < 0 || score > 10) throw new Error('Enter a topic score from 0 to 10.');
   const contexts = await getTutorAssignedStudentContexts(tutorId);
   if (!contexts.some((context) => context.studentId === studentId && context.subject === subject)) {
@@ -1012,19 +1020,63 @@ export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subj
   const matchingLessons = lessons.filter((lesson) => getLessonTopicEntries(lesson).some((entry) => entry.topic.toLocaleLowerCase() === topicName.toLocaleLowerCase()));
   if (!matchingLessons.length) throw new Error('No completed lesson was found for this topic.');
 
-  const updatedLessons = matchingLessons.map((lesson) => {
+  const exercise = await getExerciseAssignmentById(exerciseId);
+  if (!exercise || exercise.studentId !== studentId || (exercise.subject ?? DEFAULT_SUBJECT) !== subject) {
+    throw new Error('The selected exercise does not belong to this student and subject.');
+  }
+  if (peerAssignmentId && isFirebaseConfigured) {
+    const peerSnapshot = await getDoc(doc(db, collections.peerMarkingAssignments, peerAssignmentId));
+    if (!peerSnapshot.exists() || peerSnapshot.data().exerciseId !== exerciseId || peerSnapshot.data().reviewerId !== studentId) {
+      throw new Error('The peer-marking record does not match this exercise.');
+    }
+  }
+
+  const exerciseScore = {
+    exerciseId,
+    exerciseTitle: exercise.title ?? 'Exercise',
+    assignmentDate: exercise.assignmentDate ?? '',
+    understandingLevel: score,
+    updatedAt: new Date().toISOString(),
+  };
+  const scoreHistoryByExercise = new Map();
+  matchingLessons.forEach((lesson) => getLessonTopicEntries(lesson).forEach((entry) => {
+    if (entry.topic.toLocaleLowerCase() !== topicName.toLocaleLowerCase()) return;
+    (entry.exerciseScores ?? []).forEach((record) => {
+      if (record?.exerciseId) scoreHistoryByExercise.set(record.exerciseId, record);
+    });
+  }));
+  scoreHistoryByExercise.set(exerciseId, exerciseScore);
+  const recentExerciseScores = [...scoreHistoryByExercise.values()]
+    .sort((left, right) => String(right.assignmentDate ?? '').localeCompare(String(left.assignmentDate ?? ''))
+      || String(right.updatedAt ?? '').localeCompare(String(left.updatedAt ?? '')))
+    .slice(0, 7);
+  const topicAverage = Math.round(recentExerciseScores.reduce((sum, record) => sum + Number(record.understandingLevel), 0) / recentExerciseScores.length);
+
+  const updatedLessons = matchingLessons.map((lesson, lessonIndex) => {
     const originalEntries = Array.isArray(lesson.topicUnderstandingScores) && lesson.topicUnderstandingScores.length
       ? lesson.topicUnderstandingScores
       : (lesson.topics?.length ? lesson.topics : [lesson.topic]).filter(Boolean).map((entryTopic) => ({ topic: entryTopic, understandingLevel: lesson.understandingLevel }));
     const entries = originalEntries.map((entry) => ({
       ...entry,
       understandingLevel: String(entry.topic).trim().toLocaleLowerCase() === topicName.toLocaleLowerCase()
-        ? score
+        ? topicAverage
         : Number(entry.understandingLevel ?? lesson.understandingLevel ?? 5),
+      ...(lessonIndex === 0 && String(entry.topic).trim().toLocaleLowerCase() === topicName.toLocaleLowerCase()
+        ? { exerciseScores: recentExerciseScores }
+        : {}),
     }));
     const average = Math.round(entries.reduce((sum, entry) => sum + entry.understandingLevel, 0) / entries.length);
     return { lesson, entries, average };
   });
+
+  const originalExerciseScores = Array.isArray(exercise.topicUnderstandingScores) ? exercise.topicUnderstandingScores : [];
+  const exerciseTopicScores = [...originalExerciseScores.filter((entry) => String(entry.topic).trim().toLocaleLowerCase() !== topicName.toLocaleLowerCase()), {
+    topic: topicName,
+    understandingLevel: score,
+    exerciseId,
+    exerciseTitle: exercise.title ?? 'Exercise',
+    assignmentDate: exercise.assignmentDate ?? '',
+  }];
 
   if (!isFirebaseConfigured) {
     updatedLessons.forEach(({ lesson, entries, average }) => {
@@ -1034,22 +1086,30 @@ export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subj
         target.understandingLevel = average;
       }
     });
-    return { topic: topicName, understandingLevel: score };
+    exercise.topicUnderstandingScores = exerciseTopicScores;
+    return { topic: topicName, understandingLevel: topicAverage, exerciseId };
   }
 
   ensureDb();
-  for (let offset = 0; offset < updatedLessons.length; offset += 450) {
-    const batch = writeBatch(db);
-    updatedLessons.slice(offset, offset + 450).forEach(({ lesson, entries, average }) => {
-      batch.update(doc(db, collections.coveredTopics, lesson.id), {
-        topicUnderstandingScores: entries,
-        understandingLevel: average,
-        updatedAt: serverTimestamp(),
-      });
+  const batch = writeBatch(db);
+  updatedLessons.forEach(({ lesson, entries, average }) => {
+    batch.update(doc(db, collections.coveredTopics, lesson.id), {
+      topicUnderstandingScores: entries,
+      understandingLevel: average,
+      updatedAt: serverTimestamp(),
     });
-    await batch.commit();
+  });
+  const exercisePatch = { topicUnderstandingScores: exerciseTopicScores, updatedAt: serverTimestamp() };
+  batch.update(doc(db, collections.dailyExerciseAssignments, exerciseId), exercisePatch);
+  batch.set(doc(db, collections.submissions, exerciseId), { ...exercisePatch, exerciseId }, { merge: true });
+  if (peerAssignmentId) {
+    batch.update(doc(db, collections.peerMarkingAssignments, peerAssignmentId), {
+      topicUnderstandingScores: exerciseTopicScores,
+      updatedAt: serverTimestamp(),
+    });
   }
-  return { topic: topicName, understandingLevel: score };
+  await batch.commit();
+  return { topic: topicName, understandingLevel: topicAverage, exerciseId };
 };
 
 export const saveCompletedLesson = async ({
@@ -1066,6 +1126,7 @@ export const saveCompletedLesson = async ({
   lessonType = 'online',
   status = 'completed',
 }) => {
+  await requireCoOwnerAccess({ tutorId, studentId, subject });
   const completedOn = status === 'completed' ? (lessonDate || new Date().toISOString().slice(0, 10)) : '';
   const scheduledFor = lessonDate || new Date().toISOString().slice(0, 10);
   if (!isFirebaseConfigured) {
@@ -1150,13 +1211,13 @@ export const assignStudentToTutor = async ({ studentId, tutorId, subject = DEFAU
 export const getAdminSubjectAssignmentData = async (subject = DEFAULT_SUBJECT) => {
   if (!isFirebaseConfigured) {
     const students = demoUsers.filter((user) => user.role === 'student' && getUserSubjects(user).includes(subject));
-    const tutors = demoUsers.filter((user) => user.role === 'tutor' && getApprovedTutorSubjects(user).includes(subject));
+    const tutors = getApprovedTutorOrTeacherProfiles(demoUsers, subject);
     const assignments = mockStudentAssignments
       .filter((assignment) => assignment.active !== false && (assignment.subject ?? DEFAULT_SUBJECT) === subject)
       .map((assignment) => {
         const student = students.find((item) => item.uid === assignment.studentId);
         const tutor = tutors.find((item) => item.uid === assignment.tutorId);
-        const isTeacher = Boolean(tutor?.isTeacher);
+        const isTeacher = isTeacherProfile(tutor);
         return {
           ...assignment,
           id: `${assignment.studentId}-${assignment.tutorId}-${subject}`,
@@ -1187,14 +1248,14 @@ export const getAdminSubjectAssignmentData = async (subject = DEFAULT_SUBJECT) =
 
   const users = usersSnapshot.docs.map((item) => item.data());
   const students = users.filter((user) => user.role === 'student' && getUserSubjects(user).includes(subject));
-  const tutors = users.filter((user) => user.role === 'tutor' && getApprovedTutorSubjects(user).includes(subject));
+  const tutors = getApprovedTutorOrTeacherProfiles(users, subject);
   const studentMap = new Map(students.map((student) => [student.uid, student]));
   const tutorMap = new Map(tutors.map((tutor) => [tutor.uid, tutor]));
   const assignments = assignmentsSnapshot.docs.map((item) => {
     const assignment = { id: item.id, ...item.data() };
     const student = studentMap.get(assignment.studentId);
     const tutor = tutorMap.get(assignment.tutorId);
-    const isTeacher = Boolean(tutor?.isTeacher);
+    const isTeacher = isTeacherProfile(tutor);
     return {
       ...assignment,
       studentName: student?.displayName ?? student?.email ?? 'Student',
@@ -1443,47 +1504,207 @@ export const subscribePeerMarkingAssignmentsForStudent = (reviewerId, onChange) 
   });
 };
 
-export const completePeerMarkingAssignment = async ({ assignmentId, reviewImageUrl, reviewFileName }) => {
-  if (!assignmentId) throw new Error('Peer marking assignment id is required.');
-  if (!isFirebaseConfigured) return { id: assignmentId, reviewImageUrl, reviewFileName, status: 'completed' };
+export const completePeerMarkingAssignment = async ({ assignmentId, reviewerId, reviewImages = [], reviewImageUrl, reviewFileName }) => {
+  const pages = reviewImages.length ? reviewImages : reviewImageUrl ? [{ url: reviewImageUrl, fileName: reviewFileName }] : [];
+  if (!assignmentId || !reviewerId || !pages.length) throw new Error('Reviewer, peer-marking assignment, and marked images are required.');
+  const primaryPage = pages[0];
+  if (!isFirebaseConfigured) return { id: assignmentId, reviewImageUrl: primaryPage.url, reviewFileName: primaryPage.fileName, reviewImages: pages, status: 'completed' };
   ensureDb();
   const assignmentRef = doc(db, collections.peerMarkingAssignments, assignmentId);
   const assignmentSnap = await getDoc(assignmentRef);
   if (!assignmentSnap.exists()) throw new Error('Peer marking assignment not found.');
   const assignment = assignmentSnap.data();
+  if (assignment.reviewerId !== reviewerId || assignment.status === 'completed') throw new Error('This peer-marking assignment is not available to you.');
+  if (!assignment.exerciseId || !assignment.reviewerExerciseId || !assignment.reviewerId || !assignment.revieweeId) {
+    throw new Error('This peer-marking assignment is missing its exercise links.');
+  }
+  const [targetExerciseSnap, reviewerExerciseSnap] = await Promise.all([
+    getDoc(doc(db, collections.dailyExerciseAssignments, assignment.exerciseId)),
+    getDoc(doc(db, collections.dailyExerciseAssignments, assignment.reviewerExerciseId)),
+  ]);
+  if (!targetExerciseSnap.exists() || !reviewerExerciseSnap.exists()) throw new Error('The linked peer-marking exercise could not be found.');
+  if (assignment.exerciseId === assignment.reviewerExerciseId || targetExerciseSnap.data().studentId !== assignment.revieweeId || reviewerExerciseSnap.data().studentId !== assignment.reviewerId) {
+    throw new Error('The peer-marking exercise links do not match the assigned learners.');
+  }
+  const targetExerciseRef = targetExerciseSnap.ref;
+  const targetSubmissionRef = doc(db, collections.submissions, assignment.exerciseId);
   const completion = {
-    reviewImageUrl,
-    reviewFileName,
+    reviewImageUrl: primaryPage.url,
+    reviewFileName: primaryPage.fileName,
+    reviewImages: pages,
+    markedExerciseId: assignment.exerciseId,
+    reviewerExerciseId: assignment.reviewerExerciseId,
     status: 'completed',
     completedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
   const batch = writeBatch(db);
   batch.update(assignmentRef, completion);
-  if (assignment.exerciseId) {
-    const exerciseRef = doc(db, collections.dailyExerciseAssignments, assignment.exerciseId);
-    const exerciseSnapshot = await getDoc(exerciseRef);
-    batch.update(exerciseRef, {
-      peerReviewed: 'Yes',
-      peerReviewStatus: 'completed',
-      peerReviewDate: serverTimestamp(),
-      submittedReviewImageUrl: reviewImageUrl,
-      submittedReviewFileName: reviewFileName,
-      peerReviewerId: assignment.reviewerId,
-    });
-    if (exerciseSnapshot.exists()) {
-      batch.set(doc(db, collections.submissions, assignment.exerciseId), {
-        ...completion,
-        exerciseId: assignment.exerciseId,
-        submittedReviewImageUrl: reviewImageUrl,
-        submittedReviewFileName: reviewFileName,
-        peerReviewerId: assignment.reviewerId,
-        peerMarkedAt: serverTimestamp(),
-      }, { merge: true });
-    }
-  }
+  const peerMarkFields = {
+    peerReviewed: 'Yes',
+    peerReviewStatus: 'completed',
+    peerReviewDate: serverTimestamp(),
+    peerMarkedImageUrl: primaryPage.url,
+    peerMarkedFileName: primaryPage.fileName,
+    peerMarkedImages: pages,
+    submittedReviewImageUrl: primaryPage.url,
+    submittedReviewFileName: primaryPage.fileName,
+    submittedReviewImages: pages,
+    peerReviewerId: assignment.reviewerId,
+    peerReviewerExerciseId: assignment.reviewerExerciseId,
+    peerMarkingAssignmentId: assignmentId,
+    markedExerciseId: assignment.exerciseId,
+  };
+  batch.update(targetExerciseRef, { ...peerMarkFields, updatedAt: serverTimestamp() });
+  batch.update(reviewerExerciseSnap.ref, {
+    peerMarkingImageUrl: primaryPage.url,
+    peerMarkingFileName: primaryPage.fileName,
+    peerMarkingImages: pages,
+    markedPeerExerciseId: assignment.exerciseId,
+    peerMarkingAssignmentId: assignmentId,
+    peerMarkingRevieweeId: assignment.revieweeId,
+    peerMarkingStatus: 'completed',
+    updatedAt: serverTimestamp(),
+  });
+  batch.set(targetSubmissionRef, {
+    ...completion,
+    ...peerMarkFields,
+    exerciseId: assignment.exerciseId,
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
   await batch.commit();
   return { id: assignmentId, reviewImageUrl, reviewFileName, status: 'completed' };
+};
+
+export const saveTutorPeerMarkingReview = async ({ tutorId, peerAssignmentId, understandingLevel }) => {
+  const score = Number(understandingLevel);
+  if (!tutorId || !peerAssignmentId) throw new Error('Tutor and peer-marking assignment are required.');
+  if (understandingLevel === '' || understandingLevel === null || understandingLevel === undefined) throw new Error('Enter an understanding score from 0 to 10.');
+  if (understandingLevel === '' || understandingLevel === null || understandingLevel === undefined) throw new Error('Enter an understanding score from 0 to 10.');
+  if (!Number.isFinite(score) || score < 0 || score > 10) throw new Error('Enter an understanding score from 0 to 10.');
+  if (!isFirebaseConfigured) return { peerAssignmentId, understandingLevel: score, reviewed: true };
+
+  ensureDb();
+  const assignmentRef = doc(db, collections.peerMarkingAssignments, peerAssignmentId);
+  const assignmentSnap = await getDoc(assignmentRef);
+  if (!assignmentSnap.exists()) throw new Error('Peer-marking assignment not found.');
+  const assignment = assignmentSnap.data();
+  if (assignment.status !== 'completed' || !assignment.reviewImageUrl || !assignment.reviewerId || !assignment.exerciseId) {
+    throw new Error('Only completed peer-marking work can be reviewed.');
+  }
+  const subject = assignment.subject ?? DEFAULT_SUBJECT;
+  const reviewerContext = await requireTutorAccess({ tutorId, studentId: assignment.reviewerId, subject, allowedRoles: ['co-owner', 'marker'] });
+
+  const [targetExercise, reviewerExerciseSnap, topicSnapshot] = await Promise.all([
+    getExerciseAssignmentById(assignment.exerciseId),
+    assignment.reviewerExerciseId
+      ? getDoc(doc(db, collections.dailyExerciseAssignments, assignment.reviewerExerciseId))
+      : Promise.resolve(null),
+    getDocs(query(
+      collection(db, collections.coveredTopics),
+      where('studentId', '==', assignment.reviewerId),
+      where('subject', '==', subject),
+    )),
+  ]);
+  if (!targetExercise || targetExercise.studentId !== assignment.revieweeId) throw new Error('The marked exercise does not match this peer assignment.');
+  if (assignment.reviewerExerciseId && (!reviewerExerciseSnap?.exists() || reviewerExerciseSnap.data().studentId !== assignment.reviewerId)) {
+    throw new Error('The reviewer exercise does not match this peer assignment.');
+  }
+
+  const topic = String(assignment.topic || targetExercise.topic || '').trim();
+  if (!topic) throw new Error('No topic is attached to the marked exercise.');
+  const topicDocs = topicSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  const matchingTopics = topicDocs.filter((lesson) => getLessonTopicEntries(lesson).some((entry) => entry.topic.toLocaleLowerCase() === topic.toLocaleLowerCase()));
+  const reviewRecord = {
+    peerAssignmentId,
+    exerciseId: assignment.exerciseId,
+    markedExerciseId: assignment.exerciseId,
+    reviewerExerciseId: assignment.reviewerExerciseId ?? '',
+    exerciseTitle: assignment.title ?? targetExercise.title ?? 'Peer-marked exercise',
+    assignmentDate: assignment.assignmentDate ?? targetExercise.assignmentDate ?? '',
+    understandingLevel: score,
+    updatedAt: new Date().toISOString(),
+  };
+  const recordsByAssignment = new Map();
+  matchingTopics.forEach((lesson) => getLessonTopicEntries(lesson).forEach((entry) => {
+    if (entry.topic.toLocaleLowerCase() !== topic.toLocaleLowerCase()) return;
+    (entry.exerciseScores ?? []).forEach((record) => {
+      if (record?.peerAssignmentId) recordsByAssignment.set(record.peerAssignmentId, record);
+    });
+  }));
+  recordsByAssignment.set(peerAssignmentId, reviewRecord);
+  const recentRecords = [...recordsByAssignment.values()]
+    .sort((left, right) => String(right.assignmentDate ?? '').localeCompare(String(left.assignmentDate ?? ''))
+      || String(right.updatedAt ?? '').localeCompare(String(left.updatedAt ?? '')))
+    .slice(0, 7);
+  const average = Math.round(recentRecords.reduce((sum, record) => sum + Number(record.understandingLevel), 0) / recentRecords.length);
+  const reviewedAt = serverTimestamp();
+  const tutorReviewPatch = {
+    tutorReviewStatus: 'reviewed',
+    tutorReviewed: true,
+    tutorReviewedBy: tutorId,
+    tutorReviewedAt: reviewedAt,
+    tutorUnderstandingLevel: score,
+    tutorReviewTopic: topic,
+    updatedAt: serverTimestamp(),
+  };
+  const batch = writeBatch(db);
+  batch.update(assignmentRef, tutorReviewPatch);
+  if (assignment.reviewerExerciseId && reviewerExerciseSnap?.exists()) {
+    batch.update(reviewerExerciseSnap.ref, {
+      peerMarkingTutorReviewStatus: 'reviewed',
+      peerMarkingTutorReviewedBy: tutorId,
+      peerMarkingTutorReviewedAt: reviewedAt,
+      peerMarkingTutorUnderstandingLevel: score,
+      peerMarkingTutorReviewTopic: topic,
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  if (matchingTopics.length) {
+    matchingTopics.forEach((lesson, lessonIndex) => {
+      const originalEntries = Array.isArray(lesson.topicUnderstandingScores) && lesson.topicUnderstandingScores.length
+        ? lesson.topicUnderstandingScores
+        : (lesson.topics?.length ? lesson.topics : [lesson.topic]).filter(Boolean).map((entryTopic) => ({ topic: entryTopic, understandingLevel: lesson.understandingLevel }));
+      const entries = originalEntries.map((entry) => {
+        if (String(entry.topic).trim().toLocaleLowerCase() !== topic.toLocaleLowerCase()) return entry;
+        return {
+          ...entry,
+          understandingLevel: average,
+          ...(lessonIndex === 0 ? { exerciseScores: recentRecords } : {}),
+        };
+      });
+      const lessonAverage = Math.round(entries.reduce((sum, entry) => sum + Number(entry.understandingLevel ?? lesson.understandingLevel ?? 5), 0) / entries.length);
+      batch.update(doc(db, collections.coveredTopics, lesson.id), {
+        topicUnderstandingScores: entries,
+        understandingLevel: lessonAverage,
+        updatedAt: serverTimestamp(),
+      });
+    });
+  } else {
+    const topicEntry = { topic, understandingLevel: average, exerciseScores: recentRecords };
+    batch.set(doc(collection(db, collections.coveredTopics)), {
+      studentId: assignment.reviewerId,
+      tutorId,
+      subject,
+      topic,
+      topics: [topic],
+      topicUnderstandingScores: [topicEntry],
+      topicReport: 'Topic captured from tutor-reviewed peer marking; lesson not completed.',
+      note: 'Topic captured from tutor-reviewed peer marking; lesson not completed.',
+      understandingLevel: average,
+      studentName: assignment.reviewerName ?? reviewerContext.displayName ?? reviewerContext.name ?? '',
+      lessonDate: assignment.assignmentDate ?? new Date().toISOString().slice(0, 10),
+      lessonType: 'online',
+      status: 'planned',
+      completedOn: '',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      source: 'peer-marking-review',
+    });
+  }
+  await batch.commit();
+  return { peerAssignmentId, topic, understandingLevel: score, averageUnderstandingLevel: average, reviewed: true };
 };
 
 export const savePeerReview = async (payload) => {
@@ -1526,24 +1747,23 @@ export const getExerciseAssignmentById = async (exerciseId) => {
   };
 };
 
-export const saveTutorMarkedExercise = async ({ tutorId, exerciseId, markedImageUrl, markedFileName }) => {
-  if (!tutorId || !exerciseId || !markedImageUrl) throw new Error('Tutor, exercise, and marked work are required.');
-  if (!isFirebaseConfigured) return { exerciseId, markedImageUrl, markedFileName, tutorMarkingStatus: 'completed' };
+export const saveTutorMarkedExercise = async ({ tutorId, exerciseId, markedImages = [], markedImageUrl, markedFileName }) => {
+  const pages = markedImages.length ? markedImages : markedImageUrl ? [{ url: markedImageUrl, fileName: markedFileName }] : [];
+  if (!tutorId || !exerciseId || !pages.length) throw new Error('Tutor, exercise, and marked work are required.');
+  const firstPage = pages[0];
+  const exercise = await getExerciseAssignmentById(exerciseId);
+  if (!exercise) throw new Error('Exercise assignment not found.');
+  if (!exercise.submittedImageUrl) throw new Error('The student has not submitted work for this exercise yet.');
+  await requireTutorAccess({ tutorId, studentId: exercise.studentId, subject: exercise.subject ?? DEFAULT_SUBJECT, allowedRoles: ['co-owner', 'marker'] });
+  if (!isFirebaseConfigured) return { exerciseId, markedImageUrl: firstPage.url, markedImages: pages, markedFileName: firstPage.fileName, tutorMarkingStatus: 'completed' };
   ensureDb();
   const exerciseRef = doc(db, collections.dailyExerciseAssignments, exerciseId);
-  const exerciseSnapshot = await getDoc(exerciseRef);
-  if (!exerciseSnapshot.exists()) throw new Error('Exercise assignment not found.');
-  const exercise = exerciseSnapshot.data();
-  if (!exercise.submittedImageUrl) throw new Error('The student has not submitted work for this exercise yet.');
-  const contexts = await getTutorAssignedStudentContexts(tutorId);
-  if (!contexts.some((item) => item.studentId === exercise.studentId && item.subject === (exercise.subject ?? DEFAULT_SUBJECT))) {
-    throw new Error('You can only mark work for students assigned to you.');
-  }
 
   const markedAt = serverTimestamp();
   const patch = {
-    tutorMarkedImageUrl: markedImageUrl,
-    tutorMarkedFileName: markedFileName,
+    tutorMarkedImageUrl: firstPage.url,
+    tutorMarkedFileName: firstPage.fileName,
+    tutorMarkedImages: pages,
     tutorMarkedBy: tutorId,
     tutorMarkedAt: markedAt,
     tutorMarkingStatus: 'completed',
@@ -1569,20 +1789,26 @@ export const getCompletedPeerMarkingWorkForTutor = async ({ tutorId, studentId, 
     collection(db, collections.peerMarkingAssignments),
     where('reviewerId', '==', studentId),
   ));
-  return snapshot.docs
+  const assignments = snapshot.docs
     .map((item) => ({ id: item.id, ...item.data() }))
     .filter((item) => item.subject === subject && item.status === 'completed' && item.reviewImageUrl)
     .sort((left, right) => String(right.assignmentDate ?? '').localeCompare(String(left.assignmentDate ?? '')));
+  return Promise.all(assignments.map(async (assignment) => ({
+    ...assignment,
+    targetExercise: assignment.exerciseId ? await getExerciseAssignmentById(assignment.exerciseId) : null,
+  })));
 };
 
 export const deleteExerciseAssignmentForTutor = async ({ tutorId, exerciseId }) => {
   if (!tutorId || !exerciseId) throw new Error('Tutor and exercise are required to delete an assignment.');
   const exercise = await getExerciseAssignmentById(exerciseId);
   if (!exercise) throw new Error('Exercise assignment not found.');
-  const contexts = await getTutorAssignedStudentContexts(tutorId);
-  if (!contexts.some((item) => item.studentId === exercise.studentId && item.subject === (exercise.subject ?? DEFAULT_SUBJECT))) {
-    throw new Error('You can only delete exercises for students assigned to you.');
+  const now = new Date();
+  const today = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
+  if (String(exercise.assignmentDate ?? '').slice(0, 10) <= today || isExerciseSubmitted(exercise)) {
+    throw new Error('Only unsubmitted future exercises can be deleted.');
   }
+  await requireCoOwnerAccess({ tutorId, studentId: exercise.studentId, subject: exercise.subject ?? DEFAULT_SUBJECT });
   if (!isFirebaseConfigured) return { deleted: true, storageUrls: [] };
 
   ensureDb();
@@ -1969,9 +2195,7 @@ const getLocalDate = () => {
 
 export const regenerateFutureUnsubmittedExercisesForTutor = async ({ tutorId, student, subject = DEFAULT_SUBJECT, onProgress }) => {
   if (!tutorId || !student?.uid) throw new Error('Tutor and student are required to regenerate exercises.');
-  const contexts = await getTutorAssignedStudentContexts(tutorId);
-  const assignedContext = contexts.find((context) => context.studentId === student.uid && context.subject === subject);
-  if (!assignedContext) throw new Error('This student is not assigned to this tutor for the selected subject.');
+  const assignedContext = await requireCoOwnerAccess({ tutorId, studentId: student.uid, subject });
 
   if (!isFirebaseConfigured) {
     return generateExercisePlanIfEligible({ student, subject, mode: 'weekly', overrideFutureUnsubmitted: true, onProgress });
@@ -2044,30 +2268,13 @@ export const subscribeToExerciseGenerationStatus = (studentId, subject, callback
 
 export const subscribeToAssignedStudentsForTutor = (tutorId, callback, subject = DEFAULT_SUBJECT) => {
   if (!isFirebaseConfigured) {
-    const assignedIds = new Set(
-      mockStudentAssignments
-        .filter((assignment) => assignment.tutorId === tutorId && assignment.active !== false && (assignment.subject ?? DEFAULT_SUBJECT) === subject)
-        .map((assignment) => assignment.studentId),
-    );
-    const demoStudents = demoUsers.filter((user) => user.role === 'student' && assignedIds.has(user.uid));
-    callback(demoStudents);
+    getAssignedStudentsForTutor(tutorId, subject).then(callback);
     return () => {};
   }
-  const q = query(
-    collection(db, collections.tutorStudentAssignments),
-    where('tutorId', '==', tutorId),
-    where('subject', '==', subject),
-    where('active', '==', true),
-  );
-  return onSnapshot(q, async (snapshot) => {
-    const studentSnapshots = await Promise.all(
-      snapshot.docs
-        .map((item) => item.data().studentId)
-        .filter(Boolean)
-        .map((studentId) => getDoc(doc(db, collections.users, studentId))),
-    );
-    callback(studentSnapshots.filter((item) => item.exists()).map((item) => item.data()));
-  }, (error) => console.error('[Examifying][Firestore] subscribeToAssignedStudents error', error));
+  const refresh = () => getAssignedStudentsForTutor(tutorId, subject).then(callback).catch((error) => console.error('[Examifying][Firestore] subscribeToAssignedStudents error', error));
+  const ownerUnsubscribe = onSnapshot(query(collection(db, collections.tutorStudentAssignments), where('tutorId', '==', tutorId), where('active', '==', true)), refresh);
+  const sharedUnsubscribe = onSnapshot(query(collection(db, collections.staffStudentAccess), where('tutorId', '==', tutorId), where('active', '==', true)), refresh);
+  return () => { ownerUnsubscribe(); sharedUnsubscribe(); };
 };
 
 export const subscribeToUnassignedStudents = (callback, subject = DEFAULT_SUBJECT) => {
@@ -2118,34 +2325,92 @@ export const getTutorAssignedStudentContexts = async (tutorId) => {
       .filter((assignment) => assignment.tutorId === tutorId && assignment.active !== false)
       .map((assignment) => {
         const student = demoUsers.find((user) => user.uid === assignment.studentId) ?? {};
-        return { ...student, studentId: assignment.studentId, subject: assignment.subject ?? DEFAULT_SUBJECT, assignmentId: assignment.id };
+        return { ...student, studentId: assignment.studentId, subject: assignment.subject ?? DEFAULT_SUBJECT, assignmentId: assignment.id, accessRole: 'co-owner', isPrimaryTutor: true };
       });
   }
 
   ensureDb();
-  const assignmentsSnapshot = await getDocs(query(
-    collection(db, collections.tutorStudentAssignments),
-    where('tutorId', '==', tutorId),
-    where('active', '==', true),
-  ));
-  const assignments = assignmentsSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
-  const studentSnapshots = await Promise.all(assignments.map((assignment) => getDoc(doc(db, collections.users, assignment.studentId))));
-  return assignments.map((assignment, index) => ({
+  const [primarySnapshot, sharedSnapshot] = await Promise.all([
+    getDocs(query(collection(db, collections.tutorStudentAssignments), where('tutorId', '==', tutorId), where('active', '==', true))),
+    getDocs(query(collection(db, collections.staffStudentAccess), where('tutorId', '==', tutorId), where('active', '==', true))),
+  ]);
+  const primary = primarySnapshot.docs.map((item) => ({ id: item.id, ...item.data(), accessRole: 'co-owner', isPrimaryTutor: true }));
+  const shared = sharedSnapshot.docs.map((item) => ({ id: item.id, ...item.data(), isPrimaryTutor: false }));
+  const records = [...primary, ...shared];
+  const studentSnapshots = await Promise.all(records.map((assignment) => getDoc(doc(db, collections.users, assignment.studentId))));
+  const contexts = records.map((assignment, index) => ({
     ...(studentSnapshots[index].exists() ? studentSnapshots[index].data() : {}),
     studentId: assignment.studentId,
     uid: assignment.studentId,
     subject: assignment.subject ?? DEFAULT_SUBJECT,
     assignmentId: assignment.id,
+    accessRole: assignment.accessRole,
+    isPrimaryTutor: assignment.isPrimaryTutor,
+    accessGrantedBy: assignment.createdBy ?? null,
   }));
+  const unique = new Map();
+  contexts.forEach((context) => {
+    const key = `${context.studentId}:${context.subject}`;
+    const current = unique.get(key);
+    if (!current || context.isPrimaryTutor) unique.set(key, context);
+  });
+  return [...unique.values()];
+};
+
+export const getStaffMembersForAccess = async ({ tutorId, subject = DEFAULT_SUBJECT }) => {
+  if (!tutorId) return [];
+  if (!isFirebaseConfigured) return getApprovedTutorOrTeacherProfiles(demoUsers, subject).filter((user) => user.uid !== tutorId);
+  ensureDb();
+  const snapshot = await getDocs(collection(db, collections.users));
+  return getApprovedTutorOrTeacherProfiles(snapshot.docs.map((item) => item.data()), subject).filter((user) => user.uid !== tutorId);
+};
+
+export const setStaffStudentAccess = async ({ actorId, studentId, tutorId, subject = DEFAULT_SUBJECT, accessRole }) => {
+  if (!STAFF_ACCESS_ROLES.includes(accessRole)) throw new Error('Choose co-owner, marker, or viewer access.');
+  const actor = await requireCoOwnerAccess({ tutorId: actorId, studentId, subject });
+  if (!actor.isPrimaryTutor && actor.accessRole !== 'co-owner') throw new Error('Only a co-owner can manage staff access.');
+  if (!isFirebaseConfigured) throw new Error('Staff access management requires a connected Firebase project.');
+  ensureDb();
+  const staffSnapshot = await getDoc(doc(db, collections.users, tutorId));
+  if (!staffSnapshot.exists() || !isTutorOrTeacherProfile(staffSnapshot.data())) throw new Error('Choose a registered tutor or teacher account.');
+  if (tutorId === actorId) throw new Error('You already have co-owner access to this student.');
+  const id = buildStaffAccessId({ studentId, tutorId, subject });
+  await setDoc(doc(db, collections.staffStudentAccess, id), {
+    studentId, tutorId, subject, accessRole, active: true,
+    createdBy: actorId, updatedAt: serverTimestamp(), createdAt: serverTimestamp(),
+  });
+  return { id, studentId, tutorId, subject, accessRole, active: true };
+};
+
+export const getStaffStudentAccess = async ({ studentId, subject = DEFAULT_SUBJECT, tutorId }) => {
+  if (!isFirebaseConfigured) return [];
+  ensureDb();
+  const snapshot = await getDocs(query(collection(db, collections.staffStudentAccess), where('studentId', '==', studentId), where('subject', '==', subject), where('active', '==', true)));
+  const records = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  const people = await Promise.all(records.map((record) => getDoc(doc(db, collections.users, record.tutorId))));
+  return records.map((record, index) => ({ ...record, displayName: people[index].exists() ? (people[index].data().displayName || people[index].data().email) : record.tutorId, isCurrentUser: record.tutorId === tutorId }));
+};
+
+export const revokeStaffStudentAccess = async ({ actorId, studentId, subject = DEFAULT_SUBJECT, accessId }) => {
+  await requireCoOwnerAccess({ tutorId: actorId, studentId, subject });
+  if (!isFirebaseConfigured) throw new Error('Staff access management requires a connected Firebase project.');
+  ensureDb();
+  const ref = doc(db, collections.staffStudentAccess, accessId);
+  const snapshot = await getDoc(ref);
+  if (!snapshot.exists() || snapshot.data().studentId !== studentId || snapshot.data().subject !== subject) throw new Error('Staff access record not found.');
+  await updateDoc(ref, { active: false, updatedAt: serverTimestamp(), revokedBy: actorId });
 };
 
 export const getTutorReportsForAssignedStudents = async (tutorId) => {
   if (!tutorId) return [];
-  if (!isFirebaseConfigured) return mockTutorReports.filter((report) => report.tutorId === tutorId);
+  const contexts = await getTutorAssignedStudentContexts(tutorId);
+  if (!isFirebaseConfigured) {
+    const keys = new Set(contexts.map((context) => `${context.studentId}:${context.subject}`));
+    return mockTutorReports.filter((report) => keys.has(`${report.studentId}:${report.subject ?? DEFAULT_SUBJECT}`));
+  }
   ensureDb();
-  const snapshot = await getDocs(query(collection(db, collections.tutorReports), where('tutorId', '==', tutorId)));
-  return snapshot.docs
-    .map((item) => ({ id: item.id, ...item.data() }))
+  const snapshots = await Promise.all(contexts.map((context) => getDocs(query(collection(db, collections.tutorReports), where('studentId', '==', context.studentId), where('subject', '==', context.subject)))));
+  return snapshots.flatMap((snapshot) => snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))
     .sort((left, right) => new Date(right.updatedAt?.toDate?.() ?? right.updatedAt ?? right.createdAt?.toDate?.() ?? right.createdAt ?? 0) - new Date(left.updatedAt?.toDate?.() ?? left.updatedAt ?? left.createdAt?.toDate?.() ?? left.createdAt ?? 0));
 };
 
@@ -2171,10 +2436,14 @@ export const getTutorExercisesForAssignedStudents = async (tutorId) => {
 
 export const getTutorLessonsForAssignedStudents = async (tutorId) => {
   if (!tutorId) return [];
-  if (!isFirebaseConfigured) return mockCompletedLessons.filter((lesson) => lesson.tutorId === tutorId);
+  const contexts = await getTutorAssignedStudentContexts(tutorId);
+  if (!isFirebaseConfigured) {
+    const keys = new Set(contexts.map((context) => `${context.studentId}:${context.subject}`));
+    return mockCompletedLessons.filter((lesson) => keys.has(`${lesson.studentId}:${lesson.subject ?? DEFAULT_SUBJECT}`));
+  }
   ensureDb();
-  const snapshot = await getDocs(query(collection(db, collections.coveredTopics), where('tutorId', '==', tutorId)));
-  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() })).sort((left, right) => String(right.completedOn || right.lessonDate || '').localeCompare(String(left.completedOn || left.lessonDate || '')));
+  const snapshots = await Promise.all(contexts.map((context) => getDocs(query(collection(db, collections.coveredTopics), where('studentId', '==', context.studentId), where('subject', '==', context.subject)))));
+  return snapshots.flatMap((snapshot) => snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))).sort((left, right) => String(right.completedOn || right.lessonDate || '').localeCompare(String(left.completedOn || left.lessonDate || '')));
 };
 
 export const getLessonsForStudent = async (studentId) => {
@@ -2193,10 +2462,13 @@ export const getLessonById = async (lessonId) => {
   return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
 };
 
-export const updateCompletedLesson = async ({ lessonId, topicReport = '', topicUnderstandingScores = [], topics = [], understandingLevel = null, lessonDate, lessonType, status }) => {
+export const updateCompletedLesson = async ({ lessonId, tutorId, topicReport = '', topicUnderstandingScores = [], topics = [], understandingLevel = null, lessonDate, lessonType, status }) => {
   if (!lessonId) throw new Error('Lesson id is required.');
   const isCompleted = status === 'completed';
-  if (!isFirebaseConfigured) return { id: lessonId, topicReport, topicUnderstandingScores, topics, understandingLevel, lessonDate, lessonType, status };
+  const lesson = await getLessonById(lessonId);
+  if (!lesson) throw new Error('Lesson not found.');
+  await requireCoOwnerAccess({ tutorId, studentId: lesson.studentId, subject: lesson.subject ?? DEFAULT_SUBJECT });
+  if (!isFirebaseConfigured) return { ...lesson, id: lessonId, topicReport, topicUnderstandingScores, topics, understandingLevel, lessonDate, lessonType, status };
   ensureDb();
   const payload = {
     topicReport,
@@ -2215,8 +2487,11 @@ export const updateCompletedLesson = async ({ lessonId, topicReport = '', topicU
   return { id: lessonId, ...payload };
 };
 
-export const deleteLesson = async (lessonId) => {
+export const deleteLesson = async (lessonId, tutorId) => {
   if (!lessonId) throw new Error('Lesson id is required.');
+  const lesson = await getLessonById(lessonId);
+  if (!lesson) throw new Error('Lesson not found.');
+  await requireCoOwnerAccess({ tutorId, studentId: lesson.studentId, subject: lesson.subject ?? DEFAULT_SUBJECT });
   if (!isFirebaseConfigured) return { id: lessonId, deleted: true };
   ensureDb();
   await deleteDoc(doc(db, collections.coveredTopics, lessonId));

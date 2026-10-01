@@ -153,6 +153,9 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
         title: target.title ?? '',
         topic: target.topic ?? '',
         submittedImageUrl: target.submittedImageUrl ?? '',
+        submittedImages: Array.isArray(target.submittedImages) && target.submittedImages.length
+          ? target.submittedImages
+          : target.submittedImageUrl ? [{ url: target.submittedImageUrl, fileName: target.submittedFileName ?? '', pageNumber: 1 }] : [],
         submittedFileName: target.submittedFileName ?? '',
         paperIds: target.paperIds ?? [],
         questionLinks: target.questionLinks ?? [],

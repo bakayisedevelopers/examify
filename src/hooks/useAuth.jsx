@@ -5,7 +5,6 @@ import {
   getUserProfile,
   loginWithEmail,
   logout,
-  markStudentPaymentComplete,
   registerWithEmail,
   signInWithGoogle,
   updateStudentOnboarding,
@@ -58,14 +57,6 @@ export const AuthProvider = ({ children }) => {
     },
     updateStudentOnboarding: async (payload) => {
       const updated = await updateStudentOnboarding(payload);
-      setState((current) => ({
-        ...current,
-        profile: { ...current.profile, ...updated },
-      }));
-      return updated;
-    },
-    markStudentPaymentComplete: async (payload) => {
-      const updated = await markStudentPaymentComplete(payload);
       setState((current) => ({
         ...current,
         profile: { ...current.profile, ...updated },

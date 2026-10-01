@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { ChevronDown } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
@@ -20,23 +21,25 @@ const TutorReadinessPanel = ({ rows }) => {
   return (
     <div className="panel space-y-4 p-5">
       <div>
-        <p className="text-sm font-semibold uppercase tracking-[0.25em] text-brand-700">AI readiness</p>
-        <h2 className="mt-2 text-xl font-bold text-slate-950">What is missing before students can receive generated exercises</h2>
+        <h2 className="text-xl font-bold text-slate-950">Subjects missing requirements</h2>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         {rows.map((row) => (
-          <div key={row.id} className="rounded-2xl bg-slate-50 p-4">
-            <p className="font-semibold text-slate-950">{row.studentName} • {row.subject}</p>
-            <div className="mt-3 space-y-2">
+          <details key={row.id} className="group rounded-2xl bg-slate-50 p-4">
+            <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3">
+              <span className="font-semibold text-slate-950">{row.studentName} • {row.subject}</span>
+              <span className="flex items-center gap-2"><span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">{Object.values(row.checks).filter((passed) => !passed).length} missing</span><ChevronDown className="h-4 w-4 text-slate-500 transition-transform group-open:rotate-180" aria-hidden="true" /></span>
+            </summary>
+            <div className="mt-3 space-y-2 border-t border-slate-200 pt-3">
               {Object.entries(row.checks).map(([key, passed]) => (
                 <div key={key} className="flex items-center justify-between gap-3 text-sm">
                   <span className="text-slate-600">{labels[key]}</span>
                   <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${passed ? 'bg-lime-400/15 text-lime-300 border border-lime-400/30' : 'bg-amber-400/15 text-amber-300 border border-amber-400/30'}`}>{passed ? 'Done' : 'Missing'}</span>
                 </div>
               ))}
+              <p className="text-xs text-slate-500">Analyzed papers available: {row.paperCount}.</p>
             </div>
-            <p className="mt-3 text-xs text-slate-500">Analyzed papers available: {row.paperCount}.</p>
-          </div>
+          </details>
         ))}
       </div>
     </div>
@@ -101,6 +104,15 @@ export const TutorDashboardPage = () => {
       paperCount: paperCounts[`${subject}-${student.grade ?? ''}-${student.province ?? ''}`] ?? 0,
     };
   }).filter((row) => !Object.values(row.checks).every(Boolean)), [students, lessons, paperCounts, reports]);
+  const studentList = useMemo(() => {
+    const grouped = new Map();
+    students.forEach((context) => {
+      const current = grouped.get(context.studentId) ?? { ...context, subjects: [] };
+      if (context.subject && !current.subjects.includes(context.subject)) current.subjects.push(context.subject);
+      grouped.set(context.studentId, current);
+    });
+    return [...grouped.values()];
+  }, [students]);
 
   return (
     <AppShell
@@ -111,39 +123,39 @@ export const TutorDashboardPage = () => {
       onLogout={logout}
     >
       {!approvedSubjects.length ? (
-        <div className="panel p-5 text-sm text-amber-700">Add approved subjects from Profile → Subjects before students can be assigned to you.</div>
+        <div className="panel flex flex-wrap items-center justify-between gap-4 p-5">
+          <p className="text-sm text-amber-700">Add approved subjects from Profile → Subjects before students can be assigned to you.</p>
+          <Link to={`${basePath}/profile/subjects`} className="btn-primary">Add approved subjects</Link>
+        </div>
       ) : null}
       {status ? <div className="panel p-4 text-sm text-slate-700">{status}</div> : null}
-      <TutorReadinessPanel rows={readinessRows} />
-
-      <SectionHeader eyebrow="Students" title="Assigned learners" description="Each row is scoped to the subject you are assigned to tutor for that student." />
+      <SectionHeader eyebrow="Students" title="Assigned learners" description="Open a learner to switch between the subjects available to you." />
       <div className="space-y-4">
-        {students.map((student) => {
-          const subject = student.subject ?? DEFAULT_SUBJECT;
-          const reportReady = hasReportFor(student);
+        {studentList.map((student) => {
+          const firstSubject = student.subjects[0] ?? student.subject ?? DEFAULT_SUBJECT;
           return (
             <button
-              key={`${student.studentId}-${subject}`}
+              key={student.studentId}
               type="button"
-              onClick={() => navigate(`${basePath}/students/${student.studentId}?subject=${encodeURIComponent(subject)}`)}
+              onClick={() => navigate(`${basePath}/students/${student.studentId}?subject=${encodeURIComponent(firstSubject)}`)}
               className="panel block w-full p-5 text-left transition hover:shadow-lg"
             >
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-lg font-semibold text-slate-950">{student.displayName || student.name || student.email || 'Student'}</p>
-                  <p className="mt-1 text-sm text-slate-500">{student.grade || '?'} • {student.province || '?'} • {subject}</p>
-                  <p className="mt-2 text-xs text-slate-500">{reportReady ? 'Initial report exists. Click to manage lessons and exercises.' : 'No initial report yet. Click to create the first report.'}</p>
+                  <p className="mt-1 text-sm text-slate-500">{student.grade || '?'} • {student.province || '?'}</p>
+                  <p className="mt-2 text-xs text-slate-500">Subjects: {student.subjects.join(', ')}</p>
                 </div>
                 <div className="flex flex-col items-end gap-2">
-                  <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.25em] ${student.paymentCompleted ? 'bg-lime-400/15 text-lime-400 border border-lime-400/30' : 'bg-amber-400/15 text-amber-300 border border-amber-400/30'}`}>{student.paymentCompleted ? 'paid' : 'unpaid'}</span>
-                  <span className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] ${reportReady ? 'bg-emerald-400/15 text-emerald-300 border border-emerald-400/30' : 'bg-slate-800 text-slate-400 border border-slate-700'}`}>{reportReady ? 'report ready' : 'report needed'}</span>
+                  <span className="rounded-full bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-300">{student.subjects.length} {student.subjects.length === 1 ? 'subject' : 'subjects'}</span>
                 </div>
               </div>
             </button>
           );
         })}
-        {approvedSubjects.length && !students.length ? <div className="panel p-5 text-sm text-slate-500">No students are assigned to you yet.</div> : null}
+        {approvedSubjects.length && !studentList.length ? <div className="panel p-5 text-sm text-slate-500">No students are assigned to you yet.</div> : null}
       </div>
+      <TutorReadinessPanel rows={readinessRows} />
     </AppShell>
   );
 };

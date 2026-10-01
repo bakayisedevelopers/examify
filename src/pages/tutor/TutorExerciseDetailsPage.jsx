@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { ExerciseCard } from '../../components/dashboard/ExerciseCard';
 import { useAuth } from '../../hooks/useAuth';
-import { deleteExerciseAssignmentForTutor, getExerciseAssignmentById, getStudentTopicScoresForTutor } from '../../services/firestoreService';
+import { deleteExerciseAssignmentForTutor, getExerciseAssignmentById, getStudentTopicScoresForTutor, getTutorAssignedStudentContexts } from '../../services/firestoreService';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
 import { getExerciseAvailability } from '../../utils/exerciseRules';
 import { useEffectiveRole } from '../../utils/effectiveRole';
@@ -18,6 +18,7 @@ export const TutorExerciseDetailsPage = () => {
   const [status, setStatus] = useState('Loading exercise...');
   const [isDeleting, setIsDeleting] = useState(false);
   const [topicScores, setTopicScores] = useState({});
+  const [accessRole, setAccessRole] = useState('viewer');
 
   useEffect(() => {
     getExerciseAssignmentById(exerciseId)
@@ -25,8 +26,12 @@ export const TutorExerciseDetailsPage = () => {
         setExercise(result);
         setStatus(result ? '' : 'Exercise not found.');
         if (result && profile?.uid) {
-          const scores = await getStudentTopicScoresForTutor({ tutorId: profile.uid, studentId: result.studentId, subject: result.subject });
+          const [scores, contexts] = await Promise.all([
+            getStudentTopicScoresForTutor({ tutorId: profile.uid, studentId: result.studentId, subject: result.subject }),
+            getTutorAssignedStudentContexts(profile.uid),
+          ]);
           setTopicScores(scores);
+          setAccessRole(contexts.find((context) => context.studentId === result.studentId && context.subject === result.subject)?.accessRole || 'viewer');
         }
       })
       .catch((error) => setStatus(error.message || 'Could not load exercise.'));
@@ -54,11 +59,11 @@ export const TutorExerciseDetailsPage = () => {
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Link to={`${basePath}/exercises`} className="btn-secondary inline-flex w-fit">Back to exercises</Link>
-            <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={removeExercise} disabled={isDeleting}>
+            {accessRole === 'co-owner' ? <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={removeExercise} disabled={isDeleting}>
               <Trash2 className="h-4 w-4" aria-hidden="true" /> {isDeleting ? 'Deleting...' : 'Delete exercise'}
-            </button>
+            </button> : null}
           </div>
-          <ExerciseCard exercise={exercise} availability={availability} paymentLocked={false} studentId={exercise.studentId} tutorId={profile?.uid} topicScores={topicScores} onTopicScoreSaved={(topic, score) => setTopicScores((current) => ({ ...current, [topic]: score }))} showQuestionLinks viewerRole="tutor" />
+          <ExerciseCard exercise={exercise} availability={availability} paymentLocked={false} studentId={exercise.studentId} tutorId={profile?.uid} topicScores={topicScores} onTopicScoreSaved={(topic, score) => setTopicScores((current) => ({ ...current, [topic]: score }))} showQuestionLinks viewerRole="tutor" accessRole={accessRole} />
         </div>
       ) : null}
     </AppShell>

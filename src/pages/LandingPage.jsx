@@ -13,8 +13,9 @@ import {
   Sparkles,
   Users,
 } from 'lucide-react';
-import { Link, Navigate } from 'react-router-dom';
+import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { SubscriptionPlanSelector } from '../components/billing/SubscriptionPlanSelector';
 
 import heroMathsImg from '../assets/images/hero_maths_learning_1790782334325.jpg';
 import dailyExerciseImg from '../assets/images/feature_daily_exercise_1790782345431.jpg';
@@ -22,6 +23,12 @@ import peerMarkingImg from '../assets/images/feature_peer_marking_1790782355192.
 
 export const LandingPage = () => {
   const { profile } = useAuth();
+  const navigate = useNavigate();
+
+  const continueFromPricing = ({ planId, billingPeriod, subjectCount }) => {
+    const params = new URLSearchParams({ planId, billingPeriod, subjectCount: String(subjectCount) });
+    navigate(`/signup?${params.toString()}`);
+  };
 
   if (profile?.role) {
     const target = (profile.role === 'tutor' && profile.isTeacher) ? '/teacher' : `/${profile.role}`;
@@ -366,6 +373,12 @@ export const LandingPage = () => {
               </div>
             );
           })}
+        </div>
+      </section>
+
+      <section className="border-y border-lime-500/20 bg-slate-900/40 py-20">
+        <div className="mx-auto max-w-7xl px-4 lg:px-6">
+          <SubscriptionPlanSelector onContinue={continueFromPricing} />
         </div>
       </section>
 

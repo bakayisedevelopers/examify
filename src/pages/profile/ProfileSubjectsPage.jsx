@@ -21,10 +21,11 @@ const formatDate = (value) => {
 
 export const ProfileSubjectsPage = ({ role }) => {
   const { profile, logout, refreshProfile } = useAuth();
+  const isTutorRole = role === ROLES.TUTOR || role === 'teacher';
   const currentSubjects = useMemo(() => {
-    if (role === ROLES.TUTOR) return getApprovedTutorSubjects(profile);
+    if (isTutorRole) return getApprovedTutorSubjects(profile);
     return getUserSubjects(profile);
-  }, [profile, role]);
+  }, [profile, isTutorRole]);
   const availableSubjects = SUBJECTS.filter((subject) => !currentSubjects.includes(subject));
   const tutorMarkBySubject = useMemo(() => new Map(
     (profile?.tutorSubjectMarks ?? []).map((item) => [item.subject, item.mark]),
@@ -41,7 +42,7 @@ export const ProfileSubjectsPage = ({ role }) => {
   const tutorUploadFormRef = useRef(null);
 
   const loadTutorDocuments = async () => {
-    if (role !== ROLES.TUTOR || !profile?.uid) return;
+    if (!isTutorRole || !profile?.uid) return;
     const uploadedDocuments = await getTutorMarksDocuments(profile.uid);
     setDocuments(uploadedDocuments);
   };
@@ -51,7 +52,7 @@ export const ProfileSubjectsPage = ({ role }) => {
       console.error('[Examifying][TutorMarksDocuments] load:error', error);
       setStatus(error.message || 'Could not load uploaded tutor documents.');
     });
-  }, [profile?.uid, role]);
+  }, [profile?.uid, isTutorRole]);
 
   const handleAddSubjectToSelection = () => {
     if (!subjectToAdd || selectedSubjects.includes(subjectToAdd)) return;
@@ -203,7 +204,7 @@ export const ProfileSubjectsPage = ({ role }) => {
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold text-brand-700">
                       {subject}
-                      {role === ROLES.TUTOR && tutorMarkBySubject.has(subject) ? (
+                      {isTutorRole && tutorMarkBySubject.has(subject) ? (
                         <span className="ml-2 rounded-full bg-white px-2 py-0.5 text-xs text-brand-600">{tutorMarkBySubject.get(subject)}%</span>
                       ) : null}
                     </p>
@@ -284,7 +285,7 @@ export const ProfileSubjectsPage = ({ role }) => {
         </form>
       ) : null}
 
-      {role === ROLES.TUTOR ? (
+      {isTutorRole ? (
         <>
           <form ref={tutorUploadFormRef} onSubmit={handleTutorUpload} className="panel space-y-4 p-5">
             <div>

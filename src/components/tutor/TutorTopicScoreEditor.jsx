@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Save, LoaderCircle } from 'lucide-react';
 import { updateStudentTopicScoreForTutor } from '../../services/firestoreService';
 
-export const TutorTopicScoreEditor = ({ tutorId, studentId, subject, topic, value, onSaved }) => {
+export const TutorTopicScoreEditor = ({ tutorId, studentId, subject, topic, exerciseId, peerAssignmentId, value, onSaved }) => {
   const [score, setScore] = useState(value == null ? '' : String(value));
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
@@ -24,6 +24,8 @@ export const TutorTopicScoreEditor = ({ tutorId, studentId, subject, topic, valu
         studentId,
         subject,
         topic,
+        exerciseId,
+        peerAssignmentId,
         understandingLevel: Number(score),
       });
       onSaved?.(result.topic, result.understandingLevel);

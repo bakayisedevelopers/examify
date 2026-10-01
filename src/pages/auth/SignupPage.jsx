@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { REGIONS, ROLES, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
 import { useAuth } from '../../hooks/useAuth';
 import { Logo } from '../../components/common/Logo';
 
 export const SignupPage = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { register } = useAuth();
   const [creating, setCreating] = useState(false);
 
@@ -17,7 +18,6 @@ export const SignupPage = () => {
     grade: SOUTH_AFRICAN_GRADES[0],
     province: REGIONS[0],
     previousYearMark: '0',
-    sessionType: 'online',
     school: '',
   });
 
@@ -72,14 +72,21 @@ export const SignupPage = () => {
           grade: form.role === ROLES.STUDENT ? form.grade : null,
           province: form.role === ROLES.STUDENT ? form.province : null,
           previousYearMark: form.role === ROLES.STUDENT ? Number(form.previousYearMark) || 0 : null,
-          preferredSessionType: form.role === ROLES.STUDENT ? form.sessionType : null,
           school: (form.role === ROLES.STUDENT || form.role === 'teacher') ? form.school.trim() : null,
           isTeacher: form.role === 'teacher' ? true : undefined,
         },
       });
 
       const targetRoute = form.role === 'teacher' ? '/teacher' : `/${result.profile.role}`;
-      navigate(targetRoute);
+      const selection = new URLSearchParams(location.search);
+      const planId = selection.get('planId');
+      if (form.role === ROLES.STUDENT && ['free', 'circle', 'personalized'].includes(planId)) {
+        const billingPeriod = selection.get('billingPeriod') === 'yearly' ? 'yearly' : 'monthly';
+        const subjectCount = selection.get('subjectCount') || '1';
+        navigate(`/student/billing?planId=${planId}&billingPeriod=${billingPeriod}&subjectCount=${encodeURIComponent(subjectCount)}`);
+      } else {
+        navigate(targetRoute);
+      }
     } catch (error) {
       console.error('Registration failed:', error);
       setStatus(error.message || 'Registration failed');
@@ -152,13 +159,6 @@ export const SignupPage = () => {
               <input type="number" className="input" min="0" max="100" value={form.previousYearMark} onChange={handleChange('previousYearMark')} required />
             </label>
 
-            <label className="block md:col-span-2">
-              <span className="label">Preferred session type</span>
-              <select className="input" value={form.sessionType} onChange={handleChange('sessionType')}>
-                <option value="online">Online</option>
-                <option value="inPerson">In-person</option>
-              </select>
-            </label>
           </>
         ) : null}
 

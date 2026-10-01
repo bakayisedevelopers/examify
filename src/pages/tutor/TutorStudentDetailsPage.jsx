@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { FileText, Trash2 } from 'lucide-react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { FileText, Trash2, UserPlus, X } from 'lucide-react';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { LoaderCircle } from 'lucide-react';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
@@ -13,18 +13,23 @@ import {
   getTutorLessonsForAssignedStudents,
   getTutorReportsForAssignedStudents,
   getCompletedPeerMarkingWorkForTutor,
-  getStudentTopicScoresForTutor,
   deleteExerciseAssignmentForTutor,
   regenerateFutureUnsubmittedExercisesForTutor,
   saveCompletedLesson,
+  updateCompletedLesson,
   saveTutorReport,
+  saveTutorPeerMarkingReview,
   subscribeToExerciseGenerationStatus,
+  getStaffMembersForAccess,
+  getStaffStudentAccess,
+  setStaffStudentAccess,
+  revokeStaffStudentAccess,
 } from '../../services/firestoreService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 import { getTopicOptionGroups } from '../../data/topicCatalog';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
-import { getSevenDayWindow } from '../../services/exerciseGenerationPlan';
-import { TutorTopicScoreEditor } from '../../components/tutor/TutorTopicScoreEditor';
+import { getSevenDayWindow, isExerciseSubmitted } from '../../services/exerciseGenerationPlan';
+import { ImagePageViewer } from '../../components/common/ImagePageViewer';
 
 const today = () => {
   const date = new Date();
@@ -40,15 +45,16 @@ const hasValidScores = (entries = []) =>
 
 export const TutorStudentDetailsPage = () => {
   const { studentId } = useParams();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const subject = searchParams.get('subject') || DEFAULT_SUBJECT;
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [student, setStudent] = useState(null);
+  const [studentSubjects, setStudentSubjects] = useState([]);
   const [reports, setReports] = useState([]);
   const [exercises, setExercises] = useState([]);
   const [peerMarkedWork, setPeerMarkedWork] = useState([]);
-  const [topicScores, setTopicScores] = useState({});
   const [lessons, setLessons] = useState([]);
   const [topicOptions, setTopicOptions] = useState(emptyTopicGroups);
   const [reportNote, setReportNote] = useState('');
@@ -57,6 +63,14 @@ export const TutorStudentDetailsPage = () => {
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [deletingExerciseId, setDeletingExerciseId] = useState('');
   const [regenerationStatus, setRegenerationStatus] = useState(null);
+  const [staffMembers, setStaffMembers] = useState([]);
+  const [staffAccess, setStaffAccess] = useState([]);
+  const [selectedStaffId, setSelectedStaffId] = useState('');
+  const [selectedAccessRole, setSelectedAccessRole] = useState('marker');
+  const [savingStaffAccess, setSavingStaffAccess] = useState(false);
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [peerReviewScores, setPeerReviewScores] = useState({});
+  const [savingPeerReviewId, setSavingPeerReviewId] = useState('');
 
   useEffect(() => {
     if (!studentId || !profile?.uid) return undefined;
@@ -71,16 +85,40 @@ export const TutorStudentDetailsPage = () => {
       getTutorExercisesForAssignedStudents(profile.uid),
       getTutorLessonsForAssignedStudents(profile.uid),
     ]);
-    const studentContext = contexts.find((item) => item.studentId === studentId && item.subject === subject) ?? null;
-    const papers = await getQuestionPapers({ subject, grade: studentContext?.grade, region: studentContext?.province });
+    const accessibleSubjects = [...new Set(contexts
+      .filter((item) => item.studentId === studentId)
+      .map((item) => item.subject)
+      .filter(Boolean))];
+    setStudentSubjects(accessibleSubjects);
+    const activeSubject = accessibleSubjects.includes(subject) ? subject : accessibleSubjects[0];
+    if (!activeSubject) {
+      setStudent(null);
+      setStatus('You do not have access to this student.');
+      return;
+    }
+    if (activeSubject !== subject) setSearchParams({ subject: activeSubject }, { replace: true });
+    const studentContext = contexts.find((item) => item.studentId === studentId && item.subject === activeSubject) ?? null;
+    const papers = await getQuestionPapers({ subject: activeSubject, grade: studentContext?.grade, region: studentContext?.province });
     const extractedTopics = papers.flatMap((paper) => paper.topics ?? []).filter(Boolean);
     setStudent(studentContext);
-    setReports(reportRows.filter((item) => item.studentId === studentId && item.subject === subject));
-    setExercises(exerciseRows.filter((item) => item.studentId === studentId && item.subject === subject));
-    setLessons(lessonRows.filter((item) => item.studentId === studentId && item.subject === subject));
-    setPeerMarkedWork(await getCompletedPeerMarkingWorkForTutor({ tutorId: profile.uid, studentId, subject }));
-    setTopicScores(await getStudentTopicScoresForTutor({ tutorId: profile.uid, studentId, subject }));
-    setTopicOptions(getTopicOptionGroups({ extractedTopics, subject, grade: studentContext?.grade }));
+    setStaffAccess(await getStaffStudentAccess({ studentId, subject: activeSubject, tutorId: profile.uid }));
+    if (studentContext?.accessRole === 'co-owner') setStaffMembers(await getStaffMembersForAccess({ tutorId: profile.uid, subject: activeSubject }));
+    else setStaffMembers([]);
+    setReports(reportRows.filter((item) => item.studentId === studentId && item.subject === activeSubject));
+    setExercises(exerciseRows.filter((item) => item.studentId === studentId && item.subject === activeSubject));
+    const subjectLessons = lessonRows.filter((item) => item.studentId === studentId && item.subject === activeSubject);
+    setLessons(subjectLessons);
+    setPeerMarkedWork(await getCompletedPeerMarkingWorkForTutor({ tutorId: profile.uid, studentId, subject: activeSubject }));
+    const groups = getTopicOptionGroups({ extractedTopics, subject: activeSubject, grade: studentContext?.grade });
+    const plannedTopics = subjectLessons
+      .filter((lesson) => lesson.status === 'planned' || lesson.status === 'incomplete')
+      .flatMap((lesson) => lesson.topics?.length ? lesson.topics : [lesson.topic])
+      .map((topic) => String(topic || '').trim())
+      .filter(Boolean);
+    const extractedKeys = new Set(groups.extracted.map((topic) => topic.toLocaleLowerCase()));
+    const manual = [...new Set([...groups.manual, ...plannedTopics.filter((topic) => !extractedKeys.has(topic.toLocaleLowerCase()))])]
+      .sort((left, right) => left.localeCompare(right));
+    setTopicOptions({ ...groups, manual, all: [...new Set([...groups.extracted, ...manual])] });
   };
 
   useEffect(() => {
@@ -88,6 +126,8 @@ export const TutorStudentDetailsPage = () => {
   }, [profile?.uid, studentId, subject]);
 
   const latestReport = student?.latestReportsBySubject?.[subject] || reports[0]?.note || (subject === DEFAULT_SUBJECT ? student?.latestReport : '') || '';
+  const canManage = student?.accessRole === 'co-owner';
+  const canMark = canManage || student?.accessRole === 'marker';
   const hasInitialReport = Boolean(latestReport.trim());
   const todayLocal = today();
   const regenerationEndDate = getSevenDayWindow(todayLocal).at(-1);
@@ -102,6 +142,8 @@ export const TutorStudentDetailsPage = () => {
     regenerationStatus?.status === 'processing'
     && Date.now() < Number(regenerationStatus.expiresAtMs ?? 0)
   );
+  const basePath = location.pathname.startsWith('/teacher') ? '/teacher' : '/tutor';
+  const sortedExercises = [...exercises].sort((a, b) => String(a.assignmentDate ?? '').localeCompare(String(b.assignmentDate ?? '')));
 
   const addTopic = () => {
     if (!lessonForm.selectedTopic || lessonForm.topicUnderstandingScores.some((entry) => entry.topic === lessonForm.selectedTopic)) return;
@@ -116,6 +158,49 @@ export const TutorStudentDetailsPage = () => {
     setReportNote('');
     setStatus('Initial report saved.');
     await load();
+  };
+
+  const grantStaffAccess = async () => {
+    if (!selectedStaffId || !canManage) return;
+    setSavingStaffAccess(true);
+    try {
+      await setStaffStudentAccess({ actorId: profile.uid, studentId, tutorId: selectedStaffId, subject, accessRole: selectedAccessRole });
+      setStatus('Staff access updated.');
+      setStaffAccess(await getStaffStudentAccess({ studentId, subject, tutorId: profile.uid }));
+      setSelectedStaffId('');
+    } catch (error) {
+      setStatus(error.message || 'Could not update staff access.');
+    } finally {
+      setSavingStaffAccess(false);
+    }
+  };
+
+  const removeStaffAccess = async (accessId) => {
+    try {
+      await revokeStaffStudentAccess({ actorId: profile.uid, studentId, subject, accessId });
+      setStaffAccess(await getStaffStudentAccess({ studentId, subject, tutorId: profile.uid }));
+      setStatus('Staff access removed.');
+    } catch (error) {
+      setStatus(error.message || 'Could not remove staff access.');
+    }
+  };
+
+  const savePeerReview = async (assignment) => {
+    const score = peerReviewScores[assignment.id] ?? assignment.tutorUnderstandingLevel;
+    setSavingPeerReviewId(assignment.id);
+    try {
+      const result = await saveTutorPeerMarkingReview({
+        tutorId: profile.uid,
+        peerAssignmentId: assignment.id,
+        understandingLevel: score,
+      });
+      setStatus(`Peer marking reviewed. ${result.topic}: ${result.averageUnderstandingLevel}/10 rolling average.`);
+      await load();
+    } catch (error) {
+      setStatus(error.message || 'Could not save peer-marking review.');
+    } finally {
+      setSavingPeerReviewId('');
+    }
   };
 
   const regenerateExercises = async () => {
@@ -157,6 +242,8 @@ export const TutorStudentDetailsPage = () => {
     }
   };
 
+  const canDeleteExercise = (exercise) => String(exercise.assignmentDate ?? '').slice(0, 10) > today() && !isExerciseSubmitted(exercise);
+
   const completeLesson = async () => {
     if (!lessonForm.topicUnderstandingScores.length || !lessonForm.topicReport.trim() || !lessonForm.lessonDate || !lessonForm.lessonType || !hasValidScores(lessonForm.topicUnderstandingScores)) {
       setStatus('Choose at least one topic, date, lesson type, score from 0 to 10, and enter the lesson report.');
@@ -168,20 +255,42 @@ export const TutorStudentDetailsPage = () => {
     const report = [`--- ${topics.join(' | ')} ---`, 'Topics completed:', topicScoresText, 'Tutor report:', lessonForm.topicReport, `Date: ${new Date().toLocaleString()}`].join('\n');
 
     await saveTutorReport({ tutorId: profile.uid, studentId, subject, reportType: 'lesson', note: report, studentName: student?.displayName || student?.name || 'Student' });
-    const lesson = await saveCompletedLesson({
+    const completedEntries = lessonForm.topicUnderstandingScores.map((entry) => ({ ...entry, topicReport: lessonForm.topicReport }));
+    const plannedLessons = lessons.filter((item) => item.status === 'planned' || item.status === 'incomplete');
+    const lessonToComplete = plannedLessons.find((item) =>
+      (item.topics?.length ? item.topics : [item.topic]).some((itemTopic) => topics.some((topicName) => topicName.toLocaleLowerCase() === String(itemTopic).toLocaleLowerCase())),
+    );
+    const lessonPayload = {
       tutorId: profile.uid,
       studentId,
       subject,
       topic: topics[0],
       topics,
-      topicUnderstandingScores: lessonForm.topicUnderstandingScores.map((entry) => ({ ...entry, topicReport: lessonForm.topicReport })),
+      topicUnderstandingScores: completedEntries,
       topicReport: lessonForm.topicReport,
       understandingLevel,
       studentName: student?.displayName || student?.name || 'Student',
       lessonDate: lessonForm.lessonDate,
       lessonType: lessonForm.lessonType,
       status: 'completed',
-    });
+    };
+    const lesson = lessonToComplete
+      ? await updateCompletedLesson({ lessonId: lessonToComplete.id, ...lessonPayload })
+      : await saveCompletedLesson(lessonPayload);
+    const completedTopicKeys = new Set(topics.map((topicName) => topicName.toLocaleLowerCase()));
+    const duplicatePlannedLessons = plannedLessons.filter((item) => item.id !== lessonToComplete?.id
+      && (item.topics?.length ? item.topics : [item.topic]).some((itemTopic) => completedTopicKeys.has(String(itemTopic).toLocaleLowerCase())));
+    await Promise.all(duplicatePlannedLessons.map((item) => updateCompletedLesson({
+      lessonId: item.id,
+      tutorId: profile.uid,
+      topicReport: item.topicReport ?? item.note ?? '',
+      topicUnderstandingScores: item.topicUnderstandingScores ?? [],
+      topics: item.topics ?? (item.topic ? [item.topic] : []),
+      understandingLevel: item.understandingLevel ?? null,
+      lessonDate: item.lessonDate,
+      lessonType: item.lessonType,
+      status: 'cancelled',
+    })));
     const generation = await generateExercisePlanIfEligible({
       student: { uid: studentId, grade: student?.grade, province: student?.province, paymentCompleted: student?.paymentCompleted },
       subject,
@@ -203,21 +312,66 @@ export const TutorStudentDetailsPage = () => {
           <span>{regenerationInProgress ? regenerationStatus?.message || status || 'Regenerating exercises...' : status}</span>
         </div>
       ) : null}
-      <Link to="/tutor" className="btn-secondary inline-flex w-fit">Back to students</Link>
+      <Link to={`${basePath}`} className="hidden w-fit items-center gap-2 text-lime-400 hover:text-lime-300 sm:inline-flex"><span aria-hidden="true">&lt;</span><span>Assigned students</span></Link>
 
+      <div className="flex flex-wrap justify-center gap-2" role="tablist" aria-label="Student subjects">
+        {studentSubjects.map((studentSubject) => (
+          <button
+            key={studentSubject}
+            type="button"
+            role="tab"
+            aria-selected={subject === studentSubject}
+            className={subject === studentSubject ? 'btn-primary' : 'btn-secondary'}
+            onClick={() => setSearchParams({ subject: studentSubject })}
+          >
+            {studentSubject}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex justify-end">
+        <button type="button" className="btn-secondary" onClick={() => setIsDetailsOpen(true)}>Student details and lessons</button>
+      </div>
+
+      {isDetailsOpen ? <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/80 p-3 sm:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setIsDetailsOpen(false); }}>
+      <section className="panel my-auto w-full max-w-4xl space-y-5 p-5 sm:p-7" role="dialog" aria-modal="true" aria-labelledby="student-details-title">
+      <div className="flex items-start justify-between gap-4"><div><h2 id="student-details-title" className="text-xl font-semibold text-slate-950">Student details and lessons</h2><p className="mt-1 text-sm text-slate-500">{subject}</p></div><button type="button" className="btn-secondary inline-flex items-center" aria-label="Close student details" onClick={() => setIsDetailsOpen(false)}><X className="h-4 w-4" /></button></div>
       <section className="panel p-5">
         <h2 className="text-xl font-semibold text-slate-950">Student details</h2>
         <p className="mt-2 text-sm text-slate-500">{student?.grade || '?'} • {student?.province || '?'} • {subject} • {student?.paymentCompleted ? 'Paid' : 'Unpaid'}</p>
         <p className="mt-4 whitespace-pre-wrap rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">{latestReport || 'No initial report for this subject yet.'}</p>
       </section>
 
-      {!hasInitialReport ? (
+      {canManage ? <section className="panel space-y-4 p-5">
+        <SectionHeader eyebrow="Staff access" title="Share this student" description="Grant another tutor or teacher co-owner, marker, or viewer access for this subject." />
+        <div className="grid gap-3 md:grid-cols-[1fr_180px_auto]">
+          <select className="input" value={selectedStaffId} onChange={(event) => setSelectedStaffId(event.target.value)}>
+            <option value="">Choose tutor or teacher</option>
+            {staffMembers.map((member) => <option key={member.uid} value={member.uid}>{member.displayName || member.email} {member.isTeacher === true || member.isTeacher === 'true' || member.role === 'teacher' ? '(Teacher)' : '(Tutor)'}</option>)}
+          </select>
+          <select className="input" value={selectedAccessRole} onChange={(event) => setSelectedAccessRole(event.target.value)}>
+            <option value="co-owner">Co-owner</option><option value="marker">Marker</option><option value="viewer">Viewer</option>
+          </select>
+          <button type="button" className="btn-primary inline-flex items-center justify-center gap-2" onClick={grantStaffAccess} disabled={!selectedStaffId || savingStaffAccess}>
+            <UserPlus className="h-4 w-4" aria-hidden="true" /> {savingStaffAccess ? 'Saving...' : 'Grant access'}
+          </button>
+        </div>
+        <div className="divide-y divide-slate-200">
+          {staffAccess.map((entry) => <div key={entry.id} className="flex items-center justify-between gap-3 py-3">
+            <div><p className="font-medium text-slate-900">{entry.displayName}</p><p className="text-sm capitalize text-slate-500">{entry.accessRole}</p></div>
+            <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => removeStaffAccess(entry.id)}><X className="h-4 w-4" aria-hidden="true" /> Remove</button>
+          </div>)}
+          {!staffAccess.length ? <p className="py-2 text-sm text-slate-500">No additional staff have access.</p> : null}
+        </div>
+      </section> : null}
+
+      {canManage && !hasInitialReport ? (
         <section className="panel space-y-4 p-5">
           <SectionHeader eyebrow="Initial report" title="Create subject report" description="This unlocks subject-specific lesson completion and AI context." />
           <textarea className="input min-h-36" value={reportNote} onChange={(event) => setReportNote(event.target.value)} placeholder="Initial report for this student and subject" />
           <button type="button" className="btn-primary" onClick={saveInitialReport} disabled={!reportNote.trim()}>Save initial report</button>
         </section>
-      ) : (
+      ) : canManage ? (
         <section className="panel space-y-4 p-5">
           <SectionHeader eyebrow="Lesson complete" title="Save completed topics" description="Choose topics from analyzed papers, add scores, and save the lesson for AI generation." />
           <div className="grid gap-3 md:grid-cols-2">
@@ -242,29 +396,32 @@ export const TutorStudentDetailsPage = () => {
           <textarea className="input min-h-32" value={lessonForm.topicReport} onChange={(event) => setLessonForm((current) => ({ ...current, topicReport: event.target.value }))} placeholder="Lesson report" />
           <button type="button" className="btn-primary" onClick={completeLesson} disabled={!lessonForm.topicUnderstandingScores.length || !lessonForm.topicReport.trim() || !hasValidScores(lessonForm.topicUnderstandingScores)}>Lesson completed</button>
         </section>
-      )}
+      ) : null}
 
-      <section className="grid gap-6 xl:grid-cols-2">
-        <div className="panel space-y-4 p-5">
+      <section className="panel p-5">
+        <SectionHeader eyebrow="Lessons" title="Tutor lessons" description="Planned and completed lessons for this student." />
+        <div className="space-y-3">{lessons.map((lesson) => <Link key={lesson.id} to={`${basePath}/lessons/${lesson.id}`} className="block rounded-2xl bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full bg-slate-800 border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-300">{lesson.status === 'planned' ? 'Planned' : 'Completed'}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lesson.lessonType === 'inPerson' ? 'In-person' : 'Online'}</p></Link>)}{!lessons.length ? <p className="text-sm text-slate-500">No lessons yet.</p> : null}</div>
+      </section>
+      </section></div> : null}
+
+      <section className="panel space-y-4 p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <SectionHeader eyebrow="Exercises" title="Assigned exercises" description="Click an exercise to view details and paper links." />
-            <button type="button" className="btn-secondary inline-flex items-center gap-2 disabled:cursor-not-allowed" onClick={regenerateExercises} disabled={!regenerableExercises.length || regenerationInProgress}>
+            {canManage ? <button type="button" className="btn-secondary inline-flex items-center gap-2 disabled:cursor-not-allowed" onClick={regenerateExercises} disabled={!regenerableExercises.length || regenerationInProgress}>
               {regenerationInProgress ? <><LoaderCircle className="h-4 w-4 animate-spin text-lime-400" aria-hidden="true" /> Regenerating...</> : 'Regenerate next 7 days'}
-            </button>
+            </button> : null}
           </div>
-          <div className="space-y-3">{exercises.map((exercise) => (
+          <div className="space-y-3">{sortedExercises.map((exercise) => (
             <div key={exercise.id} className="flex items-center gap-3 rounded-lg bg-slate-800/60 p-3">
               <button type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}`)} className="min-w-0 flex-1 text-left">
                 <p className="font-semibold text-slate-100">{exercise.title}</p>
                 <p className="text-sm text-slate-400">{exercise.subject} • {exercise.assignmentDate}{exercise.submittedImageUrl || exercise.submitted === 'Yes' ? ' • Submitted' : ''}</p>
               </button>
-              <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={() => removeExercise(exercise)} disabled={deletingExerciseId === exercise.id} aria-label={`Delete ${exercise.title}`} title="Delete exercise">
+              {canManage && canDeleteExercise(exercise) ? <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={() => removeExercise(exercise)} disabled={deletingExerciseId === exercise.id} aria-label={`Delete ${exercise.title}`} title="Delete future exercise">
                 <Trash2 className="h-4 w-4" aria-hidden="true" /> {deletingExerciseId === exercise.id ? 'Deleting...' : 'Delete'}
-              </button>
+              </button> : null}
             </div>
           ))}{!exercises.length ? <p className="text-sm text-slate-400">No exercises yet.</p> : null}</div>
-        </div>
-        <div className="panel p-5"><SectionHeader eyebrow="Lessons" title="Tutor lessons" description="Planned and completed lessons for this student." /><div className="space-y-3">{lessons.map((lesson) => <Link key={lesson.id} to={`/tutor/lessons/${lesson.id}`} className="block rounded-2xl bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full bg-slate-800 border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-300">{lesson.status === 'planned' ? 'Planned' : 'Completed'}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lesson.lessonType === 'inPerson' ? 'In-person' : 'Online'}</p></Link>)}{!lessons.length ? <p className="text-sm text-slate-500">No lessons yet.</p> : null}</div></div>
       </section>
 
       <section className="space-y-4">
@@ -273,7 +430,8 @@ export const TutorStudentDetailsPage = () => {
           <article key={assignment.id} className="panel space-y-4 p-5">
             <div>
               <p className="font-semibold text-slate-900">{assignment.title || 'Peer-marked exercise'} · {assignment.assignmentDate}</p>
-              <p className="mt-1 text-sm text-slate-500">{assignment.topic || subject} · Marking completed</p>
+              <p className="mt-1 text-sm text-slate-500">{assignment.topic || subject} · {assignment.tutorReviewStatus === 'reviewed' ? 'Tutor reviewed' : 'Awaiting tutor review'}</p>
+              <p className="mt-1 text-xs text-slate-500">Marked exercise ID: {assignment.markedExerciseId || assignment.exerciseId} · Student exercise ID: {assignment.reviewerExerciseId || 'Not recorded'}</p>
             </div>
             {Array.isArray(assignment.questionLinks) && assignment.questionLinks.length ? (
               <div className="flex flex-wrap gap-2">
@@ -287,23 +445,18 @@ export const TutorStudentDetailsPage = () => {
             ) : assignment.paperIds?.[0] ? (
               <Link className="btn-secondary inline-flex items-center gap-2" to={`/tutor/papers/${assignment.paperIds[0]}?page=1`}><FileText className="h-4 w-4" aria-hidden="true" />Open question paper</Link>
             ) : null}
-            <div className="space-y-2">
-              <p className="text-sm font-medium text-slate-600">Manual topic understanding scores</p>
-              {[...new Set(String(assignment.topic || subject).split('|').map((topic) => topic.trim()).filter(Boolean))].map((topic) => (
-                <TutorTopicScoreEditor
-                  key={topic}
-                  tutorId={profile?.uid}
-                  studentId={studentId}
-                  subject={assignment.subject || subject}
-                  topic={topic}
-                  value={topicScores[topic]}
-                  onSaved={(savedTopic, score) => setTopicScores((current) => ({ ...current, [savedTopic]: score }))}
-                />
-              ))}
-            </div>
-            <div className="grid gap-4 lg:grid-cols-2">
-              <div><p className="mb-2 text-sm font-medium text-slate-600">Other student's submitted work</p><a href={assignment.submittedImageUrl} target="_blank" rel="noreferrer"><img src={assignment.submittedImageUrl} alt="Original work marked by the tutor's student" className="max-h-[620px] w-full rounded-md bg-slate-100 object-contain" /></a></div>
-              {assignment.reviewImageUrl ? <div><p className="mb-2 text-sm font-medium text-slate-600">{student?.displayName || student?.name || 'Student'}'s whiteboard marking</p><a href={assignment.reviewImageUrl} target="_blank" rel="noreferrer"><img src={assignment.reviewImageUrl} alt="Student's completed whiteboard annotations" className="max-h-[620px] w-full rounded-md bg-slate-100 object-contain" /></a></div> : null}
+            {canMark ? <div className="flex flex-wrap items-end gap-3 rounded-lg bg-slate-50 p-3">
+              <label className="grid min-w-40 flex-1 gap-1 text-xs font-semibold text-slate-600">{assignment.topic || 'Topic'} understanding (0-10)
+                <input type="number" min="0" max="10" step="1" className="input py-2" value={peerReviewScores[assignment.id] ?? assignment.tutorUnderstandingLevel ?? ''} onChange={(event) => setPeerReviewScores((current) => ({ ...current, [assignment.id]: event.target.value }))} />
+              </label>
+              <button type="button" className="btn-primary" onClick={() => savePeerReview(assignment)} disabled={savingPeerReviewId === assignment.id || (peerReviewScores[assignment.id] ?? assignment.tutorUnderstandingLevel ?? '') === ''}>
+                {savingPeerReviewId === assignment.id ? 'Saving...' : assignment.tutorReviewStatus === 'reviewed' ? 'Update review score' : 'Mark reviewed and save score'}
+              </button>
+            </div> : null}
+            <div className="grid gap-5 lg:grid-cols-2">
+              <ImagePageViewer images={assignment.submittedImages?.length ? assignment.submittedImages : [assignment.submittedImageUrl].filter(Boolean)} title="Other student's original work" alt="Unmarked work the student reviewed" />
+              <ImagePageViewer images={assignment.reviewImages?.length ? assignment.reviewImages : [assignment.reviewImageUrl].filter(Boolean)} title="Student's peer marking" alt="Student's marked version of another learner's work" />
+              <ImagePageViewer images={assignment.targetExercise?.tutorMarkedImages?.length ? assignment.targetExercise.tutorMarkedImages : [assignment.targetExercise?.tutorMarkedImageUrl].filter(Boolean)} title="Tutor-marked work" alt="Tutor-marked image for the reviewed exercise" />
             </div>
           </article>
         ))}

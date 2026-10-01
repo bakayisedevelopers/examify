@@ -53,6 +53,7 @@ export const TutorLessonDetailsPage = () => {
   }, [isNew, lessonId]);
 
   const selectedStudent = useMemo(() => contexts.find((item) => item.studentId === studentId && item.subject === subject), [contexts, studentId, subject]);
+  const canManage = selectedStudent?.accessRole === 'co-owner';
   const allowedContexts = contexts;
 
   useEffect(() => {
@@ -112,6 +113,7 @@ export const TutorLessonDetailsPage = () => {
 
     const updated = await updateCompletedLesson({
       lessonId,
+      tutorId: profile.uid,
       topics,
       topicUnderstandingScores: topicUnderstandingScores.map((entry) => ({ ...entry, topicReport })),
       topicReport,
@@ -135,7 +137,7 @@ export const TutorLessonDetailsPage = () => {
   const handleDeleteLesson = async () => {
     if (isNew || !lessonId) return;
     if (!window.confirm('Delete this lesson? This cannot be undone.')) return;
-    await deleteLesson(lessonId);
+    await deleteLesson(lessonId, profile.uid);
     navigate(`${basePath}/lessons`);
   };
 
@@ -145,27 +147,27 @@ export const TutorLessonDetailsPage = () => {
       {status ? <div className="panel p-4 text-sm text-slate-700">{status}</div> : null}
       <section className="panel space-y-4 p-5">
         <SectionHeader eyebrow="Lesson" title={isNew ? 'Create lesson' : 'Edit lesson'} description="Topics come from analyzed question papers." />
-        <select className="input" value={`${studentId}|${subject}`} onChange={(event) => handleContextChange(event.target.value)} disabled={!isNew}>
+        <select className="input" value={`${studentId}|${subject}`} onChange={(event) => handleContextChange(event.target.value)} disabled={!isNew || Boolean(selectedStudent && !canManage)}>
           <option value="|">Choose assigned student and subject</option>
           {allowedContexts.map((context) => <option key={`${context.studentId}-${context.subject}`} value={`${context.studentId}|${context.subject}`}>{context.displayName || context.name || context.studentId} • {context.subject}</option>)}
         </select>
         <div className="grid gap-3 md:grid-cols-2">
-          <label className="grid gap-2 text-sm font-semibold text-slate-700">Lesson date<input type="date" className="input" value={lessonDate} onChange={(event) => setLessonDate(event.target.value)} /></label>
-          <label className="grid gap-2 text-sm font-semibold text-slate-700">Lesson type<select className="input" value={lessonType} onChange={(event) => setLessonType(event.target.value)}><option value="online">Online</option><option value="inPerson">In-person</option></select></label>
+          <label className="grid gap-2 text-sm font-semibold text-slate-700">Lesson date<input type="date" className="input" value={lessonDate} onChange={(event) => setLessonDate(event.target.value)} disabled={!canManage} /></label>
+          <label className="grid gap-2 text-sm font-semibold text-slate-700">Lesson type<select className="input" value={lessonType} onChange={(event) => setLessonType(event.target.value)} disabled={!canManage}><option value="online">Online</option><option value="inPerson">In-person</option></select></label>
         </div>
         <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
-          <select className="input" value={selectedTopic} onChange={(event) => setSelectedTopic(event.target.value)} disabled={!topicOptions.all.length}>
+          <select className="input" value={selectedTopic} onChange={(event) => setSelectedTopic(event.target.value)} disabled={!canManage || !topicOptions.all.length}>
             <option value="">{topicOptions.all.length ? 'Choose topic' : 'No topics available'}</option>
             {topicOptions.extracted.length ? <optgroup label="Past paper extracted topics">{topicOptions.extracted.map((topic) => <option key={`paper-${topic}`}>{topic}</option>)}</optgroup> : null}
             {topicOptions.manual.length ? <optgroup label="Manual topic list">{topicOptions.manual.map((topic) => <option key={`manual-${topic}`}>{topic}</option>)}</optgroup> : null}
           </select>
-          <button type="button" className="btn-secondary" onClick={addTopic} disabled={!selectedTopic}>Add topic</button>
+          <button type="button" className="btn-secondary" onClick={addTopic} disabled={!canManage || !selectedTopic}>Add topic</button>
         </div>
-        {topicUnderstandingScores.map((entry) => <div key={entry.topic} className={`grid gap-3 rounded-2xl bg-slate-50 p-3 ${isNew ? 'md:grid-cols-[1fr_auto]' : 'md:grid-cols-[1fr_160px_auto]'} md:items-center`}><p className="font-semibold text-slate-900">{entry.topic}</p>{!isNew ? <input type="number" min="0" max="10" className="input" value={entry.understandingLevel} onChange={(event) => updateScore(entry.topic, event.target.value)} /> : null}<button type="button" className="btn-secondary" onClick={() => setTopicUnderstandingScores((current) => current.filter((item) => item.topic !== entry.topic))}>Remove</button></div>)}
-        {!isNew ? <textarea className="input min-h-32" value={topicReport} onChange={(event) => setTopicReport(event.target.value)} placeholder="Lesson report after completing the lesson" /> : null}
+        {topicUnderstandingScores.map((entry) => <div key={entry.topic} className={`grid gap-3 rounded-2xl bg-slate-50 p-3 ${isNew ? 'md:grid-cols-[1fr_auto]' : 'md:grid-cols-[1fr_160px_auto]'} md:items-center`}><p className="font-semibold text-slate-900">{entry.topic}</p>{!isNew ? <input type="number" min="0" max="10" className="input" value={entry.understandingLevel} onChange={(event) => updateScore(entry.topic, event.target.value)} disabled={!canManage} /> : null}{canManage ? <button type="button" className="btn-secondary" onClick={() => setTopicUnderstandingScores((current) => current.filter((item) => item.topic !== entry.topic))}>Remove</button> : null}</div>)}
+        {!isNew ? <textarea className="input min-h-32" value={topicReport} onChange={(event) => setTopicReport(event.target.value)} placeholder="Lesson report after completing the lesson" disabled={!canManage} /> : null}
         <div className="flex flex-wrap gap-3">
-          <button type="button" className="btn-primary" onClick={saveLesson}>{isNew ? 'Create lesson' : 'Mark lesson complete'}</button>
-          {!isNew ? <button type="button" className="btn-secondary text-rose-700 hover:text-rose-800" onClick={handleDeleteLesson}>Delete lesson</button> : null}
+          {canManage ? <button type="button" className="btn-primary" onClick={saveLesson}>{isNew ? 'Create lesson' : 'Mark lesson complete'}</button> : null}
+          {!isNew && canManage ? <button type="button" className="btn-secondary text-rose-700 hover:text-rose-800" onClick={handleDeleteLesson}>Delete lesson</button> : null}
         </div>
       </section>
     </AppShell>

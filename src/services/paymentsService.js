@@ -1,27 +1,14 @@
 import { httpsCallable } from 'firebase/functions';
 import { functions, isFirebaseConfigured } from '../firebase/config';
-import { calculateSubscriptionQuote } from '../utils/subscription';
-
-export const getSubscriptionQuote = calculateSubscriptionQuote;
+import { calculateSubscriptionQuote } from '../utils/subscriptionPlans';
 
 export const initializeSubscriptionPayment = async (payload) => {
+  const quote = calculateSubscriptionQuote(payload);
   if (!isFirebaseConfigured) {
-    let quote = null;
-    let totalAmount = 0;
-    
-    if (payload.studentId) {
-      quote = calculateSubscriptionQuote(payload);
-      totalAmount = quote.amount;
-    } else if (payload.studentIds && payload.studentIds.length > 0) {
-      for (const s of payload.studentIds) {
-        totalAmount += calculateSubscriptionQuote({ latestMark: s.latestMark, sessionType: s.sessionType }).amount;
-      }
-      quote = { amount: totalAmount };
-    }
-
+    if (payload.planId === 'free') return { free: true, quote };
     return {
       authorizationUrl: 'https://paystack.com/pay/demo-examifying-session-plan',
-      reference: `demo-${payload.studentId || 'bulk'}-${Date.now()}`,
+      reference: `demo-${payload.studentId}-${Date.now()}`,
       quote,
     };
   }

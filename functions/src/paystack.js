@@ -2,29 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
 import { getDb, admin } from './admin.js';
 import { getPaystackConfig } from './config.js';
-
-const sessionPricing = {
-  online: 220,
-  inPerson: 250,
-};
-
-const getRecommendedSessionCount = (latestMark = 0) => {
-  if (latestMark < 70) return 4;
-  return 2;
-};
-
-const calculateSubscriptionQuote = ({ latestMark = 0, sessionType = 'online' }) => {
-  const sessionCount = getRecommendedSessionCount(latestMark);
-  const unitPrice = sessionPricing[sessionType] ?? sessionPricing.online;
-
-  return {
-    latestMark,
-    sessionType,
-    sessionCount,
-    unitPrice,
-    amount: Number((sessionCount * unitPrice).toFixed(2)),
-  };
-};
+import { calculateSubscriptionQuote } from './subscriptionPricing.js';
 
 const paystackRequest = async ({ path, method = 'POST', payload }) => {
   const { paystackSecretKey, paystackBaseUrl } = getPaystackConfig();
@@ -53,11 +31,36 @@ const paystackRequest = async ({ path, method = 'POST', payload }) => {
 
 export const initializePaystackTransaction = onCall(async (request) => {
   try {
-    const { email, studentId, latestMark, sessionType, studentIds, callbackUrl } = request.data ?? {};
+    const { studentId, planId, billingPeriod, subjectCount, callbackUrl } = request.data ?? {};
+    const payerId = request.auth?.uid;
+    if (!payerId) throw new HttpsError('unauthenticated', 'Sign in before selecting a subscription.');
+    if (!studentId) throw new HttpsError('invalid-argument', 'A student account is required.');
 
-    if (!email || (!studentId && (!studentIds || studentIds.length === 0))) {
-      throw new HttpsError('invalid-argument', 'email and either studentId or studentIds are required.');
+    let quote;
+    try {
+      quote = calculateSubscriptionQuote({ planId, billingPeriod, subjectCount });
+    } catch (error) {
+      throw new HttpsError('invalid-argument', error.message);
     }
+
+    const db = getDb();
+    const [payerSnapshot, studentSnapshot] = await Promise.all([
+      db.collection('users').doc(payerId).get(),
+      db.collection('users').doc(studentId).get(),
+    ]);
+    if (!payerSnapshot.exists || !studentSnapshot.exists || studentSnapshot.data().role !== 'student') {
+      throw new HttpsError('not-found', 'The student account was not found.');
+    }
+
+    const payer = payerSnapshot.data();
+    const student = studentSnapshot.data();
+    const isStudent = payerId === studentId && payer.role === 'student';
+    const isParent = payer.role === 'parent' && student.parentId === payerId;
+    if (!isStudent && !isParent) {
+      throw new HttpsError('permission-denied', 'Only the student or their linked parent can manage this subscription.');
+    }
+    const email = request.auth.token?.email || payer.email;
+    if (!email) throw new HttpsError('failed-precondition', 'A billing email is required.');
 
     const { paystackCallbackUrl: fallbackCallbackUrl } = getPaystackConfig();
     const paystackCallbackUrl = typeof callbackUrl === 'string' && callbackUrl.trim()
@@ -77,31 +80,101 @@ export const initializePaystackTransaction = onCall(async (request) => {
       throw new HttpsError('invalid-argument', 'callbackUrl must be a valid http or https URL.');
     }
 
-    const db = getDb();
-    let totalAmount = 0;
-    
-    // For single student
-    let quote = null;
-    if (studentId) {
-      quote = calculateSubscriptionQuote({ latestMark, sessionType });
-      totalAmount = quote.amount;
-    } 
-    // For bulk students
-    else if (studentIds && studentIds.length > 0) {
-      for (const s of studentIds) {
-        totalAmount += calculateSubscriptionQuote({ latestMark: s.latestMark, sessionType: s.sessionType }).amount;
-      }
+    const subscriptionRef = db.collection('subscriptions').doc(studentId);
+    const currentSubscriptionSnapshot = await subscriptionRef.get();
+    const currentSubscription = currentSubscriptionSnapshot.exists ? currentSubscriptionSnapshot.data() : null;
+    const renewalDate = currentSubscription?.renewalDate?.toDate?.() ?? null;
+    const subscriptionIsCurrent = currentSubscription?.status === 'active' && renewalDate && renewalDate > new Date();
+    const samePlan = subscriptionIsCurrent
+      && currentSubscription.planId === quote.planId
+      && currentSubscription.billingPeriod === quote.billingPeriod
+      && Number(currentSubscription.subjectCount) === quote.subjectCount;
+
+    if (samePlan) return { alreadyActive: true, quote, renewalDate: renewalDate.toISOString() };
+
+    if (subscriptionIsCurrent) {
+      const reference = `change-${studentId}-${Date.now()}`;
+      const pendingPlan = { ...quote, effectiveAt: renewalDate };
+      await Promise.all([
+        subscriptionRef.set({
+          pendingPlan,
+          pendingPlanReference: reference,
+          pendingPlanSetAt: admin.firestore.FieldValue.serverTimestamp(),
+          autoRenew: true,
+        }, { merge: true }),
+        db.collection('users').doc(studentId).set({
+          pendingSubscriptionPlan: pendingPlan,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true }),
+        db.collection('payments').doc(reference).set({
+          reference,
+          studentId,
+          payerId,
+          parentId: isParent ? payerId : null,
+          status: 'scheduled_change',
+          amount: quote.amount,
+          currency: quote.currency,
+          ...quote,
+          effectiveAt: renewalDate,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        }),
+      ]);
+      return { scheduledChange: true, quote, effectiveAt: renewalDate.toISOString() };
     }
 
-    const reference = `examifying-${studentId || 'bulk'}-${Date.now()}`;
+    const reference = `examifying-${studentId}-${Date.now()}`;
+
+    if (planId === 'free') {
+      const activeFree = {
+        studentId,
+        status: 'active',
+        ...quote,
+        amount: 0,
+        latestReference: reference,
+        renewalDate: null,
+        autoRenew: false,
+        activatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        pendingPlan: admin.firestore.FieldValue.delete(),
+        pendingPlanReference: admin.firestore.FieldValue.delete(),
+      };
+      const batch = db.batch();
+      batch.set(db.collection('payments').doc(reference), {
+        reference,
+        studentId,
+        payerId,
+        parentId: isParent ? payerId : null,
+        email,
+        status: 'active',
+        amount: 0,
+        currency: 'ZAR',
+        ...quote,
+        product: 'Examifying subscription',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      batch.set(subscriptionRef, activeFree, { merge: true });
+      batch.set(db.collection('users').doc(studentId), {
+        paymentCompleted: false,
+        subscriptionStatus: 'active',
+        subscriptionPlanId: 'free',
+        subscriptionPlanName: 'Free',
+        subscriptionBillingPeriod: quote.billingPeriod,
+        subscriptionSubjectCount: 0,
+        pendingSubscriptionPlan: admin.firestore.FieldValue.delete(),
+        latestPaymentReference: reference,
+        subscriptionRenewalDate: null,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      await batch.commit();
+      return { free: true, reference, quote };
+    }
 
     logger.info('Initializing Paystack transaction', {
       email,
       studentId,
-      studentIds,
+      payerId,
+      quote,
       reference,
       callbackUrl: paystackCallbackUrl,
-      amount: totalAmount,
     });
 
     const transaction = await paystackRequest({
@@ -109,13 +182,16 @@ export const initializePaystackTransaction = onCall(async (request) => {
       method: 'POST',
       payload: {
         email,
-        amount: Math.round(totalAmount * 100),
+        amount: Math.round(quote.amount * 100),
         currency: 'ZAR',
         reference,
         callback_url: paystackCallbackUrl,
         metadata: {
-          studentId: studentId || null,
-          studentIds: studentIds ? JSON.stringify(studentIds.map(s => s.id)) : null,
+          studentId,
+          payerId,
+          planId: quote.planId,
+          billingPeriod: quote.billingPeriod,
+          subjectCount: quote.subjectCount,
           product: 'Examifying subscription',
         },
       },
@@ -123,11 +199,14 @@ export const initializePaystackTransaction = onCall(async (request) => {
 
     await db.collection('payments').doc(reference).set({
       reference,
-      studentId: studentId || null,
+      studentId,
+      payerId,
+      parentId: isParent ? payerId : null,
       email,
-      amount: totalAmount,
-      currency: 'ZAR',
       status: 'initialized',
+      amount: quote.amount,
+      currency: 'ZAR',
+      ...quote,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
@@ -135,7 +214,7 @@ export const initializePaystackTransaction = onCall(async (request) => {
       authorizationUrl: transaction.authorization_url,
       accessCode: transaction.access_code,
       reference,
-      quote: quote || { amount: totalAmount },
+      quote,
     };
   } catch (error) {
     logger.error('initializePaystackTransaction failed', error);
@@ -150,107 +229,119 @@ export const initializePaystackTransaction = onCall(async (request) => {
 
 export const verifyPaystackTransaction = onCall(async (request) => {
   const { reference } = request.data ?? {};
-
+  const payerId = request.auth?.uid;
+  if (!payerId) throw new HttpsError('unauthenticated', 'Sign in to verify your payment.');
   if (!reference) {
     throw new HttpsError('invalid-argument', 'reference is required.');
   }
 
   const db = getDb();
+  const paymentRef = db.collection('payments').doc(reference);
+  const paymentSnapshot = await paymentRef.get();
+  if (!paymentSnapshot.exists) throw new HttpsError('not-found', 'Payment record not found.');
+  const payment = paymentSnapshot.data();
+  if (payment.payerId !== payerId) throw new HttpsError('permission-denied', 'This payment belongs to another account.');
+  if (payment.status === 'success') return { status: 'success', reference, authorizationStored: false };
+  if (!['initialized', 'pending', 'processing'].includes(payment.status) || !payment.planId || !payment.studentId) {
+    throw new HttpsError('failed-precondition', 'This payment cannot be verified. Please start a new subscription checkout.');
+  }
+
+  let quote;
+  try {
+    quote = calculateSubscriptionQuote({
+      planId: payment.planId,
+      billingPeriod: payment.billingPeriod,
+      subjectCount: payment.subjectCount,
+    });
+  } catch {
+    throw new HttpsError('failed-precondition', 'The saved subscription selection is invalid.');
+  }
 
   const transaction = await paystackRequest({
     path: `/transaction/verify/${reference}`,
     method: 'GET',
   });
 
+  if (transaction.status === 'success' && (Number(transaction.amount) !== Math.round(quote.amount * 100) || transaction.currency !== quote.currency)) {
+    await paymentRef.set({ status: 'amount_mismatch', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    throw new HttpsError('failed-precondition', 'The verified payment does not match this subscription price.');
+  }
+
   const authorization = transaction.authorization ?? null;
-  const metadata = transaction.metadata ?? {};
+  const succeeded = transaction.status === 'success';
+  const reusableAuthorization = Boolean(authorization?.authorization_code && authorization.reusable);
+  const nextRenewalDate = succeeded
+    ? admin.firestore.Timestamp.fromDate(new Date(Date.now() + quote.billingCycleDays * 24 * 60 * 60 * 1000))
+    : null;
+  const batch = db.batch();
+  batch.set(paymentRef, {
+    reference,
+    amount: Number(transaction.amount ?? 0) / 100,
+    currency: transaction.currency ?? quote.currency,
+    status: transaction.status,
+    gatewayResponse: transaction.gateway_response,
+    paidAt: transaction.paid_at ?? null,
+    channel: transaction.channel ?? null,
+    studentId: payment.studentId,
+    payerId,
+    email: transaction.customer?.email ?? payment.email,
+    ...quote,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
 
-  await db.collection('payments').doc(reference).set(
-    {
-      reference,
-      amount: transaction.amount / 100,
-      currency: transaction.currency,
-      status: transaction.status,
-      gatewayResponse: transaction.gateway_response,
-      paidAt: transaction.paid_at,
-      channel: transaction.channel,
-      studentId: metadata.studentId ?? null,
-      email: transaction.customer?.email ?? null,
-      metadata,
+  if (succeeded) {
+    if (reusableAuthorization) {
+      batch.set(db.collection('subscriptionAuthorizations').doc(payment.studentId), {
+        studentId: payment.studentId,
+        payerId,
+        email: transaction.customer?.email ?? payment.email,
+        authorizationCode: authorization.authorization_code,
+        bin: authorization.bin ?? null,
+        last4: authorization.last4 ?? null,
+        expMonth: authorization.exp_month ?? null,
+        expYear: authorization.exp_year ?? null,
+        cardType: authorization.card_type ?? null,
+        bank: authorization.bank ?? null,
+        reusable: authorization.reusable,
+        signature: authorization.signature ?? null,
+        storedAt: admin.firestore.FieldValue.serverTimestamp(),
+        reference,
+      }, { merge: true });
+    }
+
+    batch.set(db.collection('subscriptions').doc(payment.studentId), {
+      studentId: payment.studentId,
+      status: 'active',
+      ...quote,
+      amount: quote.amount,
+      latestReference: reference,
+      renewedAt: admin.firestore.FieldValue.serverTimestamp(),
+      renewalDate: nextRenewalDate,
+      autoRenew: reusableAuthorization,
+      pendingPlan: admin.firestore.FieldValue.delete(),
+      pendingPlanReference: admin.firestore.FieldValue.delete(),
+    }, { merge: true });
+
+    batch.set(db.collection('users').doc(payment.studentId), {
+      paymentCompleted: true,
+      subscriptionStatus: 'active',
+      subscriptionPlanId: quote.planId,
+      subscriptionPlanName: quote.planName,
+      subscriptionBillingPeriod: quote.billingPeriod,
+      subscriptionSubjectCount: quote.subjectCount,
+      latestPaymentReference: reference,
+      subscriptionRenewalDate: nextRenewalDate,
+      pendingSubscriptionPlan: admin.firestore.FieldValue.delete(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
-
-  let targetStudents = [];
-  if (metadata.studentId) targetStudents.push(metadata.studentId);
-  if (metadata.studentIds) {
-    try {
-      const parsedIds = JSON.parse(metadata.studentIds);
-      if (Array.isArray(parsedIds)) {
-        targetStudents = [...new Set([...targetStudents, ...parsedIds])];
-      }
-    } catch (error) {
-      logger.warn('Failed to parse Paystack studentIds metadata', { error });
-    }
+    }, { merge: true });
   }
 
-  if (authorization?.authorization_code && targetStudents.length > 0) {
-    const nextRenewalDate = admin.firestore.Timestamp.fromDate(
-      new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
-    );
-
-    for (const sId of targetStudents) {
-      await db.collection('subscriptionAuthorizations').doc(sId).set(
-        {
-          studentId: sId,
-          email: transaction.customer?.email ?? null,
-          authorizationCode: authorization.authorization_code,
-          bin: authorization.bin,
-          last4: authorization.last4,
-          expMonth: authorization.exp_month,
-          expYear: authorization.exp_year,
-          cardType: authorization.card_type,
-          bank: authorization.bank,
-          reusable: authorization.reusable,
-          signature: authorization.signature,
-          storedAt: admin.firestore.FieldValue.serverTimestamp(),
-          reference,
-        },
-        { merge: true }
-      );
-
-      await db.collection('subscriptions').doc(sId).set(
-        {
-          studentId: sId,
-          status: transaction.status === 'success' ? 'active' : 'pending',
-          currency: transaction.currency,
-          latestReference: reference,
-          renewedAt: admin.firestore.FieldValue.serverTimestamp(),
-          renewalDate: transaction.status === 'success' ? nextRenewalDate : null,
-          billingCycleDays: 30,
-          autoRenew: true,
-        },
-        { merge: true }
-      );
-
-      await db.collection('users').doc(sId).set(
-        {
-          paymentCompleted: transaction.status === 'success',
-          subscriptionStatus: transaction.status === 'success' ? 'active' : 'pending',
-          latestPaymentReference: reference,
-          subscriptionRenewalDate: transaction.status === 'success' ? nextRenewalDate : null,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
-    }
-  }
+  await batch.commit();
 
   return {
     status: transaction.status,
     reference,
-    authorizationStored: Boolean(authorization?.authorization_code),
+    authorizationStored: reusableAuthorization,
   };
 });
 
@@ -259,7 +350,7 @@ export const chargeAuthorizationForSubscription = async ({
   email,
   amount,
   authorizationCode,
-  metadata = {},
+  subscriptionQuote,
 }) => {
   const db = getDb();
 
@@ -271,7 +362,11 @@ export const chargeAuthorizationForSubscription = async ({
       amount: Math.round(amount * 100),
       authorization_code: authorizationCode,
       metadata: {
-        ...metadata,
+        planId: subscriptionQuote.planId,
+        planName: subscriptionQuote.planName,
+        billingPeriod: subscriptionQuote.billingPeriod,
+        subjectCount: subscriptionQuote.subjectCount,
+        sessionsPerMonth: subscriptionQuote.sessionsPerMonth,
         studentId,
         product: 'Examifying subscription',
         recurring: true,
@@ -282,7 +377,7 @@ export const chargeAuthorizationForSubscription = async ({
   const succeeded = charge.status === 'success';
 
   const nextRenewalDate = admin.firestore.Timestamp.fromDate(
-    new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+    new Date(Date.now() + subscriptionQuote.billingCycleDays * 24 * 60 * 60 * 1000)
   );
 
   await db.collection('payments').doc(charge.reference).set(
@@ -294,6 +389,7 @@ export const chargeAuthorizationForSubscription = async ({
       currency: 'ZAR',
       status: charge.status ?? 'processing',
       recurring: true,
+      ...subscriptionQuote,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     },
     { merge: true }
@@ -303,6 +399,7 @@ export const chargeAuthorizationForSubscription = async ({
     {
       studentId,
       status: succeeded ? 'active' : 'past_due',
+      ...subscriptionQuote,
       latestReference: charge.reference,
       amount,
       currency: 'ZAR',
@@ -310,45 +407,26 @@ export const chargeAuthorizationForSubscription = async ({
       renewalDate: succeeded ? nextRenewalDate : admin.firestore.FieldValue.delete(),
       lastChargeStatus: charge.status ?? 'processing',
       lastChargeAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
-      autoRenew: true,
+      autoRenew: succeeded,
+      pendingPlan: admin.firestore.FieldValue.delete(),
+      pendingPlanReference: admin.firestore.FieldValue.delete(),
     },
     { merge: true }
   );
 
-  await db.collection('users').doc(studentId).set(
-    {
-      paymentCompleted: succeeded,
-      subscriptionStatus: succeeded ? 'active' : 'past_due',
-      latestPaymentReference: charge.reference,
-      subscriptionRenewalDate: succeeded ? nextRenewalDate : null,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
+  const userPatch = {
+    paymentCompleted: succeeded,
+    subscriptionStatus: succeeded ? 'active' : 'past_due',
+    subscriptionPlanId: succeeded ? subscriptionQuote.planId : admin.firestore.FieldValue.delete(),
+    subscriptionPlanName: succeeded ? subscriptionQuote.planName : admin.firestore.FieldValue.delete(),
+    subscriptionBillingPeriod: succeeded ? subscriptionQuote.billingPeriod : admin.firestore.FieldValue.delete(),
+    subscriptionSubjectCount: succeeded ? subscriptionQuote.subjectCount : admin.firestore.FieldValue.delete(),
+    latestPaymentReference: charge.reference,
+    subscriptionRenewalDate: succeeded ? nextRenewalDate : null,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  if (succeeded) userPatch.pendingSubscriptionPlan = admin.firestore.FieldValue.delete();
+  await db.collection('users').doc(studentId).set(userPatch, { merge: true });
 
   return { charge, succeeded, nextRenewalDate };
 };
-
-export const chargeStoredAuthorization = onCall(async (request) => {
-  const { studentId, email, amount, authorizationCode, metadata = {} } = request.data ?? {};
-
-  if (!studentId || !email || !amount || !authorizationCode) {
-    throw new HttpsError(
-      'invalid-argument',
-      'studentId, email, amount, and authorizationCode are required.'
-    );
-  }
-
-  const result = await chargeAuthorizationForSubscription({
-    studentId,
-    email,
-    amount,
-    authorizationCode,
-    metadata,
-  });
-
-  return {
-    ...result.charge,
-    nextRenewalDate: result.succeeded ? result.nextRenewalDate.toDate().toISOString() : null,
-  };
-});

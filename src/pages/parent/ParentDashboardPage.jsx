@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
+import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
 import { 
   assignStudentToParent, 
   getStudentsForParent, 
@@ -17,7 +18,6 @@ const EditDetailsForm = ({ student, onSave, onCancel }) => {
   const [form, setForm] = useState({
     displayName: student.displayName || '',
     previousYearMark: student.previousYearMark || 0,
-    sessionType: student.sessionType || 'online',
   });
 
   const handleSubmit = (e) => {
@@ -51,17 +51,6 @@ const EditDetailsForm = ({ student, onSave, onCancel }) => {
           required
         />
       </div>
-      <div>
-        <label className="label">Session Type</label>
-        <select 
-          className="input w-full" 
-          value={form.sessionType}
-          onChange={(e) => setForm({...form, sessionType: e.target.value})}
-        >
-          <option value="online">Online</option>
-          <option value="inPerson">In-person</option>
-        </select>
-      </div>
       <button type="submit" className="btn-primary w-full flex justify-center items-center gap-2">
         <Check className="w-4 h-4"/> Save Details
       </button>
@@ -78,6 +67,7 @@ export const ParentDashboardPage = () => {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
   const [editingStudentId, setEditingStudentId] = useState(null);
+  const [subscriptionStudent, setSubscriptionStudent] = useState(null);
   
   const lastVerifiedReferenceRef = useRef(null);
 
@@ -183,51 +173,34 @@ export const ParentDashboardPage = () => {
     }
   };
 
-  const handlePayForStudent = async (student) => {
+  const handlePayForStudent = async (student, selection) => {
     try {
       setLoading(true);
       const result = await initializeSubscriptionPayment({
-        email: profile?.email,
         studentId: student.uid,
-        latestMark: student.previousYearMark ?? 0,
-        sessionType: student.sessionType ?? 'online',
-        paidByParent: true,
-        parentId: profile?.uid
+        ...selection,
+        callbackUrl: `${window.location.origin}${location.pathname}`,
       });
 
-      if (!result?.authorizationUrl) {
+      if (result.free) {
+        setStatus(`${student.displayName || 'Student'} is now on the Free plan.`);
+        setSubscriptionStudent(null);
+        await loadStudents();
+      } else if (result.scheduledChange) {
+        setStatus(`${result.quote.planName} will start for ${student.displayName || 'the student'} on ${new Date(result.effectiveAt).toLocaleDateString()}.`);
+        setSubscriptionStudent(null);
+        await loadStudents();
+      } else if (result.alreadyActive) {
+        setStatus(`${result.quote.planName} is already active for ${student.displayName || 'the student'}.`);
+        setSubscriptionStudent(null);
+      } else if (!result?.authorizationUrl) {
         throw new Error('No Paystack authorization URL was returned.');
+      } else {
+        window.location.href = result.authorizationUrl;
       }
-      window.location.href = result.authorizationUrl;
     } catch (error) {
-      alert(error?.message || 'Unable to initialize payment right now.');
-      setLoading(false);
-    }
-  };
-
-  const handlePayForAll = async () => {
-    const unpaidStudents = students.filter(s => !s.paymentCompleted);
-    if (unpaidStudents.length === 0) return;
-    
-    try {
-      setLoading(true);
-      const result = await initializeSubscriptionPayment({
-        email: profile?.email,
-        studentIds: unpaidStudents.map(s => ({
-          id: s.uid,
-          latestMark: s.previousYearMark ?? 0,
-          sessionType: s.sessionType ?? 'online',
-        })),
-        paidByParent: true,
-        parentId: profile?.uid
-      });
-
-      if (!result?.authorizationUrl) {
-        throw new Error('No bulk Paystack authorization URL was returned.');
-      }
-      window.location.href = result.authorizationUrl;
-    } catch (error) {
-      alert(error?.message || 'Unable to process bulk payment right now.');
+      setStatus(error?.message || 'Unable to start subscription checkout.');
+    } finally {
       setLoading(false);
     }
   };
@@ -277,20 +250,11 @@ export const ParentDashboardPage = () => {
       )}
 
       {students.length > 0 && (
-        <div className="mb-6 flex justify-between items-center bg-lime-400/10 rounded-2xl p-6 border border-lime-400/30 shadow-sm">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-lime-400/30 bg-lime-400/10 p-6 shadow-sm">
           <div>
             <h3 className="font-bold text-white text-lg">Payments</h3>
-            <p className="text-slate-300 text-sm mt-1">You have {unpaidCount} student{unpaidCount !== 1 && 's'} requiring payment updates.</p>
+            <p className="text-slate-300 text-sm mt-1">{unpaidCount} student{unpaidCount !== 1 ? 's' : ''} need a subscription. Choose a plan for each student.</p>
           </div>
-          {unpaidCount > 0 && (
-            <button 
-              className="btn-primary px-8" 
-              onClick={handlePayForAll}
-              disabled={loading}
-            >
-              Pay for All At Once
-            </button>
-          )}
         </div>
       )}
 
@@ -365,14 +329,14 @@ export const ParentDashboardPage = () => {
                   {!student.paymentCompleted ? (
                     <button 
                       className="btn-primary w-full" 
-                      onClick={() => handlePayForStudent(student)}
+                      onClick={() => setSubscriptionStudent(student)}
                       disabled={loading}
                     >
-                      Pay Sub Individually
+                      Choose subscription
                     </button>
                   ) : (
-                    <button className="btn-secondary w-full" disabled>
-                      Subscription Active
+                    <button className="btn-secondary w-full" onClick={() => setSubscriptionStudent(student)} disabled={loading}>
+                      {student.subscriptionPlanName || 'Subscription active'}
                     </button>
                   )}
                 </div>
@@ -381,6 +345,28 @@ export const ParentDashboardPage = () => {
           ))}
         </div>
       )}
+      {subscriptionStudent ? (
+        <div className="fixed inset-0 z-[80] overflow-y-auto bg-slate-950/95 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={`Subscription for ${subscriptionStudent.displayName || 'student'}`}>
+          <div className="mx-auto my-4 max-w-6xl">
+            <div className="mb-5 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-lime-400">Student subscription</p>
+                <h2 className="mt-1 text-2xl font-bold text-white">{subscriptionStudent.displayName || subscriptionStudent.email}</h2>
+              </div>
+              <button type="button" className="btn-secondary h-11 w-11 p-0" onClick={() => setSubscriptionStudent(null)} aria-label="Close subscription plans"><X className="h-5 w-5" /></button>
+            </div>
+            <SubscriptionPlanSelector
+              initialSelection={{
+                planId: subscriptionStudent.subscriptionPlanId,
+                billingPeriod: subscriptionStudent.subscriptionBillingPeriod,
+                subjectCount: subscriptionStudent.subscriptionSubjectCount,
+              }}
+              onContinue={(selection) => handlePayForStudent(subscriptionStudent, selection)}
+              isSubmitting={loading}
+            />
+          </div>
+        </div>
+      ) : null}
     </AppShell>
   );
 };
