@@ -10,7 +10,10 @@ export const LoginPage = () => {
   const [status, setStatus] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
-  const redirectByRole = (role) => navigate(`/${role}`);
+  const redirectByRole = (profile) => {
+    const target = profile.isTeacher ? '/teacher' : `/${profile.role}`;
+    navigate(target);
+  };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -18,7 +21,7 @@ export const LoginPage = () => {
     setStatus('');
     try {
       const result = await login(form);
-      redirectByRole(result.profile.role);
+      redirectByRole(result.profile);
     } catch (error) {
       setStatus(error.message);
     } finally {

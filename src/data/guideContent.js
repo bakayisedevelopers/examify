@@ -251,4 +251,129 @@ export const guideContentByRole = {
       },
     ],
   },
+  teacher: {
+    heroTitle: 'Learn the Examifying teacher workflow',
+    heroDescription:
+      'Teachers manage the student learning path by assigning learners, creating reports, recording completed topics, and keeping the weekly exercise pipeline moving.',
+    quickTips: [
+      'Assign a student before trying to manage their lesson journey.',
+      'Create the first report so the learner has proper learning context.',
+      'Record completed topics with an understanding level after each lesson.',
+      'Keep notes clear because they shape future exercise planning.',
+    ],
+    sections: [
+      {
+        id: 'assign',
+        title: 'Assign students to yourself',
+        description: 'The teacher dashboard shows assigned and unassigned learners so you can claim and manage your student list.',
+        icon: Users,
+        routeLabel: 'Overview / Students',
+        steps: [
+          'Open the Students area or teacher overview to see available learners.',
+          'Assign a student so they are linked to you as their Maths teacher.',
+          'Open the learner card to continue with reports and topic tracking.',
+        ],
+      },
+      {
+        id: 'report',
+        title: 'Write the initial learner report',
+        description: 'The initial report gives context on the learner’s current ability and becomes part of the planning history.',
+        icon: FileText,
+        routeLabel: 'Overview',
+        steps: [
+          'Select the learner from your assigned list.',
+          'Write the first report clearly with strengths, concerns, and next focus areas.',
+          'Save the report before moving into later lesson updates.',
+        ],
+      },
+      {
+        id: 'lessons',
+        title: 'Mark completed topics after teaching',
+        description: 'Each completed lesson should record the topic taught, your topic report, and the learner understanding level.',
+        icon: CheckCircle2,
+        routeLabel: 'Overview',
+        steps: [
+          'Enter the topic name exactly as you want it tracked.',
+          'Write a short topic report that describes performance and corrections.',
+          'Choose the understanding level honestly so future work difficulty stays realistic.',
+        ],
+      },
+      {
+        id: 'papers',
+        title: 'Use past papers to support practice',
+        description: 'The platform uses available past paper data to support exercise planning for the student.',
+        icon: BookOpen,
+        routeLabel: 'Past papers',
+        steps: [
+          'Review available past papers relevant to the learner grade and region.',
+          'Upload additional papers when they are needed for future exercise selection.',
+          'Keep paper information complete so it can be used confidently later.',
+        ],
+      },
+      {
+        id: 'generation',
+        title: 'Support the weekly learning cycle',
+        description: 'When payment and paper requirements are in place, completed topics help the app prepare ongoing exercise work for the learner.',
+        icon: Sparkles,
+        routeLabel: 'Overview',
+        steps: [
+          'After saving the completed lesson, review the status message on the dashboard.',
+          'If weekly work does not generate yet, check learner payment and matching papers.',
+          'Continue updating lessons so the learner stays on a structured Maths path.',
+        ],
+      },
+      {
+        id: 'student-view',
+        title: 'Understand the learner experience',
+        description: 'Knowing the student journey helps teachers give better direction and reduce confusion.',
+        icon: Image,
+        routeLabel: 'Reports / Students',
+        steps: [
+          'Remind the learner that only today\'s exercise can be completed.',
+          'Check that they upload a readable image of written Maths working.',
+          'Use reports and topic notes to coach them toward the next step.',
+        ],
+      },
+    ],
+    quizTitle: 'Teacher readiness check',
+    quizDescription: 'Answer all questions to confirm you understand how to use Examifying as a teacher.',
+    questions: [
+      {
+        id: 'teacher-q1',
+        prompt: 'What should a teacher do before managing reports and lessons for a learner?',
+        options: [
+          { id: 'a', text: 'Assign the student to themselves first.', correct: true },
+          { id: 'b', text: 'Wait for the student to submit three exercises.', correct: false },
+          { id: 'c', text: 'Change the learner profile role.', correct: false },
+        ],
+      },
+      {
+        id: 'teacher-q2',
+        prompt: 'What information should be recorded when a lesson topic is completed?',
+        options: [
+          { id: 'a', text: 'Topic, topic report, and understanding level.', correct: true },
+          { id: 'b', text: 'Only the learner name.', correct: false },
+          { id: 'c', text: 'Only the next payment date.', correct: false },
+        ],
+      },
+      {
+        id: 'teacher-q3',
+        prompt: 'Why should teachers keep reports and topic notes clear?',
+        options: [
+          { id: 'a', text: 'Because they help shape future exercise planning and support.', correct: true },
+          { id: 'b', text: 'Because they replace the need for a student profile.', correct: false },
+          { id: 'c', text: 'Because they automatically mark peer reviews.', correct: false },
+        ],
+      },
+      {
+        id: 'teacher-q4',
+        prompt: 'What should a teacher check if weekly work does not generate after a lesson is saved?',
+        options: [
+          { id: 'a', text: 'The learner payment status and matching past papers.', correct: true },
+          { id: 'b', text: 'Whether the admin has deleted the dashboard title.', correct: false },
+          { id: 'c', text: 'Whether the student changed their password.', correct: false },
+        ],
+      },
+    ],
+  },
 };

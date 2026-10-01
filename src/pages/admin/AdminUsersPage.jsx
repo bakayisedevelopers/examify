@@ -114,18 +114,18 @@ export const AdminUsersPage = () => {
             </label>
 
             <label>
-              <span className="label">Tutor</span>
+              <span className="label">Tutor / Teacher</span>
               <select className="input" value={tutorId} onChange={(event) => setTutorId(event.target.value)}>
                 {assignmentData.tutors.map((tutor) => (
                   <option key={tutor.uid} value={tutor.uid}>
-                    {tutor.displayName || tutor.email || tutor.uid}
+                    {tutor.displayName || tutor.email || tutor.uid} {tutor.isTeacher ? '(Teacher)' : '(Tutor)'}
                   </option>
                 ))}
               </select>
             </label>
 
             <button type="submit" className="btn-primary w-full" disabled={!studentId || !tutorId}>
-              Assign tutor
+              Assign tutor / teacher
             </button>
             {status ? <p className="text-sm text-slate-600">{status}</p> : null}
           </form>
@@ -135,7 +135,7 @@ export const AdminUsersPage = () => {
             {assignmentData.assignments.map((assignment) => (
               <div key={assignment.id} className="rounded-2xl bg-slate-50 p-4 text-sm">
                 <p className="font-semibold text-slate-900">{assignment.studentName}</p>
-                <p className="mt-1 text-slate-500">Tutor: {assignment.tutorName}</p>
+                <p className="mt-1 text-slate-500">{assignment.tutorRoleLabel || 'Tutor'}: {assignment.tutorName}</p>
               </div>
             ))}
             {!assignmentData.assignments.length ? (
@@ -154,8 +154,8 @@ export const AdminUsersPage = () => {
           users={summary.students}
         />
         <ScoreList
-          title="Tutors"
-          description="Each tutor appears with the latest percentage from the tutor Examifying Guide test."
+          title="Tutors & Teachers"
+          description="Each tutor or teacher appears with the latest percentage from the guide test."
           users={summary.tutors}
         />
       </div>

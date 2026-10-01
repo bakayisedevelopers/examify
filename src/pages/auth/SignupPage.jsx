@@ -18,6 +18,7 @@ export const SignupPage = () => {
     province: REGIONS[0],
     previousYearMark: '0',
     sessionType: 'online',
+    school: '',
   });
 
   const [acceptedPolicies, setAcceptedPolicies] = useState(false);
@@ -31,7 +32,7 @@ export const SignupPage = () => {
 
     setCreating(true);
 
-    if (form.role.trim() === 'student') {
+    if (form.role === ROLES.STUDENT) {
       if (form.grade.trim() === 'Select Grade') {
         setStatus('Please select a valid grade.');
         setCreating(false);
@@ -42,14 +43,28 @@ export const SignupPage = () => {
         setCreating(false);
         return;
       }
+      if (!form.school.trim()) {
+        setStatus('Please enter your school name.');
+        setCreating(false);
+        return;
+      }
+    }
+
+    if (form.role === 'teacher') {
+      if (!form.school.trim()) {
+        setStatus('Please enter the school you are teaching in.');
+        setCreating(false);
+        return;
+      }
     }
 
     try {
+      const effectiveRole = form.role === 'teacher' ? ROLES.TUTOR : form.role;
       const result = await register({
         fullName: form.fullName,
         email: form.email,
         password: form.password,
-        role: form.role,
+        role: effectiveRole,
         latestReport: '',
         policiesAccepted: true,
         policiesAcceptedAt: new Date().toISOString(),
@@ -58,10 +73,13 @@ export const SignupPage = () => {
           province: form.role === ROLES.STUDENT ? form.province : null,
           previousYearMark: form.role === ROLES.STUDENT ? Number(form.previousYearMark) || 0 : null,
           preferredSessionType: form.role === ROLES.STUDENT ? form.sessionType : null,
+          school: (form.role === ROLES.STUDENT || form.role === 'teacher') ? form.school.trim() : null,
+          isTeacher: form.role === 'teacher' ? true : undefined,
         },
       });
 
-      navigate(`/${result.profile.role}`);
+      const targetRoute = form.role === 'teacher' ? '/teacher' : `/${result.profile.role}`;
+      navigate(targetRoute);
     } catch (error) {
       console.error('Registration failed:', error);
       setStatus(error.message || 'Registration failed');
@@ -104,12 +122,17 @@ export const SignupPage = () => {
             <option value={ROLES.STUDENT}>Student</option>
             <option value={ROLES.PARENT}>Parent</option>
             <option value={ROLES.TUTOR}>Tutor</option>
-            <option value={ROLES.ADMIN}>Admin</option>
+            <option value="teacher">Teacher</option>
           </select>
         </label>
 
         {form.role === ROLES.STUDENT ? (
           <>
+            <label className="block">
+              <span className="label">School name</span>
+              <input className="input" placeholder="e.g. Pretoria High School" value={form.school} onChange={handleChange('school')} required />
+            </label>
+
             <label className="block">
               <span className="label">Grade</span>
               <select className="input" value={form.grade} onChange={handleChange('grade')}>
@@ -129,7 +152,7 @@ export const SignupPage = () => {
               <input type="number" className="input" min="0" max="100" value={form.previousYearMark} onChange={handleChange('previousYearMark')} required />
             </label>
 
-            <label className="block">
+            <label className="block md:col-span-2">
               <span className="label">Preferred session type</span>
               <select className="input" value={form.sessionType} onChange={handleChange('sessionType')}>
                 <option value="online">Online</option>
@@ -137,6 +160,13 @@ export const SignupPage = () => {
               </select>
             </label>
           </>
+        ) : null}
+
+        {form.role === 'teacher' ? (
+          <label className="block md:col-span-2">
+            <span className="label">School teaching in</span>
+            <input className="input" placeholder="e.g. Johannesburg Secondary School" value={form.school} onChange={handleChange('school')} required />
+          </label>
         ) : null}
 
         <div className="md:col-span-2 flex items-start gap-3 text-xs sm:text-sm text-slate-400">
@@ -165,7 +195,7 @@ export const SignupPage = () => {
           <button
             type="submit"
             className="btn-primary w-full"
-            disabled={(!acceptedPolicies || form.fullName.trim() === '' || form.email.trim() === '' || form.password.trim() === '' || (form.role.trim() === 'student' && form.grade.trim() === 'Select Grade') || (form.role.trim() === 'student' && form.province.trim() === 'National')) || creating}
+            disabled={(!acceptedPolicies || form.fullName.trim() === '' || form.email.trim() === '' || form.password.trim() === '' || (form.role === ROLES.STUDENT && (form.grade.trim() === 'Select Grade' || form.province.trim() === 'National' || !form.school.trim())) || (form.role === 'teacher' && !form.school.trim())) || creating}
           >
             {creating ? 'Creating account...' : 'Create account'}
           </button>

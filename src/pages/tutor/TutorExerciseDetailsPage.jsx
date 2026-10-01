@@ -7,11 +7,13 @@ import { useAuth } from '../../hooks/useAuth';
 import { deleteExerciseAssignmentForTutor, getExerciseAssignmentById, getStudentTopicScoresForTutor } from '../../services/firestoreService';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
 import { getExerciseAvailability } from '../../utils/exerciseRules';
+import { useEffectiveRole } from '../../utils/effectiveRole';
 
 export const TutorExerciseDetailsPage = () => {
   const { exerciseId } = useParams();
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
+  const { role, basePath } = useEffectiveRole();
   const [exercise, setExercise] = useState(null);
   const [status, setStatus] = useState('Loading exercise...');
   const [isDeleting, setIsDeleting] = useState(false);
@@ -38,7 +40,7 @@ export const TutorExerciseDetailsPage = () => {
     try {
       const result = await deleteExerciseAssignmentForTutor({ tutorId: profile.uid, exerciseId: exercise.id });
       await deleteExerciseSubmissionFiles(result.storageUrls);
-      navigate('/tutor/exercises', { replace: true });
+      navigate(`${basePath}/exercises`, { replace: true });
     } catch (error) {
       setStatus(error.message || 'Could not delete exercise.');
       setIsDeleting(false);
@@ -46,12 +48,12 @@ export const TutorExerciseDetailsPage = () => {
   };
 
   return (
-    <AppShell title="Exercise details" subtitle={exercise ? `${exercise.subject} • ${exercise.assignmentDate}` : status} role="tutor" user={profile} onLogout={logout}>
+    <AppShell title="Exercise details" subtitle={exercise ? `${exercise.subject} • ${exercise.assignmentDate}` : status} role={role} user={profile} onLogout={logout}>
       {status ? <div className="panel p-5 text-sm text-slate-500">{status}</div> : null}
       {exercise && availability ? (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <Link to="/tutor/exercises" className="btn-secondary inline-flex w-fit">Back to exercises</Link>
+            <Link to={`${basePath}/exercises`} className="btn-secondary inline-flex w-fit">Back to exercises</Link>
             <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={removeExercise} disabled={isDeleting}>
               <Trash2 className="h-4 w-4" aria-hidden="true" /> {isDeleting ? 'Deleting...' : 'Delete exercise'}
             </button>

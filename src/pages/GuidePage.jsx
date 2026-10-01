@@ -6,15 +6,20 @@ import { SectionHeader } from '../components/common/SectionHeader';
 import { guideContentByRole } from '../data/guideContent';
 import { useAuth } from '../hooks/useAuth';
 import { getLatestGuideQuizResult, saveGuideQuizResult } from '../services/firestoreService';
+import { useEffectiveRole } from '../utils/effectiveRole';
 
 const routeBaseByRole = {
   student: '/student',
   tutor: '/tutor',
+  teacher: '/teacher',
 };
 
-export const GuidePage = ({ role }) => {
+export const GuidePage = ({ role: propRole }) => {
   const { profile, logout } = useAuth();
-  const content = guideContentByRole[role];
+  const { role: userRole } = useEffectiveRole();
+  const role = propRole || userRole;
+  const guideRoleKey = role === 'teacher' ? 'teacher' : (role === 'tutor' ? 'tutor' : 'student');
+  const content = guideContentByRole[guideRoleKey] ?? guideContentByRole.tutor;
   const [answers, setAnswers] = useState({});
   const [status, setStatus] = useState('');
   const [latestResult, setLatestResult] = useState(null);

@@ -100,6 +100,27 @@ export const AppRoutes = () => (
       <Route path="/policies" element={<PoliciesPage />} />
     </Route>
 
+    <Route element={<ProtectedRoute allowedRoles={[ROLES.TUTOR]} />}>
+      <Route path="/teacher" element={<TutorDashboardPage />} />
+      <Route path="/teacher/students" element={<TutorStudentsPage />} />
+      <Route path="/teacher/students/:studentId" element={<TutorStudentDetailsPage />} />
+      <Route path="/teacher/exercises" element={<TutorExercisesPage />} />
+      <Route path="/teacher/exercises/:exerciseId" element={<TutorExerciseDetailsPage />} />
+      <Route path="/teacher/lessons" element={<TutorLessonsPage />} />
+      <Route path="/teacher/lessons/:lessonId" element={<TutorLessonDetailsPage />} />
+      <Route path="/teacher/papers" element={<PastExamPapersPage />} />
+      <Route path="/teacher/papers/:paperId" element={<PaperReaderPage />} />
+      <Route path="/teacher/reports" element={<TutorReportsPage />} />
+      <Route path="/teacher/guide" element={<GuidePage role="teacher" />} />
+      <Route path="/teacher/profile" element={<ProfileHubPage role="teacher" />} />
+      <Route path="/teacher/profile/details" element={<ProfilePersonalDetailsPage role="teacher" />} />
+      <Route path="/teacher/profile/subjects" element={<ProfileSubjectsPage role="teacher" />} />
+      <Route path="/teacher/profile/billing" element={<ProfileBillingPage role="teacher" />} />
+      <Route path="/teacher/profile/legal" element={<ProfileLegalPage role="teacher" />} />
+      <Route path="/teacher/profile/settings" element={<ProfileSettingsPage role="teacher" />} />
+      <Route path="/teacher/profile/agreement" element={<TutorAgreementPage role="teacher" />} />
+    </Route>
+
     <Route element={<ProtectedRoute allowedRoles={[ROLES.ADMIN]} />}>
       <Route path="/admin" element={<AdminDashboardPage />} />
       <Route path="/admin/users" element={<AdminUsersPage />} />

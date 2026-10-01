@@ -23,7 +23,10 @@ import peerMarkingImg from '../assets/images/feature_peer_marking_1790782355192.
 export const LandingPage = () => {
   const { profile } = useAuth();
 
-  if (profile?.role) return <Navigate to={`/${profile.role}`} replace />;
+  if (profile?.role) {
+    const target = (profile.role === 'tutor' && profile.isTeacher) ? '/teacher' : `/${profile.role}`;
+    return <Navigate to={target} replace />;
+  }
 
   return (
     <div className="bg-slate-950 text-slate-100 overflow-hidden font-sans">

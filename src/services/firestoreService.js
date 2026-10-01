@@ -1156,11 +1156,13 @@ export const getAdminSubjectAssignmentData = async (subject = DEFAULT_SUBJECT) =
       .map((assignment) => {
         const student = students.find((item) => item.uid === assignment.studentId);
         const tutor = tutors.find((item) => item.uid === assignment.tutorId);
+        const isTeacher = Boolean(tutor?.isTeacher);
         return {
           ...assignment,
           id: `${assignment.studentId}-${assignment.tutorId}-${subject}`,
           studentName: student?.displayName ?? student?.email ?? 'Student',
           tutorName: tutor?.displayName ?? tutor?.email ?? 'Tutor',
+          tutorRoleLabel: isTeacher ? 'Teacher' : 'Tutor',
         };
       });
     const assignedStudentIds = new Set(assignments.map((assignment) => assignment.studentId));
@@ -1192,10 +1194,12 @@ export const getAdminSubjectAssignmentData = async (subject = DEFAULT_SUBJECT) =
     const assignment = { id: item.id, ...item.data() };
     const student = studentMap.get(assignment.studentId);
     const tutor = tutorMap.get(assignment.tutorId);
+    const isTeacher = Boolean(tutor?.isTeacher);
     return {
       ...assignment,
       studentName: student?.displayName ?? student?.email ?? 'Student',
       tutorName: tutor?.displayName ?? tutor?.email ?? 'Tutor',
+      tutorRoleLabel: isTeacher ? 'Teacher' : 'Tutor',
     };
   });
   const assignedStudentIds = new Set(assignments.map((assignment) => assignment.studentId));

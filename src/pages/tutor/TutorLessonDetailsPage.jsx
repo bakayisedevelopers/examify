@@ -6,6 +6,7 @@ import { useAuth } from '../../hooks/useAuth';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 import { getTopicOptionGroups } from '../../data/topicCatalog';
 import { deleteLesson, generateExercisePlanIfEligible, getLessonById, getQuestionPapers, getTutorAssignedStudentContexts, saveCompletedLesson, updateCompletedLesson } from '../../services/firestoreService';
+import { useEffectiveRole } from '../../utils/effectiveRole';
 
 const today = () => new Date().toISOString().slice(0, 10);
 const emptyTopicGroups = { extracted: [], manual: [], all: [] };
@@ -20,6 +21,7 @@ export const TutorLessonDetailsPage = () => {
   const isNew = lessonId === 'new';
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
+  const { role, basePath } = useEffectiveRole();
   const [contexts, setContexts] = useState([]);
   const [studentId, setStudentId] = useState('');
   const [subject, setSubject] = useState(DEFAULT_SUBJECT);
@@ -134,12 +136,12 @@ export const TutorLessonDetailsPage = () => {
     if (isNew || !lessonId) return;
     if (!window.confirm('Delete this lesson? This cannot be undone.')) return;
     await deleteLesson(lessonId);
-    navigate('/tutor/lessons');
+    navigate(`${basePath}/lessons`);
   };
 
   return (
-    <AppShell title={isNew ? 'Add lesson' : 'Lesson details'} subtitle="Save completed topics and understanding scores for exercise generation." role="tutor" user={profile} onLogout={logout}>
-      <Link to="/tutor/lessons" className="btn-secondary inline-flex w-fit">Back to lessons</Link>
+    <AppShell title={isNew ? 'Add lesson' : 'Lesson details'} subtitle="Save completed topics and understanding scores for exercise generation." role={role} user={profile} onLogout={logout}>
+      <Link to={`${basePath}/lessons`} className="btn-secondary inline-flex w-fit">Back to lessons</Link>
       {status ? <div className="panel p-4 text-sm text-slate-700">{status}</div> : null}
       <section className="panel space-y-4 p-5">
         <SectionHeader eyebrow="Lesson" title={isNew ? 'Create lesson' : 'Edit lesson'} description="Topics come from analyzed question papers." />

@@ -33,12 +33,31 @@ const navigationByRole = {
   ],
 };
 
-export const AppShell = ({ title, subtitle, role, user, onLogout, mobileHeaderContent, children }) => {
+import { useEffectiveRole } from '../../utils/effectiveRole';
+
+const getNavigationForRole = (role, isTeacher) => {
+  const prefix = isTeacher ? '/teacher' : `/${role}`;
+  if (role === ROLES.TUTOR || isTeacher) {
+    return [
+      { to: prefix, label: 'Overview', icon: LayoutDashboard },
+      { to: `${prefix}/exercises`, label: 'Exercises', icon: ClipboardCheck },
+      { to: `${prefix}/lessons`, label: 'Lessons', icon: GraduationCap },
+      { to: `${prefix}/papers`, label: 'Past papers', icon: BookOpen },
+      { to: `${prefix}/reports`, label: 'Reports', icon: FileText },
+      { to: `${prefix}/guide`, label: 'Examifying Guide', icon: ClipboardCheck },
+    ];
+  }
+  return navigationByRole[role] ?? [];
+};
+
+export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobileHeaderContent, children }) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const navigation = navigationByRole[role] ?? [];
+  const { role, isTeacher } = useEffectiveRole();
+  const effectiveRole = propRole === 'teacher' || isTeacher ? 'teacher' : (propRole || role);
+  const navigation = getNavigationForRole(effectiveRole, effectiveRole === 'teacher');
   const location = useLocation();
   const navigate = useNavigate();
-  const isRoleHome = location.pathname === `/${role}`;
+  const isRoleHome = location.pathname === `/${effectiveRole}` || location.pathname === '/teacher' || location.pathname === '/tutor';
 
   return (
     <div className="fixed inset-0 overflow-hidden bg-slate-950 text-slate-100 selection:bg-lime-400 selection:text-slate-950 lg:static lg:h-screen">

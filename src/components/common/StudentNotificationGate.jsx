@@ -7,14 +7,27 @@ const getNotificationPermission = () => {
   return Notification.permission;
 };
 
+const isAiStudioPreview = () => {
+  if (typeof window === 'undefined') return false;
+  const hostname = window.location.hostname || '';
+  const isAiStudioHost = /^ais-(?:dev|pre)-.*\.run\.app$/i.test(hostname) || /aistudio/i.test(hostname);
+  const hasAiStudioAncestor = Boolean(
+    window.location.ancestorOrigins &&
+      Array.from(window.location.ancestorOrigins).some((origin) => /aistudio\.google\.com/i.test(origin))
+  );
+  const hasAiStudioReferrer = typeof document !== 'undefined' && /aistudio\.google\.com/i.test(document.referrer || '');
+  return isAiStudioHost || hasAiStudioAncestor || hasAiStudioReferrer;
+};
+
 const getNotificationEnvironment = () => {
-  if (typeof navigator === 'undefined') return { ios: false, android: false, windows: false, safari: false, installed: false };
+  if (typeof navigator === 'undefined') return { ios: false, android: false, windows: false, safari: false, installed: false, aiStudio: false };
   const userAgent = navigator.userAgent ?? '';
   const ios = /iPhone|iPad|iPod/i.test(userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const safari = /Safari/i.test(userAgent) && !/CriOS|FxiOS|EdgiOS|OPiOS/i.test(userAgent);
   const installed = Boolean(navigator.standalone) || window.matchMedia?.('(display-mode: standalone)').matches === true;
   const windows = /Windows/i.test(userAgent) || /Win/i.test(navigator.userAgentData?.platform ?? navigator.platform ?? '');
-  return { ios, android: /Android/i.test(userAgent), windows, safari, installed };
+  const aiStudio = isAiStudioPreview();
+  return { ios, android: /Android/i.test(userAgent), windows, safari, installed, aiStudio };
 };
 
 const getSettingsGuidance = () => {
@@ -38,8 +51,8 @@ const buildAssignmentText = (assignment) => {
 };
 
 export const StudentNotificationGate = ({ profile, children, required = true }) => {
-  const { android, windows } = getNotificationEnvironment();
-  const requiresNotificationPermission = required && (android || windows);
+  const { android, windows, aiStudio } = getNotificationEnvironment();
+  const requiresNotificationPermission = required && (android || windows) && !aiStudio;
   const [permission, setPermission] = useState(getNotificationPermission);
   const [error, setError] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
@@ -165,6 +178,9 @@ export const StudentNotificationGate = ({ profile, children, required = true }) 
   if (permission === 'granted' && deviceRegistered) return children;
 
   if (!requiresNotificationPermission) {
+    if (aiStudio) {
+      return children;
+    }
     return (
       <>
         <div className="mx-auto max-w-7xl px-4 pt-4 lg:px-6">

@@ -6,6 +6,7 @@ import { useAuth } from '../../hooks/useAuth';
 import { getQuestionPapers, getTutorAssignedStudentContexts, getTutorLessonsForAssignedStudents, getTutorReportsForAssignedStudents } from '../../services/firestoreService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 import { getApprovedTutorSubjects } from '../../utils/tutorSubjects';
+import { useEffectiveRole } from '../../utils/effectiveRole';
 
 
 const TutorReadinessPanel = ({ rows }) => {
@@ -45,6 +46,7 @@ const TutorReadinessPanel = ({ rows }) => {
 export const TutorDashboardPage = () => {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
+  const { role, RoleName, basePath } = useEffectiveRole();
   const approvedSubjects = useMemo(() => getApprovedTutorSubjects(profile), [profile]);
   const [students, setStudents] = useState([]);
   const [reports, setReports] = useState([]);
@@ -102,9 +104,9 @@ export const TutorDashboardPage = () => {
 
   return (
     <AppShell
-      title="Tutor dashboard"
+      title={`${RoleName} dashboard`}
       subtitle="Open an assigned student to manage subject reports, completed lessons, and exercises."
-      role="tutor"
+      role={role}
       user={profile}
       onLogout={logout}
     >
@@ -123,7 +125,7 @@ export const TutorDashboardPage = () => {
             <button
               key={`${student.studentId}-${subject}`}
               type="button"
-              onClick={() => navigate(`/tutor/students/${student.studentId}?subject=${encodeURIComponent(subject)}`)}
+              onClick={() => navigate(`${basePath}/students/${student.studentId}?subject=${encodeURIComponent(subject)}`)}
               className="panel block w-full p-5 text-left transition hover:shadow-lg"
             >
               <div className="flex items-center justify-between gap-3">

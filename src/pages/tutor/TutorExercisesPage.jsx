@@ -6,10 +6,12 @@ import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
 import { deleteExerciseAssignmentForTutor, getTutorAssignedStudentContexts, getTutorExercisesForAssignedStudents } from '../../services/firestoreService';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
+import { useEffectiveRole } from '../../utils/effectiveRole';
 
 export const TutorExercisesPage = () => {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
+  const { role, basePath } = useEffectiveRole();
   const [exercises, setExercises] = useState([]);
   const [contexts, setContexts] = useState([]);
   const [studentFilter, setStudentFilter] = useState('all');
@@ -51,7 +53,7 @@ export const TutorExercisesPage = () => {
   };
 
   return (
-    <AppShell title="Exercises" subtitle="Tutor view of exercises assigned to your students." role="tutor" user={profile} onLogout={logout}>
+    <AppShell title="Exercises" subtitle="Tutor view of exercises assigned to your students." role={role} user={profile} onLogout={logout}>
       <div className="panel grid gap-3 p-4 md:grid-cols-2">
         <select className="input" value={studentFilter} onChange={(event) => setStudentFilter(event.target.value)}>
           <option value="all">All students</option>
@@ -67,7 +69,7 @@ export const TutorExercisesPage = () => {
       <div className="grid gap-4">
         {filteredExercises.map((exercise) => (
           <div key={exercise.id} className="panel flex flex-wrap items-center justify-between gap-3 p-5">
-            <button type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}`)} className="min-w-0 flex-1 text-left transition">
+            <button type="button" onClick={() => navigate(`${basePath}/exercises/${exercise.id}`)} className="min-w-0 flex-1 text-left transition">
               <div>
                 <p className="font-semibold text-slate-100">{exercise.title}</p>
                 <p className="mt-1 text-sm text-slate-400">{exercise.studentName || exercise.studentId} • {exercise.subject} • {exercise.assignmentDate}</p>
