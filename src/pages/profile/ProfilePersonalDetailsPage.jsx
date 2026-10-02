@@ -9,6 +9,7 @@ export const ProfilePersonalDetailsPage = ({ role }) => {
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
   const [previousYearMark, setPreviousYearMark] = useState(profile?.previousYearMark ?? 0);
   const [grade, setGrade] = useState(profile?.grade || SOUTH_AFRICAN_GRADES[0]);
+  const [whatsappNumber, setWhatsAppNumber] = useState(profile?.whatsappNumber || '');
   const [password, setPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
@@ -24,6 +25,7 @@ export const ProfilePersonalDetailsPage = ({ role }) => {
         displayName,
         previousYearMark: role === ROLES.STUDENT ? previousYearMark : undefined,
         grade: role === ROLES.STUDENT ? grade : undefined,
+        whatsappNumber: role === ROLES.STUDENT ? whatsappNumber : undefined,
         newPassword: password || undefined,
       });
       if (!isDemoMode) await refreshProfile(profile.uid);
@@ -55,6 +57,10 @@ export const ProfilePersonalDetailsPage = ({ role }) => {
               <select className="input" value={grade} onChange={(event) => setGrade(event.target.value)} required>
                 {SOUTH_AFRICAN_GRADES.map((item) => <option key={item}>{item}</option>)}
               </select>
+            </label>
+            <label>
+              <span className="label">WhatsApp number</span>
+              <input type="tel" inputMode="tel" autoComplete="tel" className="input" value={whatsappNumber} onChange={(event) => setWhatsAppNumber(event.target.value)} placeholder="082 123 4567 or +27 82 123 4567" required />
             </label>
             <label>
               <span className="label">Previous year mark (%)</span>

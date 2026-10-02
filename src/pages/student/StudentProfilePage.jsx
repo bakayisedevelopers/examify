@@ -13,6 +13,7 @@ export const StudentProfilePage = () => {
   
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
   const [previousYearMark, setPreviousYearMark] = useState(profile?.previousYearMark ?? 0);
+  const [whatsappNumber, setWhatsAppNumber] = useState(profile?.whatsappNumber || '');
   const [password, setPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
@@ -26,6 +27,7 @@ export const StudentProfilePage = () => {
         uid: profile?.uid,
         displayName,
         previousYearMark,
+        whatsappNumber,
         newPassword: password || undefined,
       });
       setMessage('Profile updated successfully!');
@@ -77,6 +79,11 @@ export const StudentProfilePage = () => {
             onChange={(e) => setPreviousYearMark(e.target.value)}
             required
           />
+        </div>
+
+        <div>
+          <label className="label">WhatsApp number</label>
+          <input type="tel" inputMode="tel" autoComplete="tel" className="input" value={whatsappNumber} onChange={(event) => setWhatsAppNumber(event.target.value)} placeholder="082 123 4567 or +27 82 123 4567" required />
         </div>
 
         <div>

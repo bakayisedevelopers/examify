@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, ChevronDown, LoaderCircle, RotateCcw, Search } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ListTree, LoaderCircle, RotateCcw, Search, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { AppShell } from '../components/common/AppShell';
 import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
-import { cancelQuestionPaperAnalysis, saveQuestionPaper, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
+import { cancelQuestionPaperAnalysis, getTopicResolverSourceRecords, saveQuestionPaper, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
 import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../utils/tutorSubjects';
+import { getTopicCatalog } from '../data/topicCatalog';
+import { buildTopicResolverRows } from '../services/topicResolver';
 
 const paperStatusStyles = {
   Analyzing: 'bg-amber-400/15 text-amber-300 border border-amber-400/30',
@@ -165,6 +167,21 @@ export const PastExamPapersPage = () => {
   const [editingPaper, setEditingPaper] = useState(null);
   const [editForm, setEditForm] = useState(null);
   const [expandedPaperIds, setExpandedPaperIds] = useState({});
+  const [topicResolverOpen, setTopicResolverOpen] = useState(false);
+  const [topicResolverSubject, setTopicResolverSubject] = useState('');
+  const [topicResolverGrade, setTopicResolverGrade] = useState('');
+  const [topicResolverRows, setTopicResolverRows] = useState([]);
+  const [topicResolverCorrections, setTopicResolverCorrections] = useState({});
+  const [topicResolverSearch, setTopicResolverSearch] = useState('');
+  const [topicResolverStatus, setTopicResolverStatus] = useState('');
+  const [topicResolverLoading, setTopicResolverLoading] = useState(false);
+
+  useEffect(() => {
+    if (!topicResolverOpen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [topicResolverOpen]);
 
   const role = useMemo(() => profile?.role ?? ROLES.STUDENT, [profile]);
   const allowedSubjects = useMemo(() => {
@@ -248,6 +265,36 @@ export const PastExamPapersPage = () => {
     setSearchTerm('');
     setStudentFilterOverrides({});
   };
+
+  const searchTopicResolver = async () => {
+    if (!topicResolverSubject || !topicResolverGrade) {
+      setTopicResolverStatus('Choose both a subject and grade before searching Firestore.');
+      return;
+    }
+    setTopicResolverLoading(true);
+    setTopicResolverStatus('Searching Firestore for this subject and grade…');
+    setTopicResolverRows([]);
+    setTopicResolverCorrections({});
+    try {
+      const records = await getTopicResolverSourceRecords({ subject: topicResolverSubject, grade: topicResolverGrade });
+      const rows = buildTopicResolverRows(records);
+      setTopicResolverRows(rows);
+      setTopicResolverStatus(rows.length
+        ? `${rows.length} distinct topic name${rows.length === 1 ? '' : 's'} found from ${records.length} matching records.`
+        : 'No extracted or covered-lesson topics were found for this subject and grade.');
+    } catch (error) {
+      setTopicResolverStatus(error.message || 'Could not search Firestore.');
+    } finally {
+      setTopicResolverLoading(false);
+    }
+  };
+
+  const visibleTopicResolverRows = topicResolverRows.filter((row) => {
+    const searched = topicResolverSearch.trim().toLowerCase();
+    if (!searched) return true;
+    const selected = topicResolverCorrections[row.id] ?? row.suggestedTopic;
+    return `${row.sourceTopic} ${selected} ${row.sources.join(' ')}`.toLowerCase().includes(searched);
+  });
 
 
   const startEditPaper = (paper) => {
@@ -475,6 +522,14 @@ export const PastExamPapersPage = () => {
             : 'Showing recent papers for your grade and subjects. Search or filter to explore the full Examifying collection.'
           : 'The list is scoped to your subjects. Use filters to narrow by subject or year.'}
       />
+      {role === ROLES.ADMIN ? (
+        <div className="flex justify-end">
+          <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => { setTopicResolverOpen(true); setTopicResolverStatus('Select a subject and grade to search.'); }}>
+            <ListTree className="h-4 w-4" aria-hidden="true" />
+            Review extracted topics
+          </button>
+        </div>
+      ) : null}
       {role === ROLES.STUDENT ? (
         <div className="panel grid gap-3 p-4">
           <label className="relative block">
@@ -694,6 +749,98 @@ export const PastExamPapersPage = () => {
               </div>
             </div>
           </form>
+        </div>
+      ) : null}
+      {role === ROLES.ADMIN && topicResolverOpen ? (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-hidden bg-slate-950/70 p-3 md:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !topicResolverLoading) setTopicResolverOpen(false); }}>
+          <section className="panel flex h-full max-h-[calc(100dvh-1.5rem)] min-h-0 w-full max-w-7xl flex-col overflow-hidden border-slate-700 bg-slate-900 p-4 md:max-h-[calc(100dvh-3rem)] md:p-6" role="dialog" aria-modal="true" aria-labelledby="topic-resolver-title">
+            <div className="flex shrink-0 items-start justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-lime-400">Admin review</p>
+                <h2 id="topic-resolver-title" className="mt-2 text-xl font-bold text-white md:text-2xl">Topic resolver preview</h2>
+                <p className="mt-2 max-w-3xl text-sm text-slate-300">Search one subject and grade at a time. Suggestions and corrections stay local on this page; nothing is written to Firestore.</p>
+              </div>
+              <button type="button" className="btn-secondary h-10 w-10 flex-none p-0" aria-label="Close topic resolver" title="Close" onClick={() => setTopicResolverOpen(false)} disabled={topicResolverLoading}><X className="mx-auto h-4 w-4" /></button>
+            </div>
+
+            <div className="mt-5 grid shrink-0 gap-3 md:grid-cols-[1fr_1fr_auto]">
+              <label className="grid gap-2 text-sm font-semibold text-slate-200">Subject
+                <select className="input" value={topicResolverSubject} onChange={(event) => { setTopicResolverSubject(event.target.value); setTopicResolverRows([]); setTopicResolverCorrections({}); }}>
+                  <option value="">Choose subject</option>
+                  {SUBJECTS.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+                </select>
+              </label>
+              <label className="grid gap-2 text-sm font-semibold text-slate-200">Grade
+                <select className="input" value={topicResolverGrade} onChange={(event) => { setTopicResolverGrade(event.target.value); setTopicResolverRows([]); setTopicResolverCorrections({}); }}>
+                  <option value="">Choose grade</option>
+                  {SOUTH_AFRICAN_GRADES.filter((grade) => grade !== 'Select Grade').map((grade) => <option key={grade} value={grade}>{grade}</option>)}
+                </select>
+              </label>
+              <button type="button" className="btn-primary inline-flex items-center justify-center gap-2 self-end" onClick={searchTopicResolver} disabled={topicResolverLoading || !topicResolverSubject || !topicResolverGrade}>
+                {topicResolverLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                Search Firestore
+              </button>
+            </div>
+
+            {topicResolverRows.length ? (
+              <div className="mt-4 grid shrink-0 gap-3 md:grid-cols-[1fr_auto] md:items-center">
+                <label className="relative block">
+                  <span className="sr-only">Search topic names in results</span>
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                  <input type="search" className="input pl-10" value={topicResolverSearch} onChange={(event) => setTopicResolverSearch(event.target.value)} placeholder="Search extracted topic names" />
+                </label>
+                <p className="text-sm text-slate-300">{topicResolverRows.filter((row) => row.suggestedTopic).length} matched • {topicResolverRows.filter((row) => !row.suggestedTopic).length} need review</p>
+              </div>
+            ) : null}
+
+            {topicResolverStatus ? <p className="mt-3 shrink-0 text-sm text-slate-300" role="status">{topicResolverStatus}</p> : null}
+
+            {topicResolverRows.length ? (
+              <div className="mt-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-slate-700">
+                <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
+                  <table className="min-w-[1050px] border-collapse text-left text-sm">
+                    <thead className="sticky top-0 bg-slate-800 text-xs uppercase text-slate-300">
+                      <tr>
+                        <th className="px-3 py-3">Raw topic</th>
+                        <th className="px-3 py-3">Suggested / reviewed topic</th>
+                        <th className="px-3 py-3">Match</th>
+                        <th className="px-3 py-3">Occurrences</th>
+                        <th className="px-3 py-3">Found in</th>
+                        <th className="min-w-64 px-3 py-3">Sample records</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-700 text-slate-100">
+                      {visibleTopicResolverRows.map((row) => {
+                        const catalog = getTopicCatalog({ subject: topicResolverSubject, grade: topicResolverGrade });
+                        const currentValue = topicResolverCorrections[row.id] ?? row.suggestedTopic;
+                        const wasCorrected = Object.hasOwn(topicResolverCorrections, row.id);
+                        return (
+                          <tr key={row.id} className="align-top">
+                            <td className="max-w-64 px-3 py-3 font-medium">{row.sourceTopic}</td>
+                            <td className="px-3 py-3">
+                              <select className="input min-w-80" value={currentValue} onChange={(event) => setTopicResolverCorrections((current) => ({ ...current, [row.id]: event.target.value }))}>
+                                <option value="">Needs manual mapping</option>
+                                {catalog.map((topic) => <option key={topic.canonicalLabel} value={topic.canonicalLabel}>{topic.canonicalLabel}</option>)}
+                              </select>
+                            </td>
+                            <td className="px-3 py-3"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${wasCorrected ? 'bg-sky-400/15 text-sky-200' : row.suggestedTopic ? 'bg-lime-400/15 text-lime-200' : 'bg-amber-400/15 text-amber-200'}`}>{wasCorrected ? 'Local correction' : row.suggestedTopic ? row.matchType : 'Needs review'}</span></td>
+                            <td className="px-3 py-3 tabular-nums">{row.occurrenceCount}</td>
+                            <td className="px-3 py-3">{row.sources.map((source) => <span key={source} className="mr-1 inline-block rounded bg-slate-800 px-2 py-1 text-xs">{source === 'paper' ? 'Papers' : 'Lessons'}</span>)}</td>
+                            <td className="px-3 py-3 text-xs text-slate-300">{row.sourceExamples.join(' • ') || '—'}</td>
+                          </tr>
+                        );
+                      })}
+                      {!visibleTopicResolverRows.length ? <tr><td colSpan="6" className="px-3 py-8 text-center text-slate-400">No topic names match that search.</td></tr> : null}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : null}
+            <div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-700 pt-4">
+              <p className="text-xs text-slate-400">No save-to-Firestore action is available in this review phase.</p>
+              <button type="button" className="btn-secondary" onClick={() => { setTopicResolverRows([]); setTopicResolverCorrections({}); setTopicResolverSearch(''); setTopicResolverStatus('Select a subject and grade to search.'); }} disabled={topicResolverLoading}>Clear results</button>
+            </div>
+          </section>
         </div>
       ) : null}
     </AppShell>

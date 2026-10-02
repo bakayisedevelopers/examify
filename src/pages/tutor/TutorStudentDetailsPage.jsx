@@ -37,7 +37,7 @@ const today = () => {
   const date = new Date();
   return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
 };
-const emptyLessonForm = { selectedTopic: '', topicUnderstandingScores: [], topicReport: '', lessonDate: today(), lessonType: 'online' };
+const emptyLessonForm = { selectedTopic: '', topicUnderstandingScores: [], topicReport: '', lessonDate: today(), lessonType: 'online', whatsappLessonLink: '', locationDetails: '' };
 const emptyTopicGroups = { extracted: [], manual: [], all: [] };
 const hasValidScores = (entries = []) =>
   entries.length > 0 && entries.every((entry) => {
@@ -312,6 +312,8 @@ export const TutorStudentDetailsPage = () => {
       studentName: student?.displayName || student?.name || 'Student',
       lessonDate: lessonForm.lessonDate,
       lessonType: lessonForm.lessonType,
+      whatsappLessonLink: lessonForm.whatsappLessonLink,
+      locationDetails: lessonForm.locationDetails,
       status: 'completed',
     };
     const lesson = lessonToComplete
@@ -435,8 +437,18 @@ export const TutorStudentDetailsPage = () => {
           <SectionHeader eyebrow="Lesson complete" title="Save completed topics" description="Choose topics from analyzed papers, add scores, and save the lesson for AI generation." />
           <div className="grid gap-3 md:grid-cols-2">
             <label className="grid gap-2 text-sm font-semibold text-slate-700">Lesson date<input type="date" className="input" value={lessonForm.lessonDate} onChange={(event) => setLessonForm((current) => ({ ...current, lessonDate: event.target.value }))} /></label>
-            <label className="grid gap-2 text-sm font-semibold text-slate-700">Lesson type<select className="input" value={lessonForm.lessonType} onChange={(event) => setLessonForm((current) => ({ ...current, lessonType: event.target.value }))}><option value="online">Online</option><option value="inPerson">In-person</option></select></label>
+            <label className="grid gap-2 text-sm font-semibold text-slate-700">Lesson type<select className="input" value={lessonForm.lessonType} onChange={(event) => setLessonForm((current) => ({ ...current, lessonType: event.target.value }))}><option value="online">Online (WhatsApp)</option><option value="inPerson">In-person</option></select></label>
           </div>
+          {lessonForm.lessonType === 'online' ? (
+            <label className="grid gap-2 text-sm font-semibold text-slate-700">WhatsApp lesson or group-invite link <span className="font-normal text-slate-500">Optional</span>
+              <input type="url" className="input" value={lessonForm.whatsappLessonLink} onChange={(event) => setLessonForm((current) => ({ ...current, whatsappLessonLink: event.target.value }))} placeholder="https://call.whatsapp.com/... or https://chat.whatsapp.com/..." />
+              <span className="text-xs font-normal text-slate-500">Online lessons use WhatsApp only.</span>
+            </label>
+          ) : (
+            <label className="grid gap-2 text-sm font-semibold text-slate-700">Address or school name <span className="font-normal text-slate-500">Optional</span>
+              <textarea className="input min-h-20" value={lessonForm.locationDetails} onChange={(event) => setLessonForm((current) => ({ ...current, locationDetails: event.target.value }))} placeholder="School name, street address, or meeting point" />
+            </label>
+          )}
           <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
             <select className="input" value={lessonForm.selectedTopic} onChange={(event) => setLessonForm((current) => ({ ...current, selectedTopic: event.target.value }))} disabled={!topicOptions.all.length}>
               <option value="">{topicOptions.all.length ? 'Choose topic' : 'No topics available'}</option>
@@ -459,7 +471,14 @@ export const TutorStudentDetailsPage = () => {
 
       <section className="panel p-5">
         <SectionHeader eyebrow="Lessons" title="Tutor lessons" description="Planned and completed lessons for this student." />
-        <div className="space-y-3">{lessons.map((lesson) => student?.historicalAccessRole ? <div key={lesson.id} className="block rounded-lg bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full bg-slate-800 border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-300">{lesson.status === 'planned' ? 'Planned' : 'Completed'}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lesson.lessonType === 'inPerson' ? 'In-person' : 'Online'}</p></div> : <Link key={lesson.id} to={`${basePath}/lessons/${lesson.id}`} className="block rounded-lg bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full bg-slate-800 border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-300">{lesson.status === 'planned' ? 'Planned' : 'Completed'}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lesson.lessonType === 'inPerson' ? 'In-person' : 'Online'}</p></Link>)}{!lessons.length ? <p className="text-sm text-slate-500">No lessons yet.</p> : null}</div>
+        <div className="space-y-3">{lessons.map((lesson) => {
+          const lessonStatus = lesson.status === 'planned' ? 'Planned' : lesson.status === 'missed' ? 'Missed' : lesson.status === 'cancelled' ? 'Cancelled' : 'Completed';
+          const lessonTypeLabel = lesson.lessonType === 'inPerson' ? 'In-person' : 'Online (WhatsApp)';
+          const content = <><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-300">{lessonStatus}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lessonTypeLabel}</p></>;
+          return student?.historicalAccessRole
+            ? <div key={lesson.id} className="block rounded-lg bg-slate-50 p-4">{content}</div>
+            : <Link key={lesson.id} to={`${basePath}/lessons/${lesson.id}`} className="block rounded-lg bg-slate-50 p-4">{content}</Link>;
+        })}{!lessons.length ? <p className="text-sm text-slate-500">No lessons yet.</p> : null}</div>
       </section>
       </section></div> : null}
 

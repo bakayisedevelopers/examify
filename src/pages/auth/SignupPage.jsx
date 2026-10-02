@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { REGIONS, ROLES, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
 import { useAuth } from '../../hooks/useAuth';
 import { Logo } from '../../components/common/Logo';
+import { normalizeWhatsAppNumber } from '../../utils/whatsapp';
 
 export const SignupPage = () => {
   const navigate = useNavigate();
@@ -19,6 +20,7 @@ export const SignupPage = () => {
     province: REGIONS[0],
     previousYearMark: '0',
     school: '',
+    whatsappNumber: '',
   });
 
   const [acceptedPolicies, setAcceptedPolicies] = useState(false);
@@ -31,6 +33,7 @@ export const SignupPage = () => {
     event.preventDefault();
 
     setCreating(true);
+    let whatsappNumber = '';
 
     if (form.role === ROLES.STUDENT) {
       if (form.grade.trim() === 'Select Grade') {
@@ -45,6 +48,13 @@ export const SignupPage = () => {
       }
       if (!form.school.trim()) {
         setStatus('Please enter your school name.');
+        setCreating(false);
+        return;
+      }
+      try {
+        whatsappNumber = normalizeWhatsAppNumber(form.whatsappNumber);
+      } catch (error) {
+        setStatus(error.message);
         setCreating(false);
         return;
       }
@@ -73,6 +83,7 @@ export const SignupPage = () => {
           province: form.role === ROLES.STUDENT ? form.province : null,
           previousYearMark: form.role === ROLES.STUDENT ? Number(form.previousYearMark) || 0 : null,
           school: (form.role === ROLES.STUDENT || form.role === 'teacher') ? form.school.trim() : null,
+          whatsappNumber: form.role === ROLES.STUDENT ? whatsappNumber : undefined,
           isTeacher: form.role === 'teacher' ? true : undefined,
         },
       });
@@ -142,6 +153,12 @@ export const SignupPage = () => {
             </label>
 
             <label className="block">
+              <span className="label">WhatsApp number</span>
+              <input type="tel" inputMode="tel" autoComplete="tel" className="input" placeholder="082 123 4567 or +27 82 123 4567" value={form.whatsappNumber} onChange={handleChange('whatsappNumber')} required />
+              <span className="mt-1 block text-xs text-slate-400">Required for lesson coordination. A South African number is saved with +27.</span>
+            </label>
+
+            <label className="block">
               <span className="label">Grade</span>
               <select className="input" value={form.grade} onChange={handleChange('grade')}>
                 {SOUTH_AFRICAN_GRADES.map((grade) => <option key={grade}>{grade}</option>)}
@@ -196,7 +213,7 @@ export const SignupPage = () => {
           <button
             type="submit"
             className="btn-primary w-full"
-            disabled={(!acceptedPolicies || form.fullName.trim() === '' || form.email.trim() === '' || form.password.trim() === '' || (form.role === ROLES.STUDENT && (form.grade.trim() === 'Select Grade' || form.province.trim() === 'National' || !form.school.trim())) || (form.role === 'teacher' && !form.school.trim())) || creating}
+            disabled={(!acceptedPolicies || form.fullName.trim() === '' || form.email.trim() === '' || form.password.trim() === '' || (form.role === ROLES.STUDENT && (form.grade.trim() === 'Select Grade' || form.province.trim() === 'National' || !form.school.trim() || !form.whatsappNumber.trim())) || (form.role === 'teacher' && !form.school.trim())) || creating}
           >
             {creating ? 'Creating account...' : 'Create account'}
           </button>

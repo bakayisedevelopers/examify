@@ -34,6 +34,7 @@ import {
 import { DEFAULT_SUBJECT, MAX_AI_SOURCE_PAPERS, MAX_DAILY_EXERCISES, MIN_AI_SOURCE_PAPERS, WEEKLY_EXERCISE_DAYS } from '../lib/constants';
 import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../utils/tutorSubjects';
 import { calculateSubscriptionQuote, getEffectiveSubscriptionState } from '../utils/subscriptionPlans';
+import { normalizeWhatsAppLessonLink } from '../utils/whatsapp';
 
 const emptyDashboardData = {
   student: {
@@ -67,6 +68,17 @@ const ensureDb = () => {
 
 const demoUsers = Object.values(mockUsers);
 const demoGuideQuizResults = [...mockGuideQuizResults];
+const upsertMockLessonRows = (rows = []) => rows.forEach((row) => {
+  const index = mockCompletedLessons.findIndex((lesson) => lesson.id === row.id);
+  if (index === -1) mockCompletedLessons.push(row);
+  else mockCompletedLessons[index] = { ...mockCompletedLessons[index], ...row };
+});
+const removeMockLessonRows = (ids = []) => {
+  const removedIds = new Set(ids);
+  for (let index = mockCompletedLessons.length - 1; index >= 0; index -= 1) {
+    if (removedIds.has(mockCompletedLessons[index].id)) mockCompletedLessons.splice(index, 1);
+  }
+};
 
 const GENERATION_HISTORY_LIMIT = 40;
 const EXERCISE_REGENERATION_LOCK_TIMEOUT_MS = 20 * 60 * 1000;
@@ -175,6 +187,7 @@ const isCompletedLessonReadyForGeneration = (lesson = {}) =>
   hasLessonUnderstandingScore(lesson);
 
 const getLessonTopicEntries = (lesson = {}, lessonIndex = 0) => {
+  if (lesson.status === 'missed' || lesson.attendanceStatus === 'missed' || lesson.attended === false) return [];
   if (Array.isArray(lesson.topicUnderstandingScores) && lesson.topicUnderstandingScores.length) {
     return lesson.topicUnderstandingScores
       .map((entry) => ({
@@ -1320,13 +1333,19 @@ export const saveCompletedLesson = async ({
   subject = DEFAULT_SUBJECT,
   lessonDate,
   lessonType = 'online',
+  whatsappLessonLink = '',
+  locationDetails = '',
   status = 'completed',
 }) => {
+  const lessonAccessDetails = {
+    whatsappLessonLink: normalizeWhatsAppLessonLink(whatsappLessonLink),
+    locationDetails: String(locationDetails || '').trim(),
+  };
   const accessContext = await requireCoOwnerAccess({ tutorId, studentId, subject });
   const completedOn = status === 'completed' ? (lessonDate || new Date().toISOString().slice(0, 10)) : '';
   const scheduledFor = lessonDate || new Date().toISOString().slice(0, 10);
   if (!isFirebaseConfigured) {
-    return {
+    const row = {
       id: `mock-lesson-${Date.now()}`,
       studentId,
       tutorId,
@@ -1339,9 +1358,12 @@ export const saveCompletedLesson = async ({
       studentName,
       lessonDate: scheduledFor,
       lessonType,
+      ...lessonAccessDetails,
       status,
       completedOn,
     };
+    upsertMockLessonRows([row]);
+    return row;
   }
 
   ensureDb();
@@ -1358,12 +1380,377 @@ export const saveCompletedLesson = async ({
     studentName,
     lessonDate: scheduledFor,
     lessonType,
+    ...lessonAccessDetails,
       status,
       completedOn,
       assignmentPeriodId: accessContext.assignmentPeriodId,
       createdAt: serverTimestamp(),
   });
-  return { id: ref.id, studentId, tutorId, subject, topic, topics: topics ?? (topic ? [topic] : []), topicUnderstandingScores, topicReport, understandingLevel, studentName, lessonDate: scheduledFor, lessonType, status, completedOn };
+  return { id: ref.id, studentId, tutorId, subject, topic, topics: topics ?? (topic ? [topic] : []), topicUnderstandingScores, topicReport, understandingLevel, studentName, lessonDate: scheduledFor, lessonType, ...lessonAccessDetails, status, completedOn };
+};
+
+export const savePlannedLessonSession = async ({
+  tutorId,
+  subject = DEFAULT_SUBJECT,
+  students = [],
+  topics = [],
+  lessonDate,
+  lessonType = 'online',
+  whatsappLessonLink = '',
+  locationDetails = '',
+  sessionMode = 'one-on-one',
+  groupSessionId = '',
+}) => {
+  const uniqueStudents = [...new Map(students.map((student) => [`${student.studentId}:${subject}`, student])).values()];
+  if (!tutorId || !subject || !lessonDate || !uniqueStudents.length) throw new Error('Choose a subject, date, and at least one student.');
+  if (!topics.length) throw new Error('Choose at least one planned topic.');
+  if (sessionMode === 'group' && uniqueStudents.length < 2) throw new Error('A group lesson needs at least two students.');
+  if (sessionMode === 'one-on-one' && uniqueStudents.length !== 1) throw new Error('Choose exactly one student for a one-on-one lesson.');
+  if (sessionMode === 'group' && !groupSessionId) throw new Error('A group lesson needs a session reference.');
+  if (sessionMode === 'group' && new Set(uniqueStudents.map((student) => student.grade || '')).size !== 1) throw new Error('All students in a group lesson must be in the same grade.');
+  if (uniqueStudents.length > 500) throw new Error('A lesson session can include up to 500 students.');
+  if (!['online', 'inPerson'].includes(lessonType)) throw new Error('Choose online or in-person for this lesson.');
+  const lessonAccessDetails = {
+    whatsappLessonLink: normalizeWhatsAppLessonLink(whatsappLessonLink),
+    locationDetails: String(locationDetails || '').trim(),
+  };
+
+  const accessContexts = await Promise.all(uniqueStudents.map((student) =>
+    requireCoOwnerAccess({ tutorId, studentId: student.studentId, subject }),
+  ));
+  const plannedRows = uniqueStudents.map((student, index) => ({
+    id: `planned-${groupSessionId || Date.now()}-${index}`,
+    studentId: student.studentId,
+    tutorId,
+    subject,
+    topic: topics[0],
+    topics,
+    topicUnderstandingScores: [],
+    topicReport: '',
+    understandingLevel: null,
+    studentName: student.displayName || student.name || student.email || 'Student',
+    grade: student.grade || '',
+    lessonDate,
+    lessonType,
+    ...lessonAccessDetails,
+    sessionMode,
+    groupSessionId: sessionMode === 'group' ? groupSessionId : '',
+    groupStudentCount: sessionMode === 'group' ? uniqueStudents.length : 1,
+    attendanceStatus: 'pending',
+    status: 'planned',
+    completedOn: '',
+    assignmentPeriodId: accessContexts[index].assignmentPeriodId,
+  }));
+
+  if (!isFirebaseConfigured) {
+    upsertMockLessonRows(plannedRows);
+    return plannedRows;
+  }
+  ensureDb();
+  const batch = writeBatch(db);
+  plannedRows.forEach((row) => {
+    const ref = doc(collection(db, collections.coveredTopics));
+    row.id = ref.id;
+    batch.set(ref, {
+      ...row,
+      topicReport: '',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  });
+  await batch.commit();
+  return plannedRows;
+};
+
+export const getLessonsByGroupSessionId = async (groupSessionId) => {
+  if (!groupSessionId) return [];
+  if (!isFirebaseConfigured) return mockCompletedLessons
+    .filter((lesson) => lesson.groupSessionId === groupSessionId)
+    .sort((left, right) => String(left.studentName || '').localeCompare(String(right.studentName || '')));
+  ensureDb();
+  const snapshot = await getDocs(query(
+    collection(db, collections.coveredTopics),
+    where('groupSessionId', '==', groupSessionId),
+  ));
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
+    .sort((left, right) => String(left.studentName || '').localeCompare(String(right.studentName || '')));
+};
+
+export const updatePlannedLessonDetails = async ({ tutorId, lessonRows = [], lessonType, whatsappLessonLink = '', locationDetails = '' }) => {
+  if (!tutorId || !lessonRows.length || lessonRows.some((lesson) => lesson.status !== 'planned')) {
+    throw new Error('Only a scheduled lesson can be changed before it is logged.');
+  }
+  if (lessonRows.length > 500) throw new Error('A lesson session can include up to 500 students.');
+  if (!['online', 'inPerson'].includes(lessonType)) throw new Error('Choose online or in-person for this lesson.');
+  const lessonAccessDetails = {
+    whatsappLessonLink: normalizeWhatsAppLessonLink(whatsappLessonLink),
+    locationDetails: String(locationDetails || '').trim(),
+  };
+  const first = lessonRows[0];
+  if (lessonRows.some((lesson) => lesson.groupSessionId !== first.groupSessionId || lesson.sessionMode !== first.sessionMode)) {
+    throw new Error('The selected lesson records do not belong to the same session.');
+  }
+  if ((!first.groupSessionId && lessonRows.length !== 1) || (first.sessionMode === 'group' && !first.groupSessionId)) {
+    throw new Error('A group lesson update must include its complete group session.');
+  }
+  await Promise.all(lessonRows.map((lesson) =>
+    requireCoOwnerAccess({ tutorId, studentId: lesson.studentId, subject: lesson.subject ?? DEFAULT_SUBJECT }),
+  ));
+  const updatedRows = lessonRows.map((lesson) => ({ ...lesson, lessonType, ...lessonAccessDetails }));
+  if (!isFirebaseConfigured) {
+    upsertMockLessonRows(updatedRows);
+    return updatedRows;
+  }
+  ensureDb();
+  const batch = writeBatch(db);
+  lessonRows.forEach((lesson) => batch.update(doc(db, collections.coveredTopics, lesson.id), {
+    lessonType,
+    ...lessonAccessDetails,
+    updatedAt: serverTimestamp(),
+  }));
+  await batch.commit();
+  return updatedRows;
+};
+
+export const updatePlannedLessonRoster = async ({ tutorId, lessonRows = [], addStudents = [], removeLessonIds = [] }) => {
+  if (!tutorId || !lessonRows.length || lessonRows.some((lesson) => lesson.sessionMode !== 'group' || !lesson.groupSessionId || lesson.status !== 'planned')) {
+    throw new Error('Only a planned group lesson roster can be changed.');
+  }
+  const groupSessionId = lessonRows[0].groupSessionId;
+  const subject = lessonRows[0].subject ?? DEFAULT_SUBJECT;
+  const grade = lessonRows[0].grade ?? '';
+  if (lessonRows.some((lesson) => lesson.groupSessionId !== groupSessionId || (lesson.subject ?? DEFAULT_SUBJECT) !== subject || (lesson.grade ?? '') !== grade)) {
+    throw new Error('The selected lesson records do not belong to the same subject, grade, and group.');
+  }
+  const removeIds = new Set(removeLessonIds);
+  if ([...removeIds].some((id) => !lessonRows.some((lesson) => lesson.id === id))) throw new Error('A selected student is not part of this group.');
+  const remaining = lessonRows.filter((lesson) => !removeIds.has(lesson.id));
+  const existingStudentIds = new Set(remaining.map((lesson) => lesson.studentId));
+  const additions = [...new Map(addStudents
+    .filter((student) => student?.studentId && !existingStudentIds.has(student.studentId))
+    .map((student) => [student.studentId, student])).values()];
+  if (additions.some((student) => (student.subject ?? subject) !== subject || (student.grade ?? '') !== grade)) {
+    throw new Error('Added students must match this group’s subject and grade.');
+  }
+  const nextCount = remaining.length + additions.length;
+  if (nextCount < 2) throw new Error('A group lesson must keep at least two students.');
+  if (nextCount > 500) throw new Error('A group lesson can include up to 500 students.');
+  if (!removeIds.size && !additions.length) return lessonRows;
+
+  const accessContexts = await Promise.all(additions.map((student) =>
+    requireCoOwnerAccess({ tutorId, studentId: student.studentId, subject }),
+  ));
+  await Promise.all(lessonRows.map((lesson) =>
+    requireCoOwnerAccess({ tutorId, studentId: lesson.studentId, subject }),
+  ));
+  const addedRows = additions.map((student, index) => ({
+    id: `planned-${groupSessionId}-${student.studentId}`,
+    studentId: student.studentId,
+    tutorId,
+    subject,
+    grade,
+    topic: lessonRows[0].topic || lessonRows[0].topics?.[0] || '',
+    topics: lessonRows[0].topics ?? [],
+    topicUnderstandingScores: [],
+    topicReport: '',
+    understandingLevel: null,
+    studentName: student.displayName || student.name || student.email || 'Student',
+    lessonDate: lessonRows[0].lessonDate,
+    lessonType: lessonRows[0].lessonType || 'online',
+    whatsappLessonLink: lessonRows[0].whatsappLessonLink || '',
+    locationDetails: lessonRows[0].locationDetails || '',
+    sessionMode: 'group',
+    groupSessionId,
+    groupStudentCount: nextCount,
+    attendanceStatus: 'pending',
+    attended: null,
+    status: 'planned',
+    completedOn: '',
+    assignmentPeriodId: accessContexts[index].assignmentPeriodId,
+  }));
+  const nextRows = [
+    ...remaining.map((lesson) => ({ ...lesson, groupStudentCount: nextCount })),
+    ...addedRows,
+  ];
+  if (!isFirebaseConfigured) {
+    removeMockLessonRows([...removeIds]);
+    upsertMockLessonRows(nextRows);
+    return nextRows;
+  }
+
+  const writeCount = removeIds.size + remaining.length + additions.length;
+  if (writeCount > 500) throw new Error('This roster change is too large to save atomically. Add or remove students in separate steps.');
+  ensureDb();
+  const batch = writeBatch(db);
+  lessonRows.filter((lesson) => removeIds.has(lesson.id)).forEach((lesson) => batch.delete(doc(db, collections.coveredTopics, lesson.id)));
+  remaining.forEach((lesson) => batch.update(doc(db, collections.coveredTopics, lesson.id), {
+    groupStudentCount: nextCount,
+    updatedAt: serverTimestamp(),
+  }));
+  addedRows.forEach((row) => {
+    const ref = doc(collection(db, collections.coveredTopics));
+    row.id = ref.id;
+    batch.set(ref, { ...row, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  });
+  await batch.commit();
+  return nextRows;
+};
+
+export const completeLessonSession = async ({
+  tutorId,
+  lessonRows = [],
+  topics = [],
+  lessonDate,
+  lessonType,
+  whatsappLessonLink = '',
+  locationDetails = '',
+  participants = [],
+}) => {
+  if (!tutorId || !lessonRows.length || !lessonDate || !topics.length) throw new Error('The lesson, date, and at least one topic are required.');
+  if (lessonRows.length > 500) throw new Error('A lesson session can include up to 500 students.');
+  if (!['online', 'inPerson'].includes(lessonType)) throw new Error('Choose online or in-person for this lesson.');
+  const lessonAccessDetails = {
+    whatsappLessonLink: normalizeWhatsAppLessonLink(whatsappLessonLink),
+    locationDetails: String(locationDetails || '').trim(),
+  };
+  const participantByLessonId = new Map(participants.map((participant) => [participant.lessonId, participant]));
+  if (lessonRows.some((lesson) => !participantByLessonId.has(lesson.id))) throw new Error('Attendance details are missing for one or more students.');
+
+  const contexts = await Promise.all(lessonRows.map((lesson) =>
+    requireCoOwnerAccess({ tutorId, studentId: lesson.studentId, subject: lesson.subject ?? DEFAULT_SUBJECT }),
+  ));
+  const updates = lessonRows.map((lesson, index) => {
+    const participant = participantByLessonId.get(lesson.id);
+    const attended = participant.attended === true;
+    const report = String(participant.topicReport || '').trim();
+    const scoreByTopic = participant.scores || {};
+    if (attended && !report) throw new Error(`Add a report for ${lesson.studentName || 'each attending student'}.`);
+    const scores = attended ? topics.map((topic) => ({ topic, understandingLevel: Number(scoreByTopic[topic]), topicReport: report })) : [];
+    if (attended && scores.some((entry) => !Number.isFinite(entry.understandingLevel) || entry.understandingLevel < 0 || entry.understandingLevel > 10)) {
+      throw new Error(`Enter a score from 0 to 10 for every topic for ${lesson.studentName || 'each attending student'}.`);
+    }
+    const understandingLevel = scores.length
+      ? Math.round(scores.reduce((sum, entry) => sum + entry.understandingLevel, 0) / scores.length)
+      : null;
+    return {
+      lesson,
+      accessContext: contexts[index],
+      patch: {
+        topics,
+        topic: topics[0],
+        topicUnderstandingScores: scores,
+        topicReport: attended ? report : '',
+        note: attended ? report : '',
+        understandingLevel,
+        lessonDate,
+        lessonType,
+        ...lessonAccessDetails,
+        attendanceStatus: attended ? 'attended' : 'missed',
+        attended,
+        status: attended ? 'completed' : 'missed',
+        completedOn: attended ? lessonDate : '',
+      },
+    };
+  });
+
+  if (!isFirebaseConfigured) {
+    const updatedRows = updates.map(({ lesson, patch }) => ({ ...lesson, ...patch }));
+    upsertMockLessonRows(updatedRows);
+    return updatedRows;
+  }
+  ensureDb();
+  const batch = writeBatch(db);
+  updates.forEach(({ lesson, accessContext, patch }) => {
+    batch.update(doc(db, collections.coveredTopics, lesson.id), {
+      ...patch,
+      assignmentPeriodId: accessContext.assignmentPeriodId ?? lesson.assignmentPeriodId ?? null,
+      updatedAt: serverTimestamp(),
+    });
+  });
+  await batch.commit();
+  return updates.map(({ lesson, patch }) => ({ ...lesson, ...patch }));
+};
+
+export const deleteLessonSession = async ({ tutorId, lessonRows = [] }) => {
+  if (!tutorId || !lessonRows.length) throw new Error('Choose a lesson session to delete.');
+  if (lessonRows.length > 500) throw new Error('A lesson session can include up to 500 students.');
+  await Promise.all(lessonRows.map((lesson) =>
+    requireCoOwnerAccess({ tutorId, studentId: lesson.studentId, subject: lesson.subject ?? DEFAULT_SUBJECT }),
+  ));
+  if (!isFirebaseConfigured) {
+    removeMockLessonRows(lessonRows.map((lesson) => lesson.id));
+    return { deleted: true, count: lessonRows.length };
+  }
+  ensureDb();
+  const batch = writeBatch(db);
+  lessonRows.forEach((lesson) => batch.delete(doc(db, collections.coveredTopics, lesson.id)));
+  await batch.commit();
+  return { deleted: true, count: lessonRows.length };
+};
+
+export const getTopicResolverSourceRecords = async ({ subject, grade } = {}) => {
+  if (!subject || !grade || grade === 'Select Grade') throw new Error('Choose a subject and grade before searching.');
+  if (!isFirebaseConfigured) {
+    const records = [];
+    mockQuestionPapers.forEach((paper) => (paper.topics ?? []).forEach((topic) => records.push({
+      subject: paper.subject,
+      grade: paper.grade,
+      topic,
+      sourceType: 'paper',
+      sourceLabel: paper.displayName || paper.title || paper.id,
+    })));
+    mockCompletedLessons.forEach((lesson) => {
+      const topics = [lesson.topic, ...(lesson.topics ?? []), ...(lesson.topicUnderstandingScores ?? []).map((item) => item.topic)].filter(Boolean);
+      topics.forEach((topic) => records.push({
+        subject: lesson.subject ?? DEFAULT_SUBJECT,
+        grade: lesson.grade ?? '',
+        topic,
+        sourceType: 'lesson',
+        sourceLabel: lesson.studentName || lesson.studentId || lesson.id,
+      }));
+    });
+    return records.filter((record) => record.subject === subject && record.grade === grade);
+  }
+
+  ensureDb();
+  const [paperSnapshot, lessonSnapshot, userSnapshot] = await Promise.all([
+    getDocs(query(collection(db, collections.questionPapers), where('subject', '==', subject))),
+    getDocs(query(collection(db, collections.coveredTopics), where('subject', '==', subject))),
+    getDocs(query(collection(db, collections.users), where('grade', '==', grade))),
+  ]);
+  const gradeStudentIds = new Set(userSnapshot.docs.map((item) => item.id));
+  const records = [];
+  const addTopics = ({ rawTopics, subject, grade, sourceType, sourceLabel }) => {
+    (rawTopics ?? []).forEach((value) => {
+      const topic = typeof value === 'string' ? value.trim() : String(value?.topic || value?.name || value?.label || '').trim();
+      if (!topic) return;
+      records.push({ subject: subject || DEFAULT_SUBJECT, grade: grade || '', topic, sourceType, sourceLabel: sourceLabel || '' });
+    });
+  };
+
+  paperSnapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .filter((paper) => paper.grade === grade)
+    .forEach((paper) => addTopics({
+      rawTopics: paper.topics,
+      subject: paper.subject,
+      grade: paper.grade,
+      sourceType: 'paper',
+      sourceLabel: paper.displayName || paper.title || paper.paperFileName || paper.id,
+    }));
+  lessonSnapshot.docs.forEach((item) => {
+    const lesson = item.data();
+    if (['planned', 'missed', 'cancelled'].includes(lesson.status) || lesson.attendanceStatus === 'missed' || lesson.attended === false) return;
+    if (lesson.grade ? lesson.grade !== grade : !gradeStudentIds.has(lesson.studentId)) return;
+    addTopics({
+      rawTopics: [lesson.topic, ...(lesson.topics ?? []), ...(lesson.topicUnderstandingScores ?? []).map((entry) => entry?.topic)],
+      subject: lesson.subject,
+      grade: lesson.grade || grade,
+      sourceType: 'lesson',
+      sourceLabel: lesson.studentName || lesson.studentId || item.id,
+    });
+  });
+  return records.filter((record) => record.subject === subject && record.grade === grade);
 };
 
 export const assignStudentToTutor = async ({ studentId, tutorId, subject = DEFAULT_SUBJECT }) => {
@@ -2770,13 +3157,21 @@ export const getLessonById = async (lessonId) => {
   return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
 };
 
-export const updateCompletedLesson = async ({ lessonId, tutorId, topicReport = '', topicUnderstandingScores = [], topics = [], understandingLevel = null, lessonDate, lessonType, status }) => {
+export const updateCompletedLesson = async ({ lessonId, tutorId, topicReport = '', topicUnderstandingScores = [], topics = [], understandingLevel = null, lessonDate, lessonType, whatsappLessonLink, locationDetails, status }) => {
   if (!lessonId) throw new Error('Lesson id is required.');
   const isCompleted = status === 'completed';
   const lesson = await getLessonById(lessonId);
   if (!lesson) throw new Error('Lesson not found.');
   await requireCoOwnerAccess({ tutorId, studentId: lesson.studentId, subject: lesson.subject ?? DEFAULT_SUBJECT });
-  if (!isFirebaseConfigured) return { ...lesson, id: lessonId, topicReport, topicUnderstandingScores, topics, understandingLevel, lessonDate, lessonType, status };
+  const lessonAccessDetails = {
+    ...(whatsappLessonLink !== undefined ? { whatsappLessonLink: normalizeWhatsAppLessonLink(whatsappLessonLink) } : {}),
+    ...(locationDetails !== undefined ? { locationDetails: String(locationDetails || '').trim() } : {}),
+  };
+  if (!isFirebaseConfigured) {
+    const updated = { ...lesson, id: lessonId, topicReport, topicUnderstandingScores, topics, understandingLevel, lessonDate, lessonType, status, ...lessonAccessDetails };
+    upsertMockLessonRows([updated]);
+    return updated;
+  }
   ensureDb();
   const payload = {
     topicReport,
@@ -2787,6 +3182,7 @@ export const updateCompletedLesson = async ({ lessonId, tutorId, topicReport = '
     understandingLevel,
     ...(lessonDate ? { lessonDate } : {}),
     ...(lessonType ? { lessonType } : {}),
+    ...lessonAccessDetails,
     ...(status ? { status } : {}),
     ...(isCompleted ? { completedOn: lessonDate || new Date().toISOString().slice(0, 10) } : {}),
     updatedAt: serverTimestamp(),

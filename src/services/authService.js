@@ -13,6 +13,7 @@ import { auth, db, isFirebaseConfigured } from '../firebase/config';
 import { collections } from '../firebase/schema';
 import { mockUsers } from '../data/mockData';
 import { DEFAULT_SUBJECT } from '../lib/constants';
+import { normalizeWhatsAppNumber } from '../utils/whatsapp';
 
 const provider = isFirebaseConfigured ? new GoogleAuthProvider() : null;
 
@@ -25,6 +26,7 @@ export const loginWithEmail = async ({ email, password }) => {
 
 export const registerWithEmail = async ({ fullName, email, password, role, extraProfile = {} }) => {
   if (!auth) throw new Error('Firebase not configured. Please set up environment variables.');
+  const whatsappNumber = role === 'student' ? normalizeWhatsAppNumber(extraProfile.whatsappNumber) : '';
   const studentDefaults = role === 'student'
     ? {
       previousYearMark: Number(extraProfile.previousYearMark ?? 0),
@@ -48,6 +50,7 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
     createdAt: serverTimestamp(),
     ...studentDefaults,
     ...extraProfile,
+    ...(role === 'student' ? { whatsappNumber } : {}),
   };
 
   await setDoc(doc(db, collections.users, credential.user.uid), profile);
@@ -93,7 +96,9 @@ export const logout = async () => {
   return true;
 };
 
-export const updateUserProfileDetails = async ({ uid, displayName, previousYearMark, grade, newPassword }) => {
+export const updateUserProfileDetails = async ({ uid, displayName, previousYearMark, grade, whatsappNumber, newPassword }) => {
+
+  const normalizedWhatsAppNumber = whatsappNumber === undefined ? undefined : normalizeWhatsAppNumber(whatsappNumber);
 
   if (isFirebaseConfigured && auth?.currentUser) {
     if (displayName) {
@@ -109,12 +114,13 @@ export const updateUserProfileDetails = async ({ uid, displayName, previousYearM
       payload.previousYearMark = Number(previousYearMark);
     }
     if (grade) payload.grade = grade;
+    if (normalizedWhatsAppNumber) payload.whatsappNumber = normalizedWhatsAppNumber;
     
     await updateDoc(doc(db, collections.users, uid), payload);
     return { uid, ...payload };
   } else {
     // Demo mode bypass
-    return { uid, displayName, previousYearMark, grade };
+    return { uid, displayName, previousYearMark, grade, whatsappNumber: normalizedWhatsAppNumber };
   }
 };
 
