@@ -1,4 +1,5 @@
 import { SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants.js';
+import { getCapsTopicGroups, hasScopedCapsTopicCatalog } from './capsTopicCatalog.js';
 
 const makeTopic = (childTopic, aliases = []) => ({ childTopic, aliases: [childTopic, ...aliases] });
 const group = (parentTopic, children) => ({ parentTopic, children: children.map((item) => Array.isArray(item) ? makeTopic(item[0], item[1]) : makeTopic(item)) });
@@ -533,6 +534,24 @@ const materialiseEntries = (subject, grade) => {
     })));
   }
 
+  const capsGroups = getCapsTopicGroups({ subject, grade });
+  if (capsGroups) {
+    return capsGroups.flatMap(({ parentTopic, children }) => children.map((childTopic) => ({
+      subject,
+      grade,
+      parentTopic,
+      childTopic,
+      canonicalLabel: `${childTopic} | ${parentTopic}`,
+      aliases: [childTopic],
+    })));
+  }
+
+  if (subject === 'Physical Sciences') {
+    if (['Grade 10', 'Grade 11'].includes(grade)) return materialisePhysicalSciencesTopics(subject, grade);
+    return [];
+  }
+  if (hasScopedCapsTopicCatalog(subject)) return [];
+
   const names = LEGACY_TOPICS_BY_SUBJECT[subject] ?? [];
   const entries = names.map((childTopic) => {
     const parentTopic = getLegacyParent(subject, childTopic);
@@ -545,11 +564,6 @@ const materialiseEntries = (subject, grade) => {
       aliases: [childTopic],
     };
   });
-  if (subject === 'Physical Sciences' && ['Grade 10', 'Grade 11'].includes(grade)) {
-    const detailed = materialisePhysicalSciencesTopics(subject, grade);
-    const keys = new Set(entries.map((entry) => normaliseTopic(entry.canonicalLabel)));
-    return [...entries, ...detailed.filter((entry) => !keys.has(normaliseTopic(entry.canonicalLabel)))];
-  }
   return entries;
 };
 
@@ -685,6 +699,13 @@ export const resolveTopic = ({ topic, subject, grade } = {}) => {
       const ruleMatch = resolveFetMathematicsTextRule({ rawKey, catalog });
       if (ruleMatch) return { ...ruleMatch, matchType: 'rule' };
     }
+  }
+
+  const capsTextMatches = catalog
+    .filter((entry) => textIncludesTopicPhrase(rawKey, entry.childTopic))
+    .sort((left, right) => normaliseTopic(right.childTopic).length - normaliseTopic(left.childTopic).length);
+  if (capsTextMatches.length && (!capsTextMatches[1] || normaliseTopic(capsTextMatches[0].childTopic).length > normaliseTopic(capsTextMatches[1].childTopic).length)) {
+    return { ...capsTextMatches[0], matchType: 'rule' };
   }
 
   if (subject === 'Physical Sciences' && ['Grade 10', 'Grade 11'].includes(grade)) {

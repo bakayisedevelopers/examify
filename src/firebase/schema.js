@@ -20,6 +20,7 @@ export const collections = {
   tutorReports: 'tutorReports',
   tutorMarksDocuments: 'tutorMarksDocuments',
   questionPapers: 'questionPapers',
+  topicResolverMappings: 'topicResolverMappings',
   subscriptions: 'subscriptions',
   subscriptionAuthorizations: 'subscriptionAuthorizations',
   payments: 'payments',

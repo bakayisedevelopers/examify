@@ -2,8 +2,14 @@ import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { logger } from 'firebase-functions';
 import { getDb } from './admin.js';
 import { sendNotificationToUsers } from './notifications.js';
+import {
+  buildAssignments,
+  getExerciseTopicKeys,
+} from './peerMarkingAllocation.js';
 
-const hasSubmission = (data = {}) => Boolean(data.submittedImageUrl && data.submittedFileName);
+const hasSubmission = (data = {}) => Boolean(
+  (data.submittedImageUrl && data.submittedFileName) || data.submittedImages?.some((image) => image?.url),
+);
 
 const buildCohortKey = (exercise = {}) => ({
   assignmentDate: exercise.assignmentDate,
@@ -12,68 +18,120 @@ const buildCohortKey = (exercise = {}) => ({
 });
 
 const complete = (value) => value && value.assignmentDate && value.subject && value.grade;
-
 const safeId = (value) => String(value ?? '').replace(/[^a-zA-Z0-9_-]/g, '_');
+const chunks = (values, size = 30) => {
+  const result = [];
+  for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size));
+  return result;
+};
+const getExerciseTopicNames = (exercise = {}) => [...new Set([
+  exercise.topic,
+  ...(Array.isArray(exercise.topics) ? exercise.topics : []),
+].map((value) => String(value ?? '').trim()).filter(Boolean))];
+const topicKeyForMatch = (value) => String(value ?? '')
+  .normalize('NFKD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9|]+/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
 
-const getTime = (value) => value?.toDate?.()?.getTime?.() ?? 0;
+const readMatchingCandidateExercises = async ({ db, cohort, topicNames }) => {
+  const topicBatches = chunks([...new Set(topicNames)].filter(Boolean));
+  const snapshots = await Promise.all(topicBatches.flatMap((topics) => [
+    db.collection('dailyExerciseAssignments')
+      .where('subject', '==', cohort.subject)
+      .where('grade', '==', cohort.grade)
+      .where('topic', 'in', topics)
+      .orderBy('assignmentDate', 'desc')
+      .limit(5000)
+      .get(),
+    db.collection('dailyExerciseAssignments')
+      .where('subject', '==', cohort.subject)
+      .where('grade', '==', cohort.grade)
+      .where('topics', 'array-contains-any', topics)
+      .orderBy('assignmentDate', 'desc')
+      .limit(5000)
+      .get(),
+  ]));
+  const unique = new Map();
+  snapshots.flatMap((snapshot) => snapshot.docs).forEach((document) => {
+    if (!unique.has(document.id)) unique.set(document.id, { id: document.id, ...document.data() });
+  });
+  return [...unique.values()].filter(hasSubmission);
+};
 
-const getRecentRevieweeMap = (historyDocs, currentDate) => {
-  const rows = historyDocs
-    .map((doc) => ({ id: doc.id, ...doc.data() }))
-    .filter((item) => item.assignmentDate !== currentDate)
-    .filter((item) => item.reviewerId && item.revieweeId)
-    .sort((left, right) => {
-      const dateCompare = String(right.assignmentDate ?? '').localeCompare(String(left.assignmentDate ?? ''));
-      return dateCompare || (getTime(right.completedAt) - getTime(left.completedAt));
+const readReviewerHistory = async ({ db, reviewerIds, cohort }) => {
+  const snapshots = await Promise.all(chunks(reviewerIds).map((ids) => db.collection('peerMarkingAssignments')
+    .where('reviewerId', 'in', ids)
+    .where('subject', '==', cohort.subject)
+    .where('grade', '==', cohort.grade)
+    .get()));
+  const histories = snapshots.flatMap((snapshot) => snapshot.docs)
+    .map((document) => ({ id: document.id, ...document.data() }))
+    .filter((row) => row.status === 'completed' && row.reviewerId && row.exerciseId);
+  const markedExerciseIdsByReviewer = new Map();
+  const recentRevieweesByReviewer = new Map();
+  histories.forEach((row) => {
+    if (!markedExerciseIdsByReviewer.has(row.reviewerId)) markedExerciseIdsByReviewer.set(row.reviewerId, new Set());
+    if (!recentRevieweesByReviewer.has(row.reviewerId)) recentRevieweesByReviewer.set(row.reviewerId, new Set());
+    markedExerciseIdsByReviewer.get(row.reviewerId).add(row.exerciseId);
+    if (row.revieweeId) recentRevieweesByReviewer.get(row.reviewerId).add(row.revieweeId);
+  });
+  return { histories, markedExerciseIdsByReviewer, recentRevieweesByReviewer };
+};
+
+const readPreviouslyMarkedTargets = async ({ db, histories }) => {
+  const wantedIds = new Set();
+  histories.forEach((row) => wantedIds.add(row.exerciseId));
+  const targetSnapshots = await Promise.all(chunks([...wantedIds], 200).map((ids) => db.getAll(
+    ...ids.map((id) => db.collection('dailyExerciseAssignments').doc(id)),
+  )));
+  return targetSnapshots.flat().filter((snapshot) => snapshot.exists)
+    .map((snapshot) => ({ id: snapshot.id, ...snapshot.data() }))
+    .filter(hasSubmission);
+};
+
+const writeAssignmentIfAvailable = async ({ db, cohort, reviewer, target, matchedTopics = [] }) => {
+  const assignmentId = safeId(`${cohort.assignmentDate}_${cohort.grade}_${cohort.subject}_${reviewer.studentId}_${target.id}`);
+  const assignmentRef = db.collection('peerMarkingAssignments').doc(assignmentId);
+  const created = await db.runTransaction(async (transaction) => {
+    const existing = await transaction.get(db.collection('peerMarkingAssignments')
+      .where('reviewerId', '==', reviewer.studentId)
+      .where('assignmentDate', '==', cohort.assignmentDate)
+      .where('subject', '==', cohort.subject)
+      .where('grade', '==', cohort.grade));
+    if (!existing.empty) return false;
+    transaction.create(assignmentRef, {
+      reviewerId: reviewer.studentId,
+      revieweeId: target.studentId,
+      exerciseId: target.id,
+      reviewerExerciseId: reviewer.id,
+      assignmentDate: cohort.assignmentDate,
+      targetAssignmentDate: target.assignmentDate ?? '',
+      subject: cohort.subject,
+      grade: cohort.grade,
+      title: target.title ?? '',
+      topic: matchedTopics[0] ?? target.topic ?? target.topics?.[0] ?? '',
+      matchedTopics,
+      submittedImageUrl: target.submittedImageUrl ?? target.submittedImages?.[0]?.url ?? '',
+      submittedImages: Array.isArray(target.submittedImages) && target.submittedImages.length
+        ? target.submittedImages
+        : target.submittedImageUrl ? [{ url: target.submittedImageUrl, fileName: target.submittedFileName ?? '', pageNumber: 1 }] : [],
+      submittedFileName: target.submittedFileName ?? target.submittedImages?.[0]?.fileName ?? '',
+      paperIds: target.paperIds ?? [],
+      questionLinks: target.questionLinks ?? [],
+      status: 'assigned',
+      createdAt: new Date(),
+      updatedAt: new Date(),
     });
-
-  const map = new Map();
-  rows.forEach((row) => {
-    if (!map.has(row.reviewerId)) map.set(row.reviewerId, { recent: [], counts: new Map() });
-    const entry = map.get(row.reviewerId);
-    entry.counts.set(row.revieweeId, (entry.counts.get(row.revieweeId) ?? 0) + 1);
-    if (!entry.recent.includes(row.revieweeId) && entry.recent.length < 3) {
-      entry.recent.push(row.revieweeId);
-    }
+    return true;
   });
-  return map;
+  return created ? assignmentId : '';
 };
-
-const buildAssignments = ({ submitted, completedToday, recentReviewees }) => {
-  const completedReviewerIds = new Set(completedToday.map((item) => item.reviewerId).filter(Boolean));
-  const completedExerciseIds = new Set(completedToday.map((item) => item.exerciseId).filter(Boolean));
-
-  const reviewers = submitted.filter((item) => !completedReviewerIds.has(item.studentId));
-  const targets = submitted.filter((item) => !completedExerciseIds.has(item.id));
-  const usedTargetIds = new Set();
-  const assignments = [];
-
-  reviewers.forEach((reviewer) => {
-    const history = recentReviewees.get(reviewer.studentId) ?? { recent: [], counts: new Map() };
-    const options = targets
-      .filter((target) => target.studentId !== reviewer.studentId)
-      .filter((target) => !usedTargetIds.has(target.id))
-      .map((target) => {
-        const recentIndex = history.recent.indexOf(target.studentId);
-        const recentPenalty = recentIndex === -1 ? 0 : 1000 - (recentIndex * 100);
-        const repeatPenalty = (history.counts.get(target.studentId) ?? 0) * 10;
-        const submittedAt = getTime(target.submittedAt) || getTime(target.updatedAt);
-        return { target, score: recentPenalty + repeatPenalty + submittedAt / 10000000000000 };
-      })
-      .sort((left, right) => left.score - right.score || String(left.target.studentId).localeCompare(String(right.target.studentId)));
-
-    const selected = options[0]?.target;
-    if (!selected) return;
-    usedTargetIds.add(selected.id);
-    assignments.push({ reviewer, target: selected });
-  });
-
-  return assignments;
-};
-
 
 export const assignPeerMarkingOnSubmission = onDocumentWritten(
-  { document: 'dailyExerciseAssignments/{exerciseId}', timeoutSeconds: 120, memory: '512MiB' },
+  { document: 'dailyExerciseAssignments/{exerciseId}', timeoutSeconds: 180, memory: '1GiB' },
   async (event) => {
     const before = event.data?.before?.exists ? event.data.before.data() : null;
     const after = event.data?.after?.exists ? event.data.after.data() : null;
@@ -87,86 +145,72 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
     }
 
     const db = getDb();
-    const assignmentsSnapshot = await db.collection('dailyExerciseAssignments')
-      .where('assignmentDate', '==', cohort.assignmentDate)
-      .where('subject', '==', cohort.subject)
-      .where('grade', '==', cohort.grade)
-      .get();
-
-    const submitted = assignmentsSnapshot.docs
-      .map((doc) => ({ id: doc.id, ...doc.data() }))
-      .filter((item) => hasSubmission(item))
-      .filter((item, index, list) => item.studentId && list.findIndex((row) => row.studentId === item.studentId) === index)
-      .sort((left, right) => {
-        const leftTime = getTime(left.submittedAt) || getTime(left.updatedAt);
-        const rightTime = getTime(right.submittedAt) || getTime(right.updatedAt);
-        return leftTime - rightTime || String(left.studentId).localeCompare(String(right.studentId));
-      });
-
-    if (submitted.length < 2) {
-      logger.info('Peer marking waiting for more submissions', { cohort, submittedCount: submitted.length });
-      return;
-    }
-
-    const existingSnapshot = await db.collection('peerMarkingAssignments')
-      .where('assignmentDate', '==', cohort.assignmentDate)
-      .where('subject', '==', cohort.subject)
-      .where('grade', '==', cohort.grade)
-      .get();
-
-    const completedToday = existingSnapshot.docs
-      .map((doc) => ({ id: doc.id, ...doc.data() }))
-      .filter((item) => item.status === 'completed');
-
-    const historySnapshot = await db.collection('peerMarkingAssignments')
-      .where('subject', '==', cohort.subject)
-      .where('grade', '==', cohort.grade)
-      .get();
-    const recentReviewees = getRecentRevieweeMap(historySnapshot.docs, cohort.assignmentDate);
-    const pairs = buildAssignments({ submitted, completedToday, recentReviewees });
-
-    const batch = db.batch();
-    existingSnapshot.docs
-      .filter((doc) => doc.data().status !== 'completed')
-      .forEach((doc) => batch.delete(doc.ref));
-
-    const existingPairKeys = new Set(existingSnapshot.docs.map((doc) => {
-      const data = doc.data();
-      return `${data.reviewerId}|${data.exerciseId}`;
-    }));
-    const notificationJobs = [];
-
-    pairs.forEach(({ reviewer, target }) => {
-      const assignmentId = safeId(`${cohort.assignmentDate}_${cohort.grade}_${cohort.subject}_${reviewer.studentId}_${target.id}`);
-      const pairKey = `${reviewer.studentId}|${target.id}`;
-      if (!existingPairKeys.has(pairKey)) {
-        notificationJobs.push({ assignmentId, reviewer, target, cohort });
+    const [todayExercisesSnapshot, existingSnapshot] = await Promise.all([
+      db.collection('dailyExerciseAssignments')
+        .where('assignmentDate', '==', cohort.assignmentDate)
+        .where('subject', '==', cohort.subject)
+        .where('grade', '==', cohort.grade)
+        .get(),
+      db.collection('peerMarkingAssignments')
+        .where('assignmentDate', '==', cohort.assignmentDate)
+        .where('subject', '==', cohort.subject)
+        .where('grade', '==', cohort.grade)
+        .get(),
+    ]);
+    const submittedRows = todayExercisesSnapshot.docs
+      .map((document) => ({ id: document.id, ...document.data() }))
+      .filter((item) => hasSubmission(item) && item.studentId);
+    const submittedByStudent = new Map();
+    submittedRows.forEach((item) => {
+      const current = submittedByStudent.get(item.studentId);
+      if (!current) {
+        submittedByStudent.set(item.studentId, { ...item, topics: getExerciseTopicNames(item) });
+        return;
       }
-      batch.set(db.collection('peerMarkingAssignments').doc(assignmentId), {
-        reviewerId: reviewer.studentId,
-        revieweeId: target.studentId,
-        exerciseId: target.id,
-        reviewerExerciseId: reviewer.id,
-        assignmentDate: cohort.assignmentDate,
-        subject: cohort.subject,
-        grade: cohort.grade,
-        title: target.title ?? '',
-        topic: target.topic ?? '',
-        submittedImageUrl: target.submittedImageUrl ?? '',
-        submittedImages: Array.isArray(target.submittedImages) && target.submittedImages.length
-          ? target.submittedImages
-          : target.submittedImageUrl ? [{ url: target.submittedImageUrl, fileName: target.submittedFileName ?? '', pageNumber: 1 }] : [],
-        submittedFileName: target.submittedFileName ?? '',
-        paperIds: target.paperIds ?? [],
-        questionLinks: target.questionLinks ?? [],
-        status: 'assigned',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      }, { merge: true });
+      current.topics = [...new Set([...current.topics, ...getExerciseTopicNames(item)])];
+    });
+    const submitted = [...submittedByStudent.values()];
+    const assignedReviewerIds = new Set(existingSnapshot.docs.map((document) => document.data().reviewerId).filter(Boolean));
+    const reviewers = submitted.filter((item) => !assignedReviewerIds.has(item.studentId));
+    if (!reviewers.length) return;
+
+    const reviewerIds = reviewers.map((reviewer) => reviewer.studentId);
+    const topicKeysByReviewer = new Map(reviewers.map((reviewer) => [
+      reviewer.studentId,
+      getExerciseTopicKeys(reviewer),
+    ]));
+    const topicNames = [...new Set(reviewers.flatMap(getExerciseTopicNames))];
+    if (!topicNames.length) return;
+
+    const [{ histories, markedExerciseIdsByReviewer, recentRevieweesByReviewer }, historicalCandidates] = await Promise.all([
+      readReviewerHistory({ db, reviewerIds, cohort }),
+      readMatchingCandidateExercises({ db, cohort, topicNames }),
+    ]);
+    const previouslyMarkedTargets = await readPreviouslyMarkedTargets({ db, histories });
+    const candidatesById = new Map();
+    [...submitted, ...historicalCandidates, ...previouslyMarkedTargets].forEach((candidate) => {
+      if (!candidatesById.has(candidate.id)) candidatesById.set(candidate.id, candidate);
     });
 
-    await batch.commit();
-    await Promise.all(notificationJobs.map(({ assignmentId, reviewer, target, cohort }) => sendNotificationToUsers({
+    const pairs = buildAssignments({
+      reviewers,
+      candidates: [...candidatesById.values()],
+      topicKeysByReviewer,
+      markedExerciseIdsByReviewer,
+      recentRevieweesByReviewer,
+      assignedReviewerIds,
+      currentDate: cohort.assignmentDate,
+      subject: cohort.subject,
+      grade: cohort.grade,
+    });
+    const createdAssignments = [];
+    for (const pair of pairs) {
+      const matchedTopics = getExerciseTopicNames(pair.target).filter((topic) => getExerciseTopicKeys(pair.reviewer).has(topicKeyForMatch(topic)));
+      const assignmentId = await writeAssignmentIfAvailable({ db, cohort, ...pair, matchedTopics });
+      if (assignmentId) createdAssignments.push({ assignmentId, ...pair });
+    }
+
+    await Promise.all(createdAssignments.map(({ assignmentId, reviewer, target }) => sendNotificationToUsers({
       userIds: [reviewer.studentId],
       title: 'New work to mark',
       body: `${target.subject ?? cohort.subject} ${target.title ?? 'exercise'} is ready for peer marking.`,
@@ -175,11 +219,16 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
       data: {
         assignmentId,
         exerciseId: target.id,
-        subject: target.subject ?? cohort.subject ?? '',
-        assignmentDate: cohort.assignmentDate ?? '',
+        subject: target.subject ?? cohort.subject,
+        assignmentDate: cohort.assignmentDate,
       },
       tag: `peer-marking-${assignmentId}`,
     })));
-    logger.info('Peer marking assignments refreshed', { cohort, submittedCount: submitted.length, pairCount: pairs.length, notificationCount: notificationJobs.length });
-  }
+    logger.info('Peer marking assignments created', {
+      cohort,
+      submittedCount: submitted.length,
+      waitingReviewerCount: reviewers.length,
+      pairCount: createdAssignments.length,
+    });
+  },
 );

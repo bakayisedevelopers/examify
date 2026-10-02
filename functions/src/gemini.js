@@ -34,9 +34,11 @@ export const callGeminiGenerateContent = async ({
   maxTokens = 2500,
   temperature = 0.1,
   responseFormat,
+  model: requestedModel,
+  useGoogleSearch = false,
 } = {}) => {
   const key = assertGeminiKey();
-  const model = geminiModel();
+  const model = String(requestedModel ?? geminiModel()).trim() || geminiModel();
   const parts = [{ text: String(prompt ?? '').trim() }];
   if (!parts[0].text) throw new HttpsError('invalid-argument', 'prompt is required.');
   if (pdfBase64) {
@@ -53,10 +55,11 @@ export const callGeminiGenerateContent = async ({
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ role: 'user', parts }],
+      ...(useGoogleSearch ? { tools: [{ google_search: {} }] } : {}),
       generationConfig: {
         temperature,
         maxOutputTokens: maxTokens,
-        ...(responseFormat?.type === 'json_object' ? { responseMimeType: 'application/json' } : {}),
+        ...(['json_object', 'json_array'].includes(responseFormat?.type) ? { responseMimeType: 'application/json' } : {}),
       },
     }),
   });

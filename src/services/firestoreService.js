@@ -20,6 +20,7 @@ import { httpsCallable } from 'firebase/functions';
 import { addDays, formatISO } from 'date-fns';
 import { db, functions, isFirebaseConfigured } from '../firebase/config';
 import { collections } from '../firebase/schema';
+import { getHardcodedTopics, normalizeTopicKey as normalizeCatalogTopicKey } from '../data/topicCatalog';
 import { recommendExercises } from './aiService';
 import { getCurrentGenerationNumber, getGenerationWeekForTrigger, getRegenerationState, getSevenDayWindow, isExerciseSubmitted } from './exerciseGenerationPlan';
 import {
@@ -1753,6 +1754,69 @@ export const getTopicResolverSourceRecords = async ({ subject, grade } = {}) => 
   return records.filter((record) => record.subject === subject && record.grade === grade);
 };
 
+const topicResolverMappingId = ({ subject, grade, sourceTopic }) => [subject, grade, normalizeCatalogTopicKey(sourceTopic)]
+  .map((part) => String(part).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''))
+  .join('__');
+
+export const getTopicResolverMappings = async ({ subject, grade } = {}) => {
+  if (!subject || !grade) throw new Error('Choose a subject and grade before loading saved mappings.');
+  if (!isFirebaseConfigured) return [];
+  ensureDb();
+  const snapshot = await getDocs(query(
+    collection(db, collections.topicResolverMappings),
+    where('subject', '==', subject),
+    where('grade', '==', grade),
+  ));
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+};
+
+export const saveTopicResolverMappings = async ({ subject, grade, rows = [], adminId } = {}) => {
+  if (!subject || !grade || !Array.isArray(rows) || !rows.length) throw new Error('There are no topic mappings to save.');
+  if (!adminId) throw new Error('The signed-in admin could not be verified.');
+  const allowedTopics = new Set(getHardcodedTopics({ subject, grade }));
+  const uniqueRows = new Map();
+  rows.forEach((row) => {
+    const sourceTopic = String(row?.sourceTopic ?? '').trim();
+    const canonicalTopic = String(row?.canonicalTopic ?? '').trim();
+    if (!sourceTopic || !allowedTopics.has(canonicalTopic)) {
+      throw new Error(`Choose a valid ${subject}, ${grade} topic for every source topic before saving.`);
+    }
+    uniqueRows.set(normalizeCatalogTopicKey(sourceTopic), { sourceTopic, canonicalTopic });
+  });
+  if (!isFirebaseConfigured) return { savedCount: uniqueRows.size };
+
+  ensureDb();
+  const entries = [...uniqueRows.values()];
+  let savedCount = 0;
+  for (let offset = 0; offset < entries.length; offset += 400) {
+    const batch = writeBatch(db);
+    entries.slice(offset, offset + 400).forEach(({ sourceTopic, canonicalTopic }) => {
+      const id = topicResolverMappingId({ subject, grade, sourceTopic });
+      batch.set(doc(db, collections.topicResolverMappings, id), {
+        subject,
+        grade,
+        sourceTopic,
+        canonicalTopic,
+        savedBy: adminId,
+        savedAt: serverTimestamp(),
+      }, { merge: true });
+      savedCount += 1;
+    });
+    await batch.commit();
+  }
+  return { savedCount };
+};
+
+export const resolveTopicsWithGemini = async ({ subject, grade, topics = [], allowedTopics = [] } = {}) => {
+  if (!isFirebaseConfigured) throw new Error('Connect to Firebase to resolve topics with Gemini.');
+  if (!Array.isArray(topics) || !topics.length || !Array.isArray(allowedTopics) || !allowedTopics.length) {
+    throw new Error('Provide unresolved topics and the local topic catalog.');
+  }
+  const callable = httpsCallable(functions, 'resolveTopicsWithGemini');
+  const response = await callable({ subject, grade, topics, allowedTopics });
+  return response.data;
+};
+
 export const assignStudentToTutor = async ({ studentId, tutorId, subject = DEFAULT_SUBJECT }) => {
   if (!isFirebaseConfigured) {
     return { id: 'mock-assignment', studentId, tutorId, subject };
@@ -1993,7 +2057,10 @@ export const saveQuestionPaper = async (paper) => {
     copySuffix: copyNumber > 0 ? `(${copyNumber})` : '',
     displayName: getQuestionPaperDisplayName({ ...duplicateFields, copyNumber }),
     createdAt: serverTimestamp(),
-    ...(paper.analysisStatus === 'Analyzing' ? { analysisRequestedAt: serverTimestamp() } : {}),
+    ...(paper.analysisStatus === 'Analyzing' ? {
+      analysisRequestedAt: serverTimestamp(),
+      analysisTopicOptions: getHardcodedTopics({ subject: duplicateFields.subject, grade: duplicateFields.grade }),
+    } : {}),
   };
 
   const ref = await addDoc(collection(db, collections.questionPapers), payload);
@@ -2007,9 +2074,16 @@ export const updateQuestionPaper = async (paperId, patch) => {
   if (!isFirebaseConfigured) return { id: paperId, ...patch };
   ensureDb();
   const paperRef = doc(db, collections.questionPapers, paperId);
+  const currentPaper = patch.analysisStatus === 'Analyzing' ? await getDoc(paperRef) : null;
+  const currentData = currentPaper?.exists() ? currentPaper.data() : {};
+  const subject = patch.subject ?? currentData.subject;
+  const grade = patch.grade ?? currentData.grade;
   const payload = {
     ...patch,
-    ...(patch.analysisStatus === 'Analyzing' ? { analysisRequestedAt: serverTimestamp() } : {}),
+    ...(patch.analysisStatus === 'Analyzing' ? {
+      analysisRequestedAt: serverTimestamp(),
+      analysisTopicOptions: getHardcodedTopics({ subject, grade }),
+    } : {}),
     updatedAt: serverTimestamp(),
   };
   await updateDoc(paperRef, payload);

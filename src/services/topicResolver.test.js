@@ -91,6 +91,18 @@ test('text rules remain scoped and leave ambiguous terms for manual review', () 
   assert.equal(resolveTopic({ topic: 'Boyle law', subject: 'Mathematics', grade: 'Grade 11' }), null);
 });
 
+test('CAPS subject catalogs are grade scoped and use canonical child-parent labels', () => {
+  const geographyGrade11 = getTopicCatalog({ subject: 'Geography', grade: 'Grade 11' });
+  const geographyGrade12 = getTopicCatalog({ subject: 'Geography', grade: 'Grade 12' });
+  assert.ok(geographyGrade11.some((entry) => entry.canonicalLabel === 'Drought and desertification | The Atmosphere'));
+  assert.ok(geographyGrade12.some((entry) => entry.canonicalLabel === 'Mid-latitude cyclones | Climate and Weather'));
+  assert.equal(resolveTopic({ topic: 'Mid-latitude cyclones', subject: 'Geography', grade: 'Grade 11' }), null);
+  assert.ok(getTopicCatalog({ subject: 'Accounting', grade: 'Grade 10' }).every((entry) => entry.canonicalLabel.includes(' | ')));
+  assert.equal(getTopicCatalog({ subject: 'Accounting', grade: 'Grade 9' }).length, 0);
+  assert.ok(getTopicCatalog({ subject: 'isiZulu Home Language', grade: 'Grade 8' }).length > 0);
+  assert.ok(getTopicCatalog({ subject: 'Natural Sciences', grade: 'Grade 8' }).length > 0);
+});
+
 test('resolver groups topics by subject and grade and leaves unknown names for review', () => {
   const rows = buildTopicResolverRows([
     { subject: 'Mathematics', grade: 'Grade 12', topic: 'Quadratic sequence', sourceType: 'paper' },
@@ -102,4 +114,14 @@ test('resolver groups topics by subject and grade and leaves unknown names for r
   assert.equal(rows.length, 3);
   assert.equal(rows.find((row) => row.grade === 'Grade 12' && row.sourceTopic === 'Quadratic sequence').occurrenceCount, 2);
   assert.equal(rows.find((row) => row.sourceTopic === 'Novel research project').matchType, 'unmapped');
+});
+
+test('saved subject-grade mappings are restored only while their topic remains in the catalog', () => {
+  const rows = buildTopicResolverRows(
+    [{ subject: 'Geography', grade: 'Grade 12', topic: 'A cyclonic system' }],
+    [{ subject: 'Geography', grade: 'Grade 12', sourceTopic: 'A cyclonic system', canonicalTopic: 'Mid-latitude cyclones | Climate and Weather' }],
+  );
+  assert.equal(rows[0].suggestedTopic, 'Mid-latitude cyclones | Climate and Weather');
+  assert.equal(rows[0].matchType, 'saved');
+  assert.equal(rows[0].isSaved, true);
 });

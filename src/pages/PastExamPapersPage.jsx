@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, ChevronDown, ListTree, LoaderCircle, RotateCcw, Search, X } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ListTree, LoaderCircle, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { AppShell } from '../components/common/AppShell';
 import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
-import { cancelQuestionPaperAnalysis, getTopicResolverSourceRecords, saveQuestionPaper, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
+import { cancelQuestionPaperAnalysis, getTopicResolverMappings, getTopicResolverSourceRecords, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
 import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../utils/tutorSubjects';
-import { getTopicCatalog } from '../data/topicCatalog';
+import { getHardcodedTopics, getTopicCatalog } from '../data/topicCatalog';
 import { buildTopicResolverRows } from '../services/topicResolver';
 
 const paperStatusStyles = {
@@ -154,7 +154,7 @@ const getPaperSearchText = (paper) => [
 ].filter(Boolean).join(' ').toLowerCase();
 
 export const PastExamPapersPage = () => {
-  const { profile, logout } = useAuth();
+  const { profile, user, logout } = useAuth();
   const [papers, setPapers] = useState([]);
   const [status, setStatus] = useState('');
   const [uploadTab, setUploadTab] = useState('single');
@@ -172,9 +172,13 @@ export const PastExamPapersPage = () => {
   const [topicResolverGrade, setTopicResolverGrade] = useState('');
   const [topicResolverRows, setTopicResolverRows] = useState([]);
   const [topicResolverCorrections, setTopicResolverCorrections] = useState({});
+  const [topicResolverMethods, setTopicResolverMethods] = useState({});
+  const [topicResolverReviewed, setTopicResolverReviewed] = useState(false);
   const [topicResolverSearch, setTopicResolverSearch] = useState('');
   const [topicResolverStatus, setTopicResolverStatus] = useState('');
   const [topicResolverLoading, setTopicResolverLoading] = useState(false);
+  const [topicResolverGeminiLoading, setTopicResolverGeminiLoading] = useState(false);
+  const [topicResolverSaveLoading, setTopicResolverSaveLoading] = useState(false);
 
   useEffect(() => {
     if (!topicResolverOpen) return undefined;
@@ -275,10 +279,16 @@ export const PastExamPapersPage = () => {
     setTopicResolverStatus('Searching Firestore for this subject and grade…');
     setTopicResolverRows([]);
     setTopicResolverCorrections({});
+    setTopicResolverMethods({});
+    setTopicResolverReviewed(false);
     try {
-      const records = await getTopicResolverSourceRecords({ subject: topicResolverSubject, grade: topicResolverGrade });
-      const rows = buildTopicResolverRows(records);
+      const [records, savedMappings] = await Promise.all([
+        getTopicResolverSourceRecords({ subject: topicResolverSubject, grade: topicResolverGrade }),
+        getTopicResolverMappings({ subject: topicResolverSubject, grade: topicResolverGrade }),
+      ]);
+      const rows = buildTopicResolverRows(records, savedMappings);
       setTopicResolverRows(rows);
+      setTopicResolverReviewed(false);
       setTopicResolverStatus(rows.length
         ? `${rows.length} distinct topic name${rows.length === 1 ? '' : 's'} found from ${records.length} matching records.`
         : 'No extracted or covered-lesson topics were found for this subject and grade.');
@@ -286,6 +296,81 @@ export const PastExamPapersPage = () => {
       setTopicResolverStatus(error.message || 'Could not search Firestore.');
     } finally {
       setTopicResolverLoading(false);
+    }
+  };
+
+  const currentResolverValue = (row) => topicResolverCorrections[row.id] ?? row.suggestedTopic;
+  const unresolvedTopicRows = topicResolverRows.filter((row) => !currentResolverValue(row));
+  const resolvedTopicRows = topicResolverRows.filter((row) => Boolean(currentResolverValue(row)));
+
+  const resolveUnmappedTopicsWithGemini = async () => {
+    const unresolved = topicResolverRows.filter((row) => !currentResolverValue(row));
+    if (!unresolved.length) {
+      setTopicResolverStatus('All topics already have a mapping to review.');
+      return;
+    }
+    setTopicResolverGeminiLoading(true);
+    setTopicResolverStatus(`Checking ${unresolved.length} needs-review topic${unresolved.length === 1 ? '' : 's'} against CAPS and the local list...`);
+    let resolvedCount = 0;
+    try {
+      const allowedTopics = getHardcodedTopics({ subject: topicResolverSubject, grade: topicResolverGrade });
+      for (let index = 0; index < unresolved.length; index += 25) {
+        const rows = unresolved.slice(index, index + 25);
+        const result = await resolveTopicsWithGemini({
+          subject: topicResolverSubject,
+          grade: topicResolverGrade,
+          topics: rows.map((row) => row.sourceTopic),
+          allowedTopics,
+        });
+        const resolved = Array.isArray(result?.topics) ? result.topics : [];
+        setTopicResolverCorrections((current) => {
+          const next = { ...current };
+          rows.forEach((row, rowIndex) => {
+            if (resolved[rowIndex]) next[row.id] = resolved[rowIndex];
+          });
+          return next;
+        });
+        setTopicResolverMethods((current) => {
+          const next = { ...current };
+          rows.forEach((row, rowIndex) => {
+            if (resolved[rowIndex]) next[row.id] = 'gemini';
+          });
+          return next;
+        });
+        setTopicResolverReviewed(false);
+        resolvedCount += resolved.filter(Boolean).length;
+      }
+      setTopicResolverStatus(`Gemini mapped ${resolvedCount} of ${unresolved.length} topics. Review every suggestion before saving.`);
+    } catch (error) {
+      setTopicResolverStatus(error.message || 'Gemini could not resolve the topics. Any completed suggestions are still available to review.');
+    } finally {
+      setTopicResolverGeminiLoading(false);
+    }
+  };
+
+  const saveReviewedTopicMappings = async () => {
+    if (unresolvedTopicRows.length || !topicResolverRows.length || !topicResolverReviewed) return;
+    setTopicResolverSaveLoading(true);
+    setTopicResolverStatus('Saving reviewed topic mappings...');
+    try {
+      const mappings = topicResolverRows.map((row) => ({
+        sourceTopic: row.sourceTopic,
+        canonicalTopic: currentResolverValue(row),
+      }));
+      const result = await saveTopicResolverMappings({
+        subject: topicResolverSubject,
+        grade: topicResolverGrade,
+        rows: mappings,
+        adminId: user?.uid,
+      });
+      setTopicResolverRows((current) => current.map((row) => ({ ...row, isSaved: true, matchType: 'saved' })));
+      setTopicResolverMethods({});
+      setTopicResolverReviewed(true);
+      setTopicResolverStatus(`Saved ${result.savedCount} reviewed topic mapping${result.savedCount === 1 ? '' : 's'} for ${topicResolverSubject}, ${topicResolverGrade}.`);
+    } catch (error) {
+      setTopicResolverStatus(error.message || 'Could not save the topic mappings.');
+    } finally {
+      setTopicResolverSaveLoading(false);
     }
   };
 
@@ -752,44 +837,48 @@ export const PastExamPapersPage = () => {
         </div>
       ) : null}
       {role === ROLES.ADMIN && topicResolverOpen ? (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-hidden bg-slate-950/70 p-3 md:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !topicResolverLoading) setTopicResolverOpen(false); }}>
+        <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-hidden bg-slate-950/70 p-3 md:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !topicResolverLoading && !topicResolverGeminiLoading && !topicResolverSaveLoading) setTopicResolverOpen(false); }}>
           <section className="panel flex h-full max-h-[calc(100dvh-1.5rem)] min-h-0 w-full max-w-7xl flex-col overflow-hidden border-slate-700 bg-slate-900 p-4 md:max-h-[calc(100dvh-3rem)] md:p-6" role="dialog" aria-modal="true" aria-labelledby="topic-resolver-title">
             <div className="flex shrink-0 items-start justify-between gap-4">
               <div className="min-w-0">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-lime-400">Admin review</p>
                 <h2 id="topic-resolver-title" className="mt-2 text-xl font-bold text-white md:text-2xl">Topic resolver preview</h2>
-                <p className="mt-2 max-w-3xl text-sm text-slate-300">Search one subject and grade at a time. Suggestions and corrections stay local on this page; nothing is written to Firestore.</p>
+                <p className="mt-2 max-w-3xl text-sm text-slate-300">Review local rules, aliases, and Gemini suggestions for one subject and grade. Save only after every source topic has a confirmed mapping.</p>
               </div>
-              <button type="button" className="btn-secondary h-10 w-10 flex-none p-0" aria-label="Close topic resolver" title="Close" onClick={() => setTopicResolverOpen(false)} disabled={topicResolverLoading}><X className="mx-auto h-4 w-4" /></button>
+              <button type="button" className="btn-secondary h-10 w-10 flex-none p-0" aria-label="Close topic resolver" title="Close" onClick={() => setTopicResolverOpen(false)} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading}><X className="mx-auto h-4 w-4" /></button>
             </div>
 
             <div className="mt-5 grid shrink-0 gap-3 md:grid-cols-[1fr_1fr_auto]">
               <label className="grid gap-2 text-sm font-semibold text-slate-200">Subject
-                <select className="input" value={topicResolverSubject} onChange={(event) => { setTopicResolverSubject(event.target.value); setTopicResolverRows([]); setTopicResolverCorrections({}); }}>
+                <select className="input" value={topicResolverSubject} onChange={(event) => { setTopicResolverSubject(event.target.value); setTopicResolverRows([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading}>
                   <option value="">Choose subject</option>
                   {SUBJECTS.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
                 </select>
               </label>
               <label className="grid gap-2 text-sm font-semibold text-slate-200">Grade
-                <select className="input" value={topicResolverGrade} onChange={(event) => { setTopicResolverGrade(event.target.value); setTopicResolverRows([]); setTopicResolverCorrections({}); }}>
+                <select className="input" value={topicResolverGrade} onChange={(event) => { setTopicResolverGrade(event.target.value); setTopicResolverRows([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading}>
                   <option value="">Choose grade</option>
                   {SOUTH_AFRICAN_GRADES.filter((grade) => grade !== 'Select Grade').map((grade) => <option key={grade} value={grade}>{grade}</option>)}
                 </select>
               </label>
-              <button type="button" className="btn-primary inline-flex items-center justify-center gap-2 self-end" onClick={searchTopicResolver} disabled={topicResolverLoading || !topicResolverSubject || !topicResolverGrade}>
+              <button type="button" className="btn-primary inline-flex items-center justify-center gap-2 self-end" onClick={searchTopicResolver} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || !topicResolverSubject || !topicResolverGrade}>
                 {topicResolverLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
                 Search Firestore
               </button>
             </div>
 
             {topicResolverRows.length ? (
-              <div className="mt-4 grid shrink-0 gap-3 md:grid-cols-[1fr_auto] md:items-center">
+              <div className="mt-4 grid shrink-0 gap-3 md:grid-cols-[1fr_auto_auto] md:items-center">
                 <label className="relative block">
                   <span className="sr-only">Search topic names in results</span>
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
                   <input type="search" className="input pl-10" value={topicResolverSearch} onChange={(event) => setTopicResolverSearch(event.target.value)} placeholder="Search extracted topic names" />
                 </label>
-                <p className="text-sm text-slate-300">{topicResolverRows.filter((row) => row.suggestedTopic).length} matched • {topicResolverRows.filter((row) => !row.suggestedTopic).length} need review</p>
+                <p className="text-sm text-slate-300">{resolvedTopicRows.length} mapped • {unresolvedTopicRows.length} need review</p>
+                <button type="button" className="btn-secondary inline-flex items-center justify-center gap-2" onClick={resolveUnmappedTopicsWithGemini} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || !unresolvedTopicRows.length}>
+                  {topicResolverGeminiLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                  Resolve with Gemini
+                </button>
               </div>
             ) : null}
 
@@ -812,18 +901,19 @@ export const PastExamPapersPage = () => {
                     <tbody className="divide-y divide-slate-700 text-slate-100">
                       {visibleTopicResolverRows.map((row) => {
                         const catalog = getTopicCatalog({ subject: topicResolverSubject, grade: topicResolverGrade });
-                        const currentValue = topicResolverCorrections[row.id] ?? row.suggestedTopic;
+                        const currentValue = currentResolverValue(row);
                         const wasCorrected = Object.hasOwn(topicResolverCorrections, row.id);
+                        const matchMethod = topicResolverMethods[row.id] ?? (wasCorrected ? 'manual' : row.matchType);
                         return (
                           <tr key={row.id} className="align-top">
                             <td className="max-w-64 px-3 py-3 font-medium">{row.sourceTopic}</td>
                             <td className="px-3 py-3">
-                              <select className="input min-w-80" value={currentValue} onChange={(event) => setTopicResolverCorrections((current) => ({ ...current, [row.id]: event.target.value }))}>
+                              <select className="input min-w-80" value={currentValue} onChange={(event) => { setTopicResolverCorrections((current) => ({ ...current, [row.id]: event.target.value })); setTopicResolverMethods((current) => ({ ...current, [row.id]: 'manual' })); setTopicResolverReviewed(false); }} disabled={topicResolverGeminiLoading || topicResolverSaveLoading}>
                                 <option value="">Needs manual mapping</option>
                                 {catalog.map((topic) => <option key={topic.canonicalLabel} value={topic.canonicalLabel}>{topic.canonicalLabel}</option>)}
                               </select>
                             </td>
-                            <td className="px-3 py-3"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${wasCorrected ? 'bg-sky-400/15 text-sky-200' : row.suggestedTopic ? 'bg-lime-400/15 text-lime-200' : 'bg-amber-400/15 text-amber-200'}`}>{wasCorrected ? 'Local correction' : row.suggestedTopic ? row.matchType : 'Needs review'}</span></td>
+                            <td className="px-3 py-3"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${matchMethod === 'gemini' ? 'bg-sky-400/15 text-sky-200' : currentValue ? 'bg-lime-400/15 text-lime-200' : 'bg-amber-400/15 text-amber-200'}`}>{matchMethod === 'gemini' ? 'Gemini' : matchMethod === 'manual' ? 'Admin edit' : currentValue ? matchMethod : 'Needs review'}</span></td>
                             <td className="px-3 py-3 tabular-nums">{row.occurrenceCount}</td>
                             <td className="px-3 py-3">{row.sources.map((source) => <span key={source} className="mr-1 inline-block rounded bg-slate-800 px-2 py-1 text-xs">{source === 'paper' ? 'Papers' : 'Lessons'}</span>)}</td>
                             <td className="px-3 py-3 text-xs text-slate-300">{row.sourceExamples.join(' • ') || '—'}</td>
@@ -837,8 +927,17 @@ export const PastExamPapersPage = () => {
               </div>
             ) : null}
             <div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-700 pt-4">
-              <p className="text-xs text-slate-400">No save-to-Firestore action is available in this review phase.</p>
-              <button type="button" className="btn-secondary" onClick={() => { setTopicResolverRows([]); setTopicResolverCorrections({}); setTopicResolverSearch(''); setTopicResolverStatus('Select a subject and grade to search.'); }} disabled={topicResolverLoading}>Clear results</button>
+              <label className="flex items-start gap-2 text-xs text-slate-300">
+                <input type="checkbox" checked={topicResolverReviewed} onChange={(event) => setTopicResolverReviewed(event.target.checked)} disabled={Boolean(unresolvedTopicRows.length) || topicResolverGeminiLoading || topicResolverSaveLoading} />
+                <span>{unresolvedTopicRows.length ? `${unresolvedTopicRows.length} topics still need mappings.` : 'I reviewed and confirmed every topic mapping.'}</span>
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className="btn-secondary" onClick={() => { setTopicResolverRows([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); setTopicResolverSearch(''); setTopicResolverStatus('Select a subject and grade to search.'); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading}>Clear results</button>
+                <button type="button" className="btn-primary inline-flex items-center justify-center gap-2" onClick={saveReviewedTopicMappings} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || !topicResolverRows.length || unresolvedTopicRows.length > 0 || !topicResolverReviewed}>
+                  {topicResolverSaveLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Save topics
+                </button>
+              </div>
             </div>
           </section>
         </div>

@@ -1,7 +1,11 @@
-import { normalizeTopicKey, resolveTopic } from '../data/topicCatalog.js';
+import { getTopicCatalog, normalizeTopicKey, resolveTopic } from '../data/topicCatalog.js';
 
-export const buildTopicResolverRows = (records = []) => {
+export const buildTopicResolverRows = (records = [], savedMappings = []) => {
   const grouped = new Map();
+  const savedBySource = new Map(savedMappings.map((mapping) => [
+    [mapping.subject, mapping.grade, normalizeTopicKey(mapping.sourceTopic)].join('::'),
+    mapping.canonicalTopic,
+  ]));
   records.forEach((record) => {
     const subject = String(record.subject || '').trim();
     const grade = String(record.grade || '').trim();
@@ -28,11 +32,15 @@ export const buildTopicResolverRows = (records = []) => {
   return [...grouped.values()]
     .map((row) => {
       const suggestion = resolveTopic({ topic: row.sourceTopic, subject: row.subject, grade: row.grade });
+      const savedTopic = savedBySource.get(row.id);
+      const savedIsCurrent = savedTopic && getTopicCatalog({ subject: row.subject, grade: row.grade })
+        .some((topic) => topic.canonicalLabel === savedTopic);
       return {
         ...row,
         sources: [...row.sources].sort(),
-        suggestedTopic: suggestion?.canonicalLabel ?? '',
-        matchType: suggestion?.matchType ?? 'unmapped',
+        suggestedTopic: savedIsCurrent ? savedTopic : suggestion?.canonicalLabel ?? '',
+        matchType: savedIsCurrent ? 'saved' : suggestion?.matchType ?? 'unmapped',
+        isSaved: Boolean(savedIsCurrent),
       };
     })
     .sort((left, right) => left.subject.localeCompare(right.subject)

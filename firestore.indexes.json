@@ -126,6 +126,62 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "dailyExerciseAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "subject", "order": "ASCENDING" },
+        { "fieldPath": "grade", "order": "ASCENDING" },
+        { "fieldPath": "topic", "order": "ASCENDING" },
+        { "fieldPath": "assignmentDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "dailyExerciseAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "subject", "order": "ASCENDING" },
+        { "fieldPath": "grade", "order": "ASCENDING" },
+        { "fieldPath": "topics", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "assignmentDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peerMarkingAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "reviewerId", "order": "ASCENDING" },
+        { "fieldPath": "subject", "order": "ASCENDING" },
+        { "fieldPath": "grade", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peerMarkingAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "reviewerId", "order": "ASCENDING" },
+        { "fieldPath": "assignmentDate", "order": "ASCENDING" },
+        { "fieldPath": "subject", "order": "ASCENDING" },
+        { "fieldPath": "grade", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peerMarkingAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "assignmentDate", "order": "ASCENDING" },
+        { "fieldPath": "subject", "order": "ASCENDING" },
+        { "fieldPath": "grade", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "topicResolverMappings",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "subject", "order": "ASCENDING" },
+        { "fieldPath": "grade", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

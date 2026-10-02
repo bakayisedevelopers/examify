@@ -24,6 +24,8 @@ export {
   callGeminiText,
 } from './gemini.js';
 
+export { resolveTopicsWithGemini } from './topicResolver.js';
+
 export {
   analyzeQuestionPaper,
   dispatchQuestionPaperAnalysis,

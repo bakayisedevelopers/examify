@@ -3,6 +3,7 @@ import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 import { logger } from 'firebase-functions';
+import { FieldValue } from 'firebase-admin/firestore';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { createCanvas } from '@napi-rs/canvas';
 import { PDFDocument } from 'pdf-lib';
@@ -140,6 +141,29 @@ const parseBatchAnalysis = (text = '') => {
     rawText: String(parsed?.rawText ?? parsed?.extractedText ?? parsed?.summary ?? raw).trim(),
     parseWarning: parsed ? '' : 'Vision model returned non-JSON output; raw text was preserved.',
   };
+};
+
+const normalizeTopicOption = (value) => String(value ?? '')
+  .normalize('NFKD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9|]+/g, ' ')
+  .replace(/\s*\|\s*/g, ' | ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const sanitizeAnalysisTopicOptions = (value) => (Array.isArray(value) ? value : [])
+  .map((topic) => String(topic ?? '').trim().slice(0, 180))
+  .filter((topic, index, topics) => topic.includes('|') && topics.indexOf(topic) === index)
+  .slice(0, 300);
+
+const constrainTopicList = (values, allowedTopics) => {
+  const topics = Array.isArray(values) ? values : [];
+  if (!allowedTopics?.length) return topics.map((topic) => String(topic ?? '').trim()).filter(Boolean);
+  const allowedByKey = new Map(allowedTopics.map((topic) => [normalizeTopicOption(topic), topic]));
+  return [...new Set(topics
+    .map((topic) => allowedByKey.get(normalizeTopicOption(topic)))
+    .filter(Boolean))];
 };
 
 const isIntentionallyEmptyPage = (parsed = {}) => {
@@ -477,7 +501,7 @@ const mergeQuestionsFromBatches = ({ paperId, paper, batches }) => {
     .slice(0, MAX_STORED_QUESTIONS);
 };
 
-const buildAnalysisFromBatches = ({ paperId, paper, batches, models }) => {
+const buildAnalysisFromBatches = ({ paperId, paper, batches, models, topicOptions = [] }) => {
   const questions = mergeQuestionsFromBatches({ paperId, paper, batches });
   const batchTopics = batches.flatMap((batch) => Array.isArray(batch.topics) ? batch.topics : []);
   const topics = [...new Set([
@@ -487,6 +511,7 @@ const buildAnalysisFromBatches = ({ paperId, paper, batches, models }) => {
   ].map((topic) => String(topic ?? '').trim()).filter(Boolean))]
     .filter((topic) => topic !== 'Unclassified topic')
     .slice(0, 80);
+  const canonicalTopics = topicOptions.length ? constrainTopicList(topics, topicOptions) : topics;
   const summaries = batches.map((batch) => String(batch.summary ?? '').trim()).filter(Boolean);
   const readabilityNotes = [...new Set(batches.flatMap((batch) => Array.isArray(batch.readabilityNotes) ? batch.readabilityNotes : [])
     .map((note) => String(note).trim())
@@ -506,7 +531,7 @@ const buildAnalysisFromBatches = ({ paperId, paper, batches, models }) => {
       confidence: questions.length ? 'medium' : 'low',
     },
     questions,
-    topics,
+    topics: canonicalTopics,
     summary: summaries.join('\n\n').slice(0, 1200),
     readabilityNotes,
     textModel: '',
@@ -514,7 +539,7 @@ const buildAnalysisFromBatches = ({ paperId, paper, batches, models }) => {
   };
 };
 
-const buildMinimalBatchPrompt = ({ paperId, paper, pages }) => {
+const buildMinimalBatchPrompt = ({ paperId, paper, pages, topicOptions = [] }) => {
   const requestedShape = {
     topics: ['Topic name'],
     questions: [{
@@ -529,28 +554,36 @@ const buildMinimalBatchPrompt = ({ paperId, paper, pages }) => {
   };
 
   return [
-    'Analyze this South African Mathematics question-paper page for Examifying.',
+    `Analyze this South African ${paper.subject || 'school subject'} question-paper page for Examifying.`,
     `Saved paper id: ${paperId}.`,
     `Upload metadata: subject=${paper.subject}, grade=${paper.grade}, region=${paper.region}, month=${paper.month}, year=${paper.year}, paperNumber=${paper.paperNumber ?? 'Paper 1'}, copySuffix=${paper.copySuffix ?? ''}.`,
     'Return strict JSON only. Do not include markdown, comments, code fences, or explanation outside the JSON.',
     `Return JSON matching this shape: ${JSON.stringify(requestedShape)}`,
     'For each visible exam question or sub-question, return only these keys in this order: questionReference, parentQuestion, topics, marks, pageNumber, section.',
     'Do not return id, paperId, subject, batchId, instruction, memoSummary, solution, or full question text.',
-    'Use Mathematics topic names, not long explanations. If a question covers multiple topics, include up to three topics.',
+    ...(topicOptions.length ? [
+      'Choose topic labels exclusively and exactly from the approved frontend topic list below. Do not create aliases or labels.',
+      'If no approved label fits a question, return an empty topics array for that question. If no approved label appears on the page, return an empty top-level topics array.',
+      `Approved topic labels for ${paper.subject}, ${paper.grade}: ${JSON.stringify(topicOptions)}`,
+    ] : [`Use concise ${paper.subject || 'subject'} topic names in Child | Parent format. If a question covers multiple topics, include up to three topics.`]),
     'For pages with no visible questions, return {"topics":[],"questions":[],"summary":"No visible questions"}.',
     'If embedded PDF text is provided, use it as a helper but trust the page visual for scanned pages.',
     ...pages.map((page) => page.text ? `${page.label} page ${page.pageNumber} embedded text: ${page.text.slice(0, 1800)}` : `${page.label} page ${page.pageNumber}: no embedded text found.`),
   ].join('\n');
 };
 
-const normalizeParsedQuestions = ({ parsed, batch, paperId, subject }) =>
+const normalizeParsedQuestions = ({ parsed, batch, paperId, subject, topicOptions = [] }) =>
   parsed.questions
-    .map((item, index) => normalizeQuestion({
-      item: { ...item, sourceDocumentType: batch.documentType, sourceBatchId: batch.batchId },
-      index,
-      paperId,
-      fallbackSubject: subject,
-    }))
+    .map((item, index) => {
+      const sourceTopics = Array.isArray(item?.topics) ? item.topics : [item?.topic ?? item?.skill];
+      const topics = constrainTopicList(sourceTopics, topicOptions);
+      return normalizeQuestion({
+        item: { ...item, topic: topics[0] ?? '', topics, sourceDocumentType: batch.documentType, sourceBatchId: batch.batchId },
+        index,
+        paperId,
+        fallbackSubject: subject,
+      });
+    })
     .filter(Boolean);
 
 const shouldAnalyze = ({ before, after }) => {
@@ -584,6 +617,7 @@ export const analyzeQuestionPaper = onDocumentWritten(
       status: 'Queued',
       sourcePaperUrl: paper.paperUrl,
       sourceMemoUrl: paper.memoUrl ?? '',
+      topicOptions: sanitizeAnalysisTopicOptions(paper.analysisTopicOptions),
       requestedRevision: paper.analysisRevision ?? null,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -597,6 +631,7 @@ export const analyzeQuestionPaper = onDocumentWritten(
     });
     await paperRef.set({
       queuedAnalysisRunId: runId,
+      analysisTopicOptions: FieldValue.delete(),
       analysisStatus: ANALYZING,
       analysisStage: 'Queued',
       analysisProgressMessage: 'Waiting for earlier question papers to finish',
@@ -789,7 +824,8 @@ export const analyzeQuestionPaperBatch = onTaskDispatched(BATCH_TASK_OPTIONS, as
       return;
     }
 
-    const prompt = buildMinimalBatchPrompt({ paperId, paper: active.paper, pages: batch.pages });
+    const topicOptions = sanitizeAnalysisTopicOptions(active.run.topicOptions);
+    const prompt = buildMinimalBatchPrompt({ paperId, paper: active.paper, pages: batch.pages, topicOptions });
     const useGeminiFallback = attemptCount >= GEMINI_BATCH_ATTEMPT;
     const result = useGeminiFallback
       ? await (async () => {
@@ -838,7 +874,7 @@ export const analyzeQuestionPaperBatch = onTaskDispatched(BATCH_TASK_OPTIONS, as
         return kiloResult;
       })();
     const parsed = parseBatchAnalysis(result.text);
-    const questions = normalizeParsedQuestions({ parsed, batch, paperId, subject: active.paper.subject });
+    const questions = normalizeParsedQuestions({ parsed, batch, paperId, subject: active.paper.subject, topicOptions });
     if (!questions.length && !useGeminiFallback && !isIntentionallyEmptyPage(parsed)) {
       throw new Error(`No question metadata extracted for ${batchId}; retrying before Gemini fallback.`);
     }
@@ -850,7 +886,7 @@ export const analyzeQuestionPaperBatch = onTaskDispatched(BATCH_TASK_OPTIONS, as
       fallbackFrom: result.fallbackFrom ?? '',
       text: (parsed.rawText || parsed.summary || String(result.text ?? '')).trim().slice(0, 6000),
       questions,
-      topics: parsed.topics.map((topic) => String(topic).trim()).filter(Boolean).slice(0, 40),
+      topics: constrainTopicList(parsed.topics, topicOptions).slice(0, 40),
       summary: parsed.summary.slice(0, 1200),
       readabilityNotes: parsed.readabilityNotes.map((note) => String(note).trim()).filter(Boolean).slice(0, 10),
       parseWarning: parsed.parseWarning,
@@ -906,7 +942,13 @@ export const finalizeQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, asyn
     const paperOutputs = ordered.filter((item) => item.documentType === 'paper');
     const memoOutputs = ordered.filter((item) => item.documentType === 'memo');
     const models = [...new Set(paperOutputs.map((item) => item.model).filter(Boolean))];
-    const analysis = buildAnalysisFromBatches({ paperId, paper: active.paper, batches: paperOutputs, models });
+    const analysis = buildAnalysisFromBatches({
+      paperId,
+      paper: active.paper,
+      batches: paperOutputs,
+      models,
+      topicOptions: sanitizeAnalysisTopicOptions(active.run.topicOptions),
+    });
     if (!await ensureActiveRun({ paperId, runId })) return;
     const completedAt = new Date();
     await active.runRef.set({

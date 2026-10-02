@@ -23,14 +23,20 @@ service cloud.firestore {
     match /{topLevelCollection}/{document=**} {
       allow read: if topLevelCollection != 'subscriptionAuthorizations'
         && topLevelCollection != 'tutorStudentAssignmentPeriods'
-        && topLevelCollection != 'staffStudentAccessPeriods';
+        && topLevelCollection != 'staffStudentAccessPeriods'
+        && topLevelCollection != 'topicResolverMappings';
       allow write: if topLevelCollection != 'subscriptions'
         && topLevelCollection != 'payments'
         && topLevelCollection != 'subscriptionAuthorizations'
         && topLevelCollection != 'tutorStudentAssignments'
         && topLevelCollection != 'staffStudentAccess'
         && topLevelCollection != 'tutorStudentAssignmentPeriods'
-        && topLevelCollection != 'staffStudentAccessPeriods';
+        && topLevelCollection != 'staffStudentAccessPeriods'
+        && topLevelCollection != 'topicResolverMappings';
+    }
+
+    match /topicResolverMappings/{mappingId} {
+      allow read, write: if isAdmin();
     }
 
     match /tutorStudentAssignmentPeriods/{periodId} {
