@@ -139,7 +139,7 @@ export const TutorStudentDetailsPage = () => {
     const papers = await getQuestionPapers({ subject: activeSubject, grade: studentContext?.grade, region: studentContext?.province });
     const extractedTopics = papers.flatMap((paper) => paper.topics ?? []).filter(Boolean);
     setStudent(studentContext);
-    setStaffAccess(await getStaffStudentAccess({ studentId, subject: activeSubject, tutorId: profile.uid }));
+    setStaffAccess(await getStaffStudentAccess({ studentId, subject: activeSubject, tutorId: profile.uid, subjectInstanceId: studentContext?.subjectInstanceId }));
     if (studentContext?.accessRole === 'co-owner') setStaffMembers(await getStaffMembersForAccess({ tutorId: profile.uid, subject: activeSubject }));
     else setStaffMembers([]);
     setReports(reportRows.filter((item) => item.studentId === studentId && item.subject === activeSubject));
@@ -163,9 +163,7 @@ export const TutorStudentDetailsPage = () => {
     load().catch((error) => setStatus(error.message || 'Could not load student details.'));
   }, [profile?.uid, studentId, subject, periodId]);
 
-  const latestReport = student?.historicalAccessRole
-    ? reports[0]?.note || ''
-    : student?.latestReportsBySubject?.[subject] || reports[0]?.note || (subject === DEFAULT_SUBJECT ? student?.latestReport : '') || '';
+  const latestReport = reports[0]?.note || '';
   const canManage = student?.accessRole === 'co-owner';
   const canMark = canManage || student?.accessRole === 'marker';
   const hasInitialReport = Boolean(latestReport.trim());
@@ -206,7 +204,7 @@ export const TutorStudentDetailsPage = () => {
     try {
       await setStaffStudentAccess({ actorId: profile.uid, studentId, tutorId: selectedStaffId, subject, accessRole: selectedAccessRole });
       setStatus('Staff access updated.');
-      setStaffAccess(await getStaffStudentAccess({ studentId, subject, tutorId: profile.uid }));
+      setStaffAccess(await getStaffStudentAccess({ studentId, subject, tutorId: profile.uid, subjectInstanceId: student?.subjectInstanceId }));
       setSelectedStaffId('');
     } catch (error) {
       setStatus(error.message || 'Could not update staff access.');
@@ -218,7 +216,7 @@ export const TutorStudentDetailsPage = () => {
   const removeStaffAccess = async (accessId) => {
     try {
       await revokeStaffStudentAccess({ actorId: profile.uid, studentId, subject, accessId });
-      setStaffAccess(await getStaffStudentAccess({ studentId, subject, tutorId: profile.uid }));
+      setStaffAccess(await getStaffStudentAccess({ studentId, subject, tutorId: profile.uid, subjectInstanceId: student?.subjectInstanceId }));
       setStatus('Staff access removed.');
     } catch (error) {
       setStatus(error.message || 'Could not remove staff access.');
@@ -231,6 +229,7 @@ export const TutorStudentDetailsPage = () => {
     try {
       const result = await saveTutorPeerMarkingReview({
         tutorId: profile.uid,
+        studentId,
         peerAssignmentId: assignment.id,
         understandingLevel: score,
       });
@@ -491,7 +490,12 @@ export const TutorStudentDetailsPage = () => {
           </div>
           <div className="space-y-3">{sortedExercises.map((exercise) => (
             <div key={exercise.id} className="flex items-center gap-3 rounded-lg bg-slate-800/60 p-3">
-              <button type="button" onClick={() => navigate(`/tutor/exercises/${exercise.id}${student?.historicalAccessRole ? `?period=${periodId}` : ''}`)} className="min-w-0 flex-1 text-left">
+              <button type="button" onClick={() => {
+                const params = new URLSearchParams({ studentId });
+                if (exercise.subjectInstanceId) params.set('subjectInstanceId', exercise.subjectInstanceId);
+                if (student?.historicalAccessRole) params.set('period', periodId);
+                navigate(`/tutor/exercises/${exercise.id}?${params.toString()}`);
+              }} className="min-w-0 flex-1 text-left">
                 <p className="font-semibold text-slate-100">{exercise.title}</p>
                 <p className="text-sm text-slate-400">{exercise.subject} • {exercise.assignmentDate}{exercise.submittedImageUrl || exercise.submitted === 'Yes' ? ' • Submitted' : ''}</p>
               </button>

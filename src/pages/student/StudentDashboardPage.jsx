@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronDown, CreditCard } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
@@ -9,16 +9,15 @@ import { canOpenExercise, getExerciseAvailability } from '../../utils/exerciseRu
 import {
   generateExercisePlanIfEligible,
   completePeerMarkingAssignment,
-  getAssignedSubjectsForStudent,
+  getActiveSubjectsForStudent,
   getPeerMarkingAssignmentsForStudent,
   getStudentAccessState,
-  getStudentSubscriptionState,
   getTodayExercises,
   subscribeToExerciseGenerationStatus,
 } from '../../services/firestoreService';
+import { loadStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
 import { uploadPeerReviewImage } from '../../services/storageService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
-import { getUserSubjects } from '../../utils/tutorSubjects';
 
 const TodayExerciseCard = ({ exercise, onOpen }) => {
   const submitted = Boolean(exercise.submittedImageUrl || exercise.submitted === 'Yes');
@@ -89,10 +88,7 @@ export const StudentDashboardPage = () => {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const availableSubjects = useMemo(() => {
-    const subjects = getUserSubjects(profile);
-    return subjects.length ? subjects : [DEFAULT_SUBJECT];
-  }, [profile]);
+  const [availableSubjects, setAvailableSubjects] = useState([]);
   const [todayExercises, setTodayExercises] = useState([]);
   const [peerAssignments, setPeerAssignments] = useState([]);
   const [activeTab, setActiveTab] = useState(searchParams.get('tab') === 'mark' ? 'mark' : 'exercises');
@@ -110,6 +106,15 @@ export const StudentDashboardPage = () => {
   const [subscriptionPlanId, setSubscriptionPlanId] = useState('free');
   const [subscriptionPlanName, setSubscriptionPlanName] = useState('Free');
   const [requiresSubscriptionSelection, setRequiresSubscriptionSelection] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    if (!profile?.uid) { setAvailableSubjects([]); return undefined; }
+    getActiveSubjectsForStudent(profile.uid)
+      .then((subjects) => { if (active) setAvailableSubjects(subjects); })
+      .catch((error) => { if (active) setLoadError(error.message || 'Could not load your active subjects.'); });
+    return () => { active = false; };
+  }, [profile?.uid]);
 
   useEffect(() => {
     if (!profile?.uid) return undefined;
@@ -161,8 +166,7 @@ export const StudentDashboardPage = () => {
         setIsLoadingPeerAssignments(true);
         setIsCheckingAccess(true);
         const readiness = [];
-        const assignedSubjects = await getAssignedSubjectsForStudent(profile.uid);
-        const subjectsToCheck = availableSubjects.filter((subject) => assignedSubjects.includes(subject));
+        const subjectsToCheck = availableSubjects;
         Promise.all(subjectsToCheck.map((subject) => getTodayExercises(profile.uid, subject)))
           .then((nestedRows) => {
             if (active) {
@@ -198,7 +202,7 @@ export const StudentDashboardPage = () => {
           getStudentAccessState(profile, subject).then((access) => ({ subject, access })),
         ));
         if (!active) return;
-        const effectiveSubscription = accessStates[0]?.access ?? await getStudentSubscriptionState(profile);
+        const effectiveSubscription = accessStates[0]?.access ?? await loadStudentSubscriptionState(profile);
         setSubscriptionPlanId(effectiveSubscription.subscriptionPlanId || 'free');
         setSubscriptionPlanName(effectiveSubscription.subscriptionPlanName || 'Free');
         setRequiresSubscriptionSelection(Boolean(effectiveSubscription.requiresSubscriptionSelection));
@@ -328,6 +332,11 @@ export const StudentDashboardPage = () => {
       onLogout={logout}
     >
       {loadError ? <div className="panel p-4 text-sm text-amber-700">{loadError}</div> : null}
+      {!availableSubjects.length && !requiresSubscriptionSelection ? (
+        <div className="panel p-5 text-sm text-slate-600">
+          Add a subject to your active plan before exercises can be assigned. <button type="button" className="ml-1 font-semibold text-brand-700 underline" onClick={() => navigate('/student/profile/subjects')}>Manage subjects</button>
+        </div>
+      ) : null}
 
       {Object.entries(generationStatuses).filter(([, status]) => {
         if (!status) return false;

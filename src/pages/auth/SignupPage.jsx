@@ -75,7 +75,6 @@ export const SignupPage = () => {
         email: form.email,
         password: form.password,
         role: effectiveRole,
-        latestReport: '',
         policiesAccepted: true,
         policiesAcceptedAt: new Date().toISOString(),
         extraProfile: {
@@ -83,8 +82,8 @@ export const SignupPage = () => {
           province: form.role === ROLES.STUDENT ? form.province : null,
           previousYearMark: form.role === ROLES.STUDENT ? Number(form.previousYearMark) || 0 : null,
           school: (form.role === ROLES.STUDENT || form.role === 'teacher') ? form.school.trim() : null,
-          whatsappNumber: form.role === ROLES.STUDENT ? whatsappNumber : undefined,
-          isTeacher: form.role === 'teacher' ? true : undefined,
+          ...(form.role === ROLES.STUDENT ? { whatsappNumber } : {}),
+          isTeacher: form.role === 'teacher',
         },
       });
 

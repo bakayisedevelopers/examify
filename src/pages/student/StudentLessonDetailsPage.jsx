@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LessonAccessDetails } from '../../components/lessons/LessonAccessDetails';
 import { useAuth } from '../../hooks/useAuth';
@@ -7,10 +7,14 @@ import { getLessonById } from '../../services/firestoreService';
 
 export const StudentLessonDetailsPage = () => {
   const { lessonId } = useParams();
+  const [searchParams] = useSearchParams();
   const { profile, logout } = useAuth();
   const [lesson, setLesson] = useState(null);
 
-  useEffect(() => { getLessonById(lessonId).then(setLesson); }, [lessonId]);
+  useEffect(() => { getLessonById(lessonId, {
+    studentId: profile?.uid,
+    subjectInstanceId: searchParams.get('subjectInstanceId') || undefined,
+  }).then(setLesson).catch((error) => console.error('[Examifying][StudentLesson] load:error', error)); }, [lessonId, profile?.uid, searchParams]);
 
   return (
     <AppShell title="Lesson details" subtitle={lesson ? `${lesson.subject} • ${lesson.lessonDate || lesson.completedOn || 'No date'}` : 'Loading lesson'} role="student" user={profile} onLogout={logout}>

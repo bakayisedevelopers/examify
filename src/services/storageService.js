@@ -2,16 +2,11 @@ import { deleteObject, getDownloadURL, ref, uploadBytes } from 'firebase/storage
 import {
   addDoc,
   collection,
-  collectionGroup,
   deleteDoc,
   doc,
   getDoc,
-  getDocs,
-  orderBy,
-  query,
   serverTimestamp,
   updateDoc,
-  where,
   writeBatch,
 } from 'firebase/firestore';
 import { db, isFirebaseConfigured, storage } from '../firebase/config';
@@ -129,7 +124,7 @@ export const uploadSubmissionImages = async ({ files, studentId, exerciseId, sub
         `Exercise: ${exercise.title ?? exercise.topic ?? exerciseId}.`,
         'Summarize what is visible, note whether the work is readable, and identify likely strengths or issues without inventing marks.',
       ].join('\n'),
-      maxTokens: 1200,
+          maxTokens: 3000,
     }).then((analysis) => updateDoc(exerciseRef, {
       submittedImageAnalysis: analysis.text ?? '',
       submittedImageAnalysisModel: analysis.model ?? null,
@@ -198,30 +193,6 @@ export const deleteExerciseSubmissionFiles = async (urls = []) => {
       console.warn('[Examifying][Storage] Could not remove an exercise attachment:', error?.code || error?.message);
     }
   }));
-};
-
-export const getUreviewedExercises = async (studentId, subject) => {
-  if (!isFirebaseConfigured) return [];
-
-  const now = new Date();
-  const todayLocal = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
-
-  const q = query(
-    collectionGroup(db, 'exercises'),
-    where("assignmentDate", "==", todayLocal),
-    ...(subject ? [where("subject", "==", subject)] : []),
-    where("submittedImageUrl", "!=", ""),
-    orderBy("assignmentDate", "asc"),
-  );
-  const querySnapshot = await getDocs(q);
-
-  return querySnapshot.docs
-    .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
-    .filter((item) =>
-      item.studentId !== studentId &&
-      item.peerReviewed !== "Yes" &&
-      item.peerReviewStatus !== "pending"
-    );
 };
 
 export const uploadQuestionPaperDocuments = async ({ paperFile, memoFile, uploaderId, onProgress }) => {
@@ -350,8 +321,6 @@ const analyzeTutorMarksDocument = async ({ documentRef, documentRecord, tutor, f
       marksDocumentAnalysisModel: [analysis.model, normalizedModel].filter(Boolean).join(', '),
       marksDocumentAnalyzedAt: serverTimestamp(),
       tutorSubjectMarks: mergedMarks,
-      subjects: mergedSubjects,
-      subject: existingSubjects[0] ?? mergedSubjects[0] ?? null,
       updatedAt: serverTimestamp(),
     });
 

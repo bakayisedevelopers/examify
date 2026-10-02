@@ -1,19 +1,29 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
-import { getExerciseHistory, getStudentAccessState, getTodayExercise } from '../../services/firestoreService';
+import { getActiveSubjectsForStudent, getExerciseHistory, getStudentAccessState, getTodayExercise } from '../../services/firestoreService';
 import { getExerciseAvailability } from '../../utils/exerciseRules';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
-import { getUserSubjects } from '../../utils/tutorSubjects';
 
 export const StudentExercisesPage = () => {
   const { profile, logout } = useAuth();
   const [todayExercise, setTodayExercise] = useState(null);
   const [history, setHistory] = useState([]);
   const [paymentCompleted, setPaymentCompleted] = useState(false);
-  const availableSubjects = useMemo(() => getUserSubjects(profile), [profile]);
-  const [selectedSubject, setSelectedSubject] = useState(availableSubjects[0] ?? DEFAULT_SUBJECT);
+  const [availableSubjects, setAvailableSubjects] = useState([]);
+  const [selectedSubject, setSelectedSubject] = useState(DEFAULT_SUBJECT);
+
+  useEffect(() => {
+    if (!profile?.uid) return undefined;
+    let active = true;
+    getActiveSubjectsForStudent(profile.uid).then((subjects) => {
+      if (!active) return;
+      setAvailableSubjects(subjects);
+      if (subjects.length && !subjects.includes(selectedSubject)) setSelectedSubject(subjects[0]);
+    });
+    return () => { active = false; };
+  }, [profile?.uid, selectedSubject]);
 
   useEffect(() => {
     if (availableSubjects.length && !availableSubjects.includes(selectedSubject)) {

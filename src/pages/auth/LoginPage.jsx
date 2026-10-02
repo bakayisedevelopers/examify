@@ -6,7 +6,7 @@ import { Logo } from '../../components/common/Logo';
 export const LoginPage = () => {
   const navigate = useNavigate();
   const { login } = useAuth();
-  const [form, setForm] = useState({ email: 'something@example.com', password: 'password123' });
+  const [form, setForm] = useState({ email: '', password: '' });
   const [status, setStatus] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
@@ -39,11 +39,11 @@ export const LoginPage = () => {
         </div>
         <label className="block">
           <span className="label">Email</span>
-          <input className="input" value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} disabled={isLoggingIn} />
+          <input type="email" autoComplete="email" className="input" value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} disabled={isLoggingIn} required />
         </label>
         <label className="block">
           <span className="label">Password</span>
-          <input type="password" className="input" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} disabled={isLoggingIn} />
+          <input type="password" autoComplete="current-password" className="input" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} disabled={isLoggingIn} required />
         </label>
         <div className="flex items-start gap-3 text-xs sm:text-sm text-slate-400">
           <p>

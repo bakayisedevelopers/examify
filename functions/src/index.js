@@ -12,6 +12,7 @@ export {
   assignStudentToTutor,
   manageStaffStudentAccess,
   updateStudentSubjects,
+  assignStudentToParent,
   changeStudentGrade,
 } from './assignmentHistory.js';
 
@@ -41,6 +42,12 @@ export {
   assignPeerMarkingOnSubmission,
   completePeerMarkingAssignment,
 } from './peerMarking.js';
+
+export {
+  getCompletedPeerMarkingWorkForTutor,
+  reviewTutorPeerMarkingAssignment,
+  saveTutorExerciseScore,
+} from './tutorMarking.js';
 
 
 export {

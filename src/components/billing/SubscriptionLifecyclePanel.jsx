@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Ban, CalendarClock, RotateCcw, Undo2 } from 'lucide-react';
-import { getStudentSubscriptionState } from '../../services/firestoreService';
 import { manageStudentSubscription, retryStudentSubscriptionPayment } from '../../services/paymentsService';
+import { refreshStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
 
 const asDate = (value) => {
   if (value?.toDate) return value.toDate();
@@ -28,7 +28,7 @@ export const SubscriptionLifecyclePanel = ({
   useEffect(() => setCurrentState(subscriptionState), [subscriptionState]);
 
   const refreshState = async () => {
-    const nextState = await getStudentSubscriptionState({ uid: studentId });
+    const nextState = await refreshStudentSubscriptionState({ uid: studentId });
     setCurrentState(nextState);
     onStateChange?.(nextState);
   };

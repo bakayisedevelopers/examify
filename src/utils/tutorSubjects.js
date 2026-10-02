@@ -1,4 +1,4 @@
-import { SUBJECTS } from '../lib/constants';
+import { SUBJECTS } from '../lib/constants.js';
 
 const normalizeComparable = (value = '') =>
   String(value)
@@ -8,20 +8,33 @@ const normalizeComparable = (value = '') =>
     .trim()
     .replace(/\s+/g, ' ');
 
+const SUBJECT_ALIASES = {
+  Mathematics: ['maths', 'math'],
+  'Mathematical Literacy': ['maths literacy', 'math lit', 'mathematics literacy', 'math literacy'],
+  'Physical Sciences': ['physical science', 'physics', 'chemistry'],
+  'Natural Sciences': ['natural science'],
+  'Life Sciences': ['life science', 'biology'],
+  'Computer Applications Technology': ['cat', 'computer application technology'],
+  'Information Technology': ['it', 'computer science'],
+  'Engineering Graphics and Design': ['egd', 'engineering graphics design'],
+  'Agricultural Sciences': ['agricultural science', 'agriculture'],
+  'Dramatic Arts': ['drama'],
+  'Visual Arts': ['visual art'],
+  'English Home Language': ['english hl', 'english home lang'],
+  'English First Additional Language': ['english fal', 'english first additional lang'],
+  'Afrikaans Home Language': ['afrikaans hl', 'afrikaans home lang'],
+  'Afrikaans First Additional Language': ['afrikaans fal', 'afrikaans first additional lang'],
+  'isiZulu Home Language': ['zulu home language', 'isizulu hl'],
+  'isiXhosa Home Language': ['xhosa home language', 'isixhosa hl'],
+  'Sepedi Home Language': ['sepedi hl'],
+  'Setswana Home Language': ['setswana hl'],
+  'Sesotho Home Language': ['sesotho hl'],
+};
+
 const SUBJECT_LOOKUP = new Map(
   SUBJECTS.flatMap((subject) => {
     const normalized = normalizeComparable(subject);
-    const entries = [[normalized, subject]];
-
-    if (subject === 'Mathematics') entries.push(['maths', subject], ['math', subject]);
-    if (subject === 'Mathematical Literacy') entries.push(['maths literacy', subject], ['math lit', subject], ['mathematics literacy', subject]);
-    if (subject === 'Physical Sciences') entries.push(['physical science', subject], ['physics', subject], ['chemistry', subject]);
-    if (subject === 'Life Sciences') entries.push(['life science', subject], ['biology', subject]);
-    if (subject === 'Computer Applications Technology') entries.push(['cat', subject]);
-    if (subject === 'Information Technology') entries.push(['it', subject]);
-    if (subject === 'Engineering Graphics and Design') entries.push(['egd', subject]);
-
-    return entries;
+    return [[normalized, subject], ...(SUBJECT_ALIASES[subject] ?? []).map((alias) => [normalizeComparable(alias), subject])];
   }),
 );
 
@@ -44,24 +57,65 @@ const stripJsonFences = (value = '') =>
     .replace(/```$/i, '')
     .trim();
 
-const extractJsonCandidate = (value = '') => {
-  const text = stripJsonFences(value);
-  const firstArray = text.indexOf('[');
-  const lastArray = text.lastIndexOf(']');
-  if (firstArray !== -1 && lastArray > firstArray) return text.slice(firstArray, lastArray + 1);
-
-  const firstObject = text.indexOf('{');
-  const lastObject = text.lastIndexOf('}');
-  if (firstObject !== -1 && lastObject > firstObject) return text.slice(firstObject, lastObject + 1);
-
-  return text;
-};
-
 const collectRows = (parsed) => {
   if (Array.isArray(parsed)) return parsed;
   if (Array.isArray(parsed?.subjects)) return parsed.subjects;
   if (Array.isArray(parsed?.results)) return parsed.results;
   if (Array.isArray(parsed?.marks)) return parsed.marks;
+  return [];
+};
+
+const balancedJsonEnd = (text, start) => {
+  const opening = text[start];
+  if (opening !== '{' && opening !== '[') return -1;
+  const expectedClosers = [];
+  let quoted = false;
+  let escaped = false;
+
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') {
+      quoted = true;
+      continue;
+    }
+    if (character === '{') expectedClosers.push('}');
+    else if (character === '[') expectedClosers.push(']');
+    else if (character === '}' || character === ']') {
+      if (expectedClosers.pop() !== character) return -1;
+      if (!expectedClosers.length) return index;
+    }
+  }
+
+  return -1;
+};
+
+const extractRowsFromJson = (value = '') => {
+  const text = stripJsonFences(value);
+  try {
+    const rows = collectRows(JSON.parse(text));
+    if (rows.length) return rows;
+  } catch {
+    // OCR commonly includes non-JSON text before the model's JSON response.
+  }
+
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== '{' && text[start] !== '[') continue;
+    const end = balancedJsonEnd(text, start);
+    if (end < 0) continue;
+    try {
+      const rows = collectRows(JSON.parse(text.slice(start, end + 1)));
+      if (rows.length) return rows;
+    } catch {
+      // Keep scanning; OCR annotations such as [unclear] are not JSON payloads.
+    }
+  }
+
   return [];
 };
 
@@ -119,20 +173,15 @@ export const extractTutorSubjectMarks = (aiText = '') => {
   const text = String(aiText ?? '').trim();
   if (!text) return [];
 
-  try {
-    const parsed = JSON.parse(extractJsonCandidate(text));
-    const rows = collectRows(parsed)
-      .map((row) => ({
-        subject: normalizeEligibleSubject(row.subject ?? row.name ?? row.learningArea ?? row.course),
-        rawSubject: row.subject ?? row.name ?? row.learningArea ?? row.course ?? '',
-        mark: parseMark(row.mark ?? row.percentage ?? row.score ?? row.result),
-      }))
-      .filter((row) => row.subject && row.mark !== null);
+  const rows = extractRowsFromJson(text)
+    .map((row) => ({
+      subject: normalizeEligibleSubject(row.subject ?? row.name ?? row.learningArea ?? row.course),
+      rawSubject: row.subject ?? row.name ?? row.learningArea ?? row.course ?? '',
+      mark: parseMark(row.mark ?? row.percentage ?? row.score ?? row.result),
+    }))
+    .filter((row) => row.subject && row.mark !== null);
 
-    if (rows.length) return dedupeMarks(rows);
-  } catch (error) {
-    console.warn('[Examifying][TutorSubjects] Could not parse AI marks JSON, trying text parser:', error);
-  }
+  if (rows.length) return dedupeMarks(rows);
 
   return extractMarksFromPlainText(text);
 };
@@ -151,7 +200,7 @@ export const getNewEligibleTutorSubjects = ({ extractedMarks = [], existingSubje
   const existing = new Set(existingSubjects.map(normalizeEligibleSubject).filter(Boolean));
 
   return extractedMarks
-    .filter((item) => item.subject && Number(item.mark) >= minimumMark && SUBJECTS.includes(item.subject) && !existing.has(item.subject))
+    .filter((item) => item.subject && Number(item.mark) >= minimumMark && SUBJECT_LOOKUP.has(normalizeComparable(item.subject)) && !existing.has(item.subject))
     .map((item) => item.subject)
     .filter((subject, index, subjects) => subjects.indexOf(subject) === index);
 };

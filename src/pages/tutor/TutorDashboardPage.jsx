@@ -6,7 +6,7 @@ import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
 import { getQuestionPapers, getStudentSubscriptionState, getTutorAssignedStudentContexts, getTutorLessonsForAssignedStudents, getTutorReportsForAssignedStudents } from '../../services/firestoreService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
-import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../../utils/tutorSubjects';
+import { getApprovedTutorSubjects, normalizeEligibleSubject } from '../../utils/tutorSubjects';
 import { useEffectiveRole } from '../../utils/effectiveRole';
 
 
@@ -79,11 +79,8 @@ export const TutorDashboardPage = () => {
     const accessBySubject = Object.fromEntries(studentRows.map((student) => {
       const subject = student.subject ?? DEFAULT_SUBJECT;
       const subscription = subscriptionsByStudent[student.studentId];
-      const includedSubjects = getUserSubjects(student)
-        .slice(0, subscription?.subscriptionSubjectCount ?? 0)
-        .map((item) => normalizeEligibleSubject(item) ?? item);
       const normalizedSubject = normalizeEligibleSubject(subject) ?? subject;
-      return [`${student.studentId}:${normalizedSubject}`, Boolean(subscription?.paidSubscriptionActive && includedSubjects.includes(normalizedSubject))];
+      return [`${student.studentId}:${normalizedSubject}`, Boolean(subscription?.paidSubscriptionActive && student.subjectInstanceId)];
     }));
     setStudents(studentRows);
     setReports(reportRows);
@@ -99,9 +96,7 @@ export const TutorDashboardPage = () => {
   const hasReportFor = (student) => {
     const subject = student.subject ?? DEFAULT_SUBJECT;
     return Boolean(
-      student.latestReportsBySubject?.[subject] ||
-      reports.some((report) => report.studentId === student.studentId && report.subject === subject && report.reportType === 'initial') ||
-      (subject === DEFAULT_SUBJECT ? student.latestReport : '')
+      reports.some((report) => report.studentId === student.studentId && report.subject === subject && report.reportType === 'initial')
     );
   };
 

@@ -4,17 +4,18 @@ import { AppShell } from '../../components/common/AppShell';
 import { SubscriptionLifecyclePanel } from '../../components/billing/SubscriptionLifecyclePanel';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
 import { useAuth } from '../../hooks/useAuth';
-import { generateExercisePlanIfEligible, getStudentAccessState, getStudentSubscriptionState } from '../../services/firestoreService';
+import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
+import { generateExercisePlanIfEligible, getActiveSubjectsForStudent, getStudentAccessState } from '../../services/firestoreService';
 import { initializeSubscriptionPayment, verifySubscriptionPayment } from '../../services/paymentsService';
-import { getUserSubjects } from '../../utils/tutorSubjects';
+import { refreshStudentSubscriptionState, setStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
 
 export const StudentBillingPage = () => {
   const { profile, logout, refreshProfile } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+  const subscriptionState = useStudentSubscriptionState(profile);
 
   const [status, setStatus] = useState('');
-  const [subscriptionState, setSubscriptionState] = useState(null);
   const [isVerifyingPayment, setIsVerifyingPayment] = useState(false);
   const [isStartingSubscription, setIsStartingSubscription] = useState(false);
 
@@ -25,25 +26,6 @@ export const StudentBillingPage = () => {
     billingPeriod: params.get('billingPeriod') || subscriptionState?.pendingPlan?.billingPeriod || subscriptionState?.subscriptionBillingPeriod,
     subjectCount: params.get('subjectCount') || subscriptionState?.pendingPlan?.subjectCount || subscriptionState?.subscriptionSubjectCount || 2,
   };
-
-  useEffect(() => {
-    let active = true;
-    if (!profile?.uid) return undefined;
-    getStudentSubscriptionState(profile)
-      .then((nextState) => { if (active) setSubscriptionState(nextState); })
-      .catch((error) => {
-        console.error('[Examifying][Billing] subscription-state:error', error);
-        if (active) setSubscriptionState({
-          subscriptionPlanId: 'free',
-          subscriptionPlanName: 'Free',
-          subscriptionStatus: 'plan_required',
-          subscriptionSubjectCount: 0,
-          paymentCompleted: false,
-          requiresSubscriptionSelection: true,
-        });
-      });
-    return () => { active = false; };
-  }, [profile]);
 
   const formatRenewalDate = (value) => {
     if (!value) return 'N/A';
@@ -66,8 +48,8 @@ export const StudentBillingPage = () => {
   const completeStudentAccessFlow = useCallback(async (reference) => {
     const refreshedProfile = await refreshProfile(profile?.uid);
     const activeProfile = refreshedProfile || profile;
-    setSubscriptionState(await getStudentSubscriptionState(activeProfile));
-    const subjects = getUserSubjects(activeProfile);
+    await refreshStudentSubscriptionState(activeProfile);
+    const subjects = await getActiveSubjectsForStudent(activeProfile.uid);
     if (!subjects.length) {
       setStatus('Payment verified successfully. Choose your registered subjects to start the Examifying Program.');
       return;
@@ -110,12 +92,13 @@ export const StudentBillingPage = () => {
       });
       if (result.free) {
         const refreshedProfile = await refreshProfile(profile.uid);
-        setSubscriptionState(await getStudentSubscriptionState(refreshedProfile));
+        await refreshStudentSubscriptionState(refreshedProfile || profile);
         setStatus('Free subscription activated. Unlimited question papers are available.');
         navigate('/student/papers');
       } else if (result.scheduledChange) {
         setStatus(`Your ${result.quote.planName} plan will begin on ${formatRenewalDate(result.effectiveAt)}.${result.manualPaymentRequired ? ' Payment will be required then.' : ''}`);
-        await refreshProfile(profile.uid);
+        const refreshedProfile = await refreshProfile(profile.uid);
+        await refreshStudentSubscriptionState(refreshedProfile || profile);
       } else if (result.pendingChangeCancelled) {
         setStatus('Scheduled change cancelled. Your current plan will continue.');
       } else if (result.alreadyActive) {
@@ -197,7 +180,7 @@ export const StudentBillingPage = () => {
         <SubscriptionLifecyclePanel
           studentId={profile.uid}
           subscriptionState={subscriptionState}
-          onStateChange={setSubscriptionState}
+          onStateChange={(nextState) => setStudentSubscriptionState(profile.uid, nextState)}
           onContinuePayment={() => {
             const selection = subscriptionState.pendingPlan || subscriptionState;
             handleContinue({

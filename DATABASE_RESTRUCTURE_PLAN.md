@@ -253,6 +253,31 @@ Understanding scores are kept in the subcollection `topics/{canonicalTopicKey}/u
 - `peerMarking.js`: Callable `completePeerMarkingAssignment` for secure cross-user review submission.
 - `notifications.js`: Update document trigger paths to listen to nested paths (e.g. `users/{studentId}/subjects/{subjectInstanceId}/exercises/{exerciseId}`).
 
+---
+
+## Implementation Verification
+
+### Code audit (2026-10-02)
+
+- Student subject selection, exercise generation checks, tutor dashboards, and admin assignment filters now read active subject episodes.
+- Parent-to-student linking uses a trusted callable. Primary tutor/teacher assignment updates the active episode transactionally and prevents a second primary assignment.
+- Student, parent, tutor, and teacher signup/login profile paths are aligned with the role rules. A login without its Firestore profile fails with a clear account-link error.
+- Lesson, exercise-marking, and peer-marking scores are read from topic score events. New lesson writes do not store score rollups on lesson documents.
+- Peer marking reads reviewer-scoped nested assignments and submits marked image pages through the callable.
+- Firestore rules and indexes include the active episode, tutor-history, peer-marking, generation-run, subscription, and analysis access/query paths. Past-paper documents and question-paper analysis remain in their existing collections.
+- The application no longer queries the replaced top-level learning, tutor-assignment, peer-marking, or billing collections.
+
+### Local verification
+
+- `npm run build` passes.
+- `npm run lint` passes with six existing React hook/refresh warnings.
+- `npm run functions:lint` passes.
+- `node --test src/services/*.test.js src/utils/*.test.js functions/src/*.test.js` passes all five tests.
+
+### Deployment state
+
+Firestore rules, indexes, Cloud Functions, and Hosting were deployed to project `examifying` on 2026-10-02. Hosting is available at `https://examifying.web.app`. The CLI reported a Firestore rules warning on the first pass; the unsupported `hasNone` call was corrected to a negated `hasAny` check and the rules were redeployed with a clean compile. Live-account smoke tests for parent linking, primary tutor assignment, student subject enrollment, exercise submission, and tutor marking remain to be run.
+
 ### 3. Rules & Indexes
 - `firestore.rules`:
   - Enforce access to `subjects/{subjectInstanceId}` based on `request.auth.uid in resource.data.activeStaffIds || request.auth.uid == studentId`.
@@ -299,10 +324,10 @@ Understanding scores are kept in the subcollection `topics/{canonicalTopicKey}/u
   - Cap daily target at 5.
   - Record idempotent `generationRuns/{dateKey}`.
 
-### Phase 5: Billing Automation, Cloud Function Triggers & Deployment [COMPLETED]
+### Phase 5: Billing Automation, Cloud Function Triggers & Deployment [COMPLETED; LIVE SMOKE TESTS PENDING]
 - Move Paystack transaction initiation, verification, and renewals to nested billing subcollections.
 - Update Cloud Function Firestore event triggers in `notifications.js` to match nested document patterns.
-- Deploy rules, indexes, Functions, and Hosting.
+- Deploy rules, indexes, Functions, and Hosting. (Done 2026-10-02)
 - Verify global question-paper data remains untouched.
 
 ---

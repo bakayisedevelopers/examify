@@ -4,6 +4,22 @@
       "collectionGroup": "subjects",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
+        { "fieldPath": "subjectKey", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "subjects",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "subjectKey", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "subjects",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
         {
           "fieldPath": "activeStaffIds",
           "arrayConfig": "CONTAINS"

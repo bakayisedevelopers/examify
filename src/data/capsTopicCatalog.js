@@ -295,6 +295,17 @@ const LANGUAGE_SUBJECTS = [
   'Setswana Home Language', 'Sesotho Home Language',
 ];
 
+// Keep the app subject picker, marks extractor, and topic catalogs on the same
+// curriculum list. Mathematics is added separately because it has its own
+// grade-scoped topic data in topicCatalog.js.
+export const CAPS_SUBJECTS = [...new Set([
+  'Mathematics',
+  ...Object.keys(CAPS_FET_TOPICS),
+  'Physical Sciences',
+  'Natural Sciences',
+  ...LANGUAGE_SUBJECTS,
+])];
+
 const LANGUAGE_FET_TOPICS = fet(
   [
     group('Listening and Speaking', ['Listening comprehension', 'Prepared and unprepared speech', 'Oral communication']),

@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
+import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
 import { ROLES } from '../../lib/constants';
-import { getStudentSubscriptionState, getTutorBillingSummary } from '../../services/firestoreService';
+import { getTutorBillingSummary } from '../../services/firestoreService';
 import { SubscriptionLifecyclePanel } from '../../components/billing/SubscriptionLifecyclePanel';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
 import { initializeSubscriptionPayment } from '../../services/paymentsService';
+import { refreshStudentSubscriptionState, setStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
 
 export const ProfileBillingPage = ({ role }) => {
   const { profile, logout, refreshProfile } = useAuth();
@@ -14,7 +16,7 @@ export const ProfileBillingPage = ({ role }) => {
   const [summary, setSummary] = useState(null);
   const [subscriptionStatus, setSubscriptionStatus] = useState('');
   const [isStartingSubscription, setIsStartingSubscription] = useState(false);
-  const [subscriptionState, setSubscriptionState] = useState(null);
+  const subscriptionState = useStudentSubscriptionState(role === ROLES.STUDENT ? profile : null);
 
   const continueSubscription = async (selection) => {
     setSubscriptionStatus('');
@@ -27,11 +29,12 @@ export const ProfileBillingPage = ({ role }) => {
       });
       if (result.free) {
         const refreshedProfile = await refreshProfile(profile.uid);
-        setSubscriptionState(await getStudentSubscriptionState(refreshedProfile));
+        await refreshStudentSubscriptionState(refreshedProfile || profile);
         setSubscriptionStatus('Free plan activated. Unlimited question papers are available.');
         navigate('/student/papers');
       } else if (result.scheduledChange) {
-        await refreshProfile(profile.uid);
+        const refreshedProfile = await refreshProfile(profile.uid);
+        await refreshStudentSubscriptionState(refreshedProfile || profile);
         setSubscriptionStatus(`${result.quote.planName} will start on ${new Date(result.effectiveAt).toLocaleDateString()}.${result.manualPaymentRequired ? ' Payment will be required then.' : ''}`);
       } else if (result.pendingChangeCancelled) {
         setSubscriptionStatus('Scheduled change cancelled. Your current plan will continue.');
@@ -50,24 +53,6 @@ export const ProfileBillingPage = ({ role }) => {
       setIsStartingSubscription(false);
     }
   };
-
-  useEffect(() => {
-    if (role === ROLES.STUDENT && profile?.uid) {
-      getStudentSubscriptionState(profile)
-        .then(setSubscriptionState)
-        .catch((error) => {
-          console.error('[Examifying][StudentBilling] subscription-state:error', error);
-          setSubscriptionState({
-            subscriptionPlanId: 'free',
-            subscriptionPlanName: 'Free',
-            subscriptionStatus: 'plan_required',
-            subscriptionSubjectCount: 0,
-            paymentCompleted: false,
-            requiresSubscriptionSelection: true,
-          });
-        });
-    }
-  }, [profile, role]);
 
   useEffect(() => {
     if (role === ROLES.TUTOR && profile?.uid) {
@@ -93,7 +78,7 @@ export const ProfileBillingPage = ({ role }) => {
           <SubscriptionLifecyclePanel
             studentId={profile.uid}
             subscriptionState={subscriptionState}
-            onStateChange={setSubscriptionState}
+            onStateChange={(nextState) => setStudentSubscriptionState(profile.uid, nextState)}
             onContinuePayment={() => {
               const selection = subscriptionState.pendingPlan || subscriptionState;
               continueSubscription({

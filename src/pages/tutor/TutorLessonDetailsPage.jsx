@@ -77,10 +77,10 @@ export const TutorLessonDetailsPage = () => {
     if (isNew || !lessonId || !contextsLoaded || !profile?.uid) return;
     let cancelled = false;
     const load = async () => {
-      const lesson = await getLessonById(lessonId);
+      const lesson = await getLessonById(lessonId, { tutorId: profile.uid });
       if (!lesson) throw new Error('Lesson not found.');
       const rows = lesson.groupSessionId
-        ? await getLessonsByGroupSessionId(lesson.groupSessionId)
+        ? await getLessonsByGroupSessionId(lesson.groupSessionId, profile.uid)
         : [lesson];
       const accessibleRows = rows.filter((row) => contexts.some((context) =>
         context.studentId === row.studentId

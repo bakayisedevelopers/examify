@@ -1,34 +1,22 @@
-import { useEffect, useState } from 'react';
-import { getStudentSubscriptionState } from '../services/firestoreService';
-
-const FREE_PLAN_STATE = {
-  subscriptionPlanId: 'free',
-  subscriptionPlanName: 'Free',
-  subscriptionStatus: 'plan_required',
-  subscriptionSubjectCount: 0,
-  paymentCompleted: false,
-  requiresSubscriptionSelection: true,
-};
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import {
+  getCachedStudentSubscriptionState,
+  loadStudentSubscriptionState,
+  subscribeToStudentSubscriptionState,
+} from '../services/studentSubscriptionStateStore';
 
 export const useStudentSubscriptionState = (profile) => {
-  const [subscriptionState, setSubscriptionState] = useState(null);
+  const uid = profile?.role === 'student' ? profile.uid : null;
+  const subscribe = useCallback(
+    (listener) => subscribeToStudentSubscriptionState(uid, listener),
+    [uid],
+  );
+  const getSnapshot = useCallback(() => getCachedStudentSubscriptionState(uid), [uid]);
+  const subscriptionState = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   useEffect(() => {
-    if (!profile?.uid || profile.role !== 'student') {
-      setSubscriptionState(null);
-      return undefined;
-    }
-
-    let active = true;
-    getStudentSubscriptionState(profile)
-      .then((state) => { if (active) setSubscriptionState(state); })
-      .catch((error) => {
-        console.error('[Examifying][Subscription] state:error', error);
-        if (active) setSubscriptionState(FREE_PLAN_STATE);
-      });
-
-    return () => { active = false; };
-  }, [profile]);
+    if (uid) void loadStudentSubscriptionState(profile);
+  }, [profile, uid]);
 
   return subscriptionState;
 };

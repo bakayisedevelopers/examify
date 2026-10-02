@@ -44,6 +44,10 @@ export const TutorExercisesPage = () => {
     (subjectFilter === 'all' || exercise.subject === subjectFilter)
   );
   const canDeleteExercise = (exercise) => String(exercise.assignmentDate ?? '').slice(0, 10) > today && !isExerciseSubmitted(exercise);
+  const openExercise = (exercise) => {
+    const params = new URLSearchParams({ studentId: exercise.studentId, subjectInstanceId: exercise.subjectInstanceId });
+    navigate(`${basePath}/exercises/${exercise.id}?${params.toString()}`);
+  };
 
   const removeExercise = async (exercise) => {
     if (!window.confirm(`Delete “${exercise.title || 'this exercise'}” for ${exercise.studentName || 'this student'}? This cannot be undone.`)) return;
@@ -77,7 +81,7 @@ export const TutorExercisesPage = () => {
       <div className="grid gap-4">
         {filteredExercises.map((exercise) => (
           <div key={exercise.id} className="panel flex flex-wrap items-center justify-between gap-3 p-5">
-            <button type="button" onClick={() => navigate(`${basePath}/exercises/${exercise.id}`)} className="min-w-0 flex-1 text-left transition">
+            <button type="button" onClick={() => openExercise(exercise)} className="min-w-0 flex-1 text-left transition">
               <div>
                 <p className="font-semibold text-slate-100">{exercise.title}</p>
                 <p className="mt-1 text-sm text-slate-400">{exercise.studentName || exercise.studentId} • {exercise.subject} • {exercise.assignmentDate}</p>

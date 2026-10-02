@@ -10,6 +10,7 @@ import {
   updateStudentOnboarding,
 } from '../services/authService';
 import { mockUsers } from '../data/mockData';
+import { loadStudentSubscriptionState } from '../services/studentSubscriptionStateStore';
 
 const AuthContext = createContext(null);
 
@@ -35,6 +36,9 @@ export const AuthProvider = ({ children }) => {
       }
 
       const profile = await getUserProfile(firebaseUser.uid);
+      if (profile?.role === 'student') {
+        await loadStudentSubscriptionState(profile, { maxAgeMs: 30_000 });
+      }
       setState({ user: firebaseUser, profile, loading: false, error: null });
     });
 
@@ -47,11 +51,17 @@ export const AuthProvider = ({ children }) => {
     refreshProfile,
     login: async (payload) => {
       const result = await loginWithEmail(payload);
+      if (result.profile?.role === 'student') {
+        await loadStudentSubscriptionState(result.profile, { maxAgeMs: 30_000 });
+      }
       setState({ user: result.user, profile: result.profile, loading: false, error: null });
       return result;
     },
     register: async (payload) => {
       const result = await registerWithEmail(payload);
+      if (result.profile?.role === 'student') {
+        await loadStudentSubscriptionState(result.profile, { maxAgeMs: 30_000 });
+      }
       setState({ user: result.user, profile: result.profile, loading: false, error: null });
       return result;
     },
@@ -66,11 +76,17 @@ export const AuthProvider = ({ children }) => {
     loginAsDemo: async (email) => {
       const mockUser = mockUsers[email];
       if (!mockUser) throw new Error('Unknown demo account');
+      if (mockUser.role === 'student') {
+        await loadStudentSubscriptionState(mockUser, { maxAgeMs: 30_000 });
+      }
       setState({ user: mockUser, profile: mockUser, loading: false, error: null });
       return mockUser;
     },
     loginWithGoogle: async () => {
       const result = await signInWithGoogle();
+      if (result.profile?.role === 'student') {
+        await loadStudentSubscriptionState(result.profile, { maxAgeMs: 30_000 });
+      }
       setState({ user: result.user, profile: result.profile, loading: false, error: null });
       return result;
     },

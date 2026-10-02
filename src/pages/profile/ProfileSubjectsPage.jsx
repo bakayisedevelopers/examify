@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
 import { ROLES, SUBJECTS } from '../../lib/constants';
-import { addStudentSubjects, getTutorMarksDocuments, removeUserSubject, updateUserSubjectAvailability } from '../../services/firestoreService';
+import { addStudentSubjects, getActiveSubjectsForStudent, getTutorMarksDocuments, removeUserSubject, updateUserSubjectAvailability } from '../../services/firestoreService';
 import { deleteTutorMarksDocument, retryTutorMarksDocument, uploadTutorMarksDocument } from '../../services/storageService';
-import { getApprovedTutorSubjects, getUserSubjects } from '../../utils/tutorSubjects';
+import { getApprovedTutorSubjects } from '../../utils/tutorSubjects';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
 
 const statusStyles = {
@@ -32,11 +32,16 @@ export const ProfileSubjectsPage = ({ role }) => {
   const [saving, setSaving] = useState(false);
   const [documents, setDocuments] = useState([]);
   const [activeDocumentId, setActiveDocumentId] = useState('');
+  const [activeStudentSubjects, setActiveStudentSubjects] = useState([]);
   const tutorUploadFormRef = useRef(null);
+  const loadStudentSubjects = useCallback(async () => {
+    if (role !== ROLES.STUDENT || !profile?.uid) return;
+    setActiveStudentSubjects(await getActiveSubjectsForStudent(profile.uid));
+  }, [profile?.uid, role]);
   const currentSubjects = useMemo(() => {
     if (isTutorRole) return getApprovedTutorSubjects(profile);
-    return getUserSubjects(profile);
-  }, [profile, isTutorRole]);
+    return role === ROLES.STUDENT ? activeStudentSubjects : [];
+  }, [activeStudentSubjects, isTutorRole, profile, role]);
   const availableSubjects = SUBJECTS.filter((subject) => !currentSubjects.includes(subject));
   const subjectLimit = Number(subscriptionState?.subscriptionSubjectCount) || 0;
   const remainingSubjectSlots = Math.max(0, subjectLimit - currentSubjects.length - selectedSubjects.length);
@@ -57,6 +62,10 @@ export const ProfileSubjectsPage = ({ role }) => {
       setStatus(error.message || 'Could not load uploaded tutor documents.');
     });
   }, [loadTutorDocuments]);
+
+  useEffect(() => {
+    loadStudentSubjects().catch((error) => setStatus(error.message || 'Could not load your active subjects.'));
+  }, [loadStudentSubjects]);
 
   const handleAddSubjectToSelection = () => {
     if (!subjectToAdd || selectedSubjects.includes(subjectToAdd)) return;
@@ -87,6 +96,7 @@ export const ProfileSubjectsPage = ({ role }) => {
       setSaving(true);
       setStatus('Adding subjects...');
       await addStudentSubjects({ studentId: profile.uid, subjects: selectedSubjects });
+      await loadStudentSubjects();
       await refreshProfile(profile.uid);
       setStatus(`${selectedSubjects.join(', ')} added to your subjects.`);
       setSelectedSubjects([]);
@@ -177,6 +187,7 @@ export const ProfileSubjectsPage = ({ role }) => {
       setSaving(true);
       setStatus(`Removing ${subject}...`);
       await removeUserSubject({ uid: profile.uid, subject });
+      await loadStudentSubjects();
       await refreshProfile(profile.uid);
       setStatus(`${subject} removed from your profile.`);
     } catch (error) {

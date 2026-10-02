@@ -1,115 +1,106 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
 import { PeerReviewForm } from '../../components/dashboard/PeerReviewForm';
 import { useAuth } from '../../hooks/useAuth';
-import { getRoleDashboardData, getStudentAccessState, getSubmissionById, savePeerReview } from '../../services/firestoreService';
-import { canSubmitPeerReview } from '../../utils/exerciseRules';
+import {
+  completePeerMarkingAssignment,
+  getActiveSubjectsForStudent,
+  getPeerMarkingAssignmentsForStudent,
+  getStudentAccessState,
+} from '../../services/firestoreService';
+import { uploadPeerReviewImage } from '../../services/storageService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
-import { getUserSubjects } from '../../utils/tutorSubjects';
-
-const peerReviewViewCache = new Map();
 
 export const StudentPeerReviewsPage = () => {
   const { profile, logout } = useAuth();
-  const availableSubjects = useMemo(() => getUserSubjects(profile), [profile]);
-  const firstSubject = availableSubjects[0] ?? DEFAULT_SUBJECT;
-  const cacheKey = `${profile?.uid ?? 'anonymous'}:${firstSubject}`;
-  const cachedView = peerReviewViewCache.get(cacheKey);
-  const [assignment, setAssignment] = useState(cachedView?.assignment ?? null);
-  const [submission, setSubmission] = useState(cachedView?.submission ?? null);
-  const [paymentCompleted, setPaymentCompleted] = useState(cachedView?.paymentCompleted ?? null);
-  const [selectedSubject, setSelectedSubject] = useState(firstSubject);
-  const [isLoading, setIsLoading] = useState(!cachedView);
-
-  useEffect(() => {
-    if (availableSubjects.length && !availableSubjects.includes(selectedSubject)) {
-      setSelectedSubject(availableSubjects[0]);
-    }
-  }, [availableSubjects, selectedSubject]);
+  const [availableSubjects, setAvailableSubjects] = useState([]);
+  const [selectedSubject, setSelectedSubject] = useState(DEFAULT_SUBJECT);
+  const [assignment, setAssignment] = useState(null);
+  const [paymentCompleted, setPaymentCompleted] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [status, setStatus] = useState('');
 
   useEffect(() => {
     if (!profile?.uid) return undefined;
+    let active = true;
+    getActiveSubjectsForStudent(profile.uid).then((subjects) => {
+      if (!active) return;
+      setAvailableSubjects(subjects);
+      if (subjects.length && !subjects.includes(selectedSubject)) setSelectedSubject(subjects[0]);
+    }).catch((error) => setStatus(error.message || 'Could not load your active subjects.'));
+    return () => { active = false; };
+  }, [profile?.uid, selectedSubject]);
 
-    const subjectCacheKey = `${profile.uid}:${selectedSubject}`;
-    const cachedSubjectView = peerReviewViewCache.get(subjectCacheKey);
-    let isCancelled = false;
-
-    if (cachedSubjectView) {
-      setAssignment(cachedSubjectView.assignment);
-      setSubmission(cachedSubjectView.submission);
-      setPaymentCompleted(cachedSubjectView.paymentCompleted);
-      setIsLoading(false);
-    } else {
-      setIsLoading(true);
-    }
-
-    const load = async () => {
-      const access = await getStudentAccessState(profile, selectedSubject);
-      if (isCancelled) return;
-
-      if (!access.paymentCompleted) {
-        const nextView = { assignment: null, submission: null, paymentCompleted: false };
-        peerReviewViewCache.set(subjectCacheKey, nextView);
-        setAssignment(nextView.assignment);
-        setSubmission(nextView.submission);
-        setPaymentCompleted(nextView.paymentCompleted);
-        setIsLoading(false);
-        return;
-      }
-
-      const data = await getRoleDashboardData('student', { studentId: profile.uid, subject: selectedSubject });
-      const peerAssignment = data.peerReviewAssignment ?? null;
-      const peerSubmission = peerAssignment?.submissionId ? await getSubmissionById(peerAssignment.submissionId) : null;
-
-      if (isCancelled) return;
-
-      const nextView = {
-        assignment: peerAssignment,
-        submission: peerSubmission,
-        paymentCompleted: true,
-      };
-      peerReviewViewCache.set(subjectCacheKey, nextView);
-      setAssignment(nextView.assignment);
-      setSubmission(nextView.submission);
-      setPaymentCompleted(nextView.paymentCompleted);
-      setIsLoading(false);
-    };
-
-    load().catch((error) => {
-      console.error('[Examifying][PeerReviews] load:error', error);
-      if (!isCancelled) setIsLoading(false);
-    });
-
-    return () => {
-      isCancelled = true;
-    };
+  useEffect(() => {
+    if (!profile?.uid || !selectedSubject) return undefined;
+    let active = true;
+    setIsLoading(true);
+    setStatus('');
+    Promise.all([
+      getStudentAccessState(profile, selectedSubject),
+      getPeerMarkingAssignmentsForStudent(profile.uid),
+    ]).then(([access, assignments]) => {
+      if (!active) return;
+      setPaymentCompleted(Boolean(access.paidSubscriptionActive));
+      setAssignment(assignments.find((item) => item.subject === selectedSubject) ?? null);
+    }).catch((error) => {
+      if (active) setStatus(error.message || 'Could not load peer marking.');
+    }).finally(() => { if (active) setIsLoading(false); });
+    return () => { active = false; };
   }, [profile, selectedSubject]);
 
+  const submitMarkedPages = async (files) => {
+    if (!assignment || !profile?.uid) throw new Error('No peer marking assignment is available.');
+    setIsSubmitting(true);
+    setStatus('Uploading marked pages...');
+    try {
+      const reviewImages = await Promise.all(files.map(async (file, index) => {
+        const upload = await uploadPeerReviewImage({
+          file,
+          studentId: profile.uid,
+          exerciseId: assignment.reviewerExerciseId,
+          subjectInstanceId: assignment.reviewerSubjectInstanceId,
+        });
+        return { ...upload, pageNumber: index + 1 };
+      }));
+      await completePeerMarkingAssignment({
+        assignmentId: assignment.id,
+        assignmentPath: assignment.assignmentPath,
+        reviewerId: profile.uid,
+        reviewImages,
+      });
+      setAssignment(null);
+      setStatus('Peer marking submitted successfully.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const images = assignment?.submittedImages?.length
+    ? assignment.submittedImages
+    : assignment?.submittedImageUrl ? [{ url: assignment.submittedImageUrl }] : [];
+
   return (
-    <AppShell title="Peer reviews" subtitle="Review a classmate’s uploaded answer after you have submitted your own work." role="student" user={profile} onLogout={logout}>
+    <AppShell title="Peer marking" subtitle="Mark a classmate’s handwritten answers and upload the marked pages." role="student" user={profile} onLogout={logout}>
       <div className="panel flex flex-wrap items-center justify-between gap-3 p-4">
         <div>
           <p className="text-sm font-semibold text-slate-950">Subject</p>
-          <p className="text-xs text-slate-500">Peer review context follows the selected subject.</p>
+          <p className="text-xs text-slate-500">Assignments are tied to an active subject episode.</p>
         </div>
         <select className="input max-w-xs" value={selectedSubject} onChange={(event) => setSelectedSubject(event.target.value)} disabled={!availableSubjects.length}>
           {availableSubjects.map((subject) => <option key={subject}>{subject}</option>)}
         </select>
       </div>
-      {isLoading ? <div className="panel p-5 text-sm text-slate-500">Loading peer review context...</div> : null}
-      {!isLoading && paymentCompleted === false ? <div className="panel p-5 text-sm text-amber-700">Payment is required before peer review activities unlock.</div> : null}
-      {!isLoading ? <PeerReviewForm
-        submission={submission}
-        canReview={Boolean(paymentCompleted) && canSubmitPeerReview(assignment ?? {})}
-        onSubmit={(payload) =>
-          savePeerReview({
-            ...payload,
-            reviewerId: profile?.uid,
-            submissionId: assignment?.submissionId,
-            assignmentDate: assignment?.assignmentDate,
-            subject: selectedSubject,
-          })
-        }
+      {status ? <div role="status" className="panel p-4 text-sm text-slate-600">{status}</div> : null}
+      {isLoading ? <div className="panel p-5 text-sm text-slate-500">Loading peer marking...</div> : null}
+      {!isLoading && paymentCompleted === false ? <div className="panel p-5 text-sm text-amber-700">An active paid subject is required before peer marking unlocks.</div> : null}
+      {!isLoading && paymentCompleted && !assignment ? <div className="panel p-5 text-sm text-slate-500">No peer marking assignment is available for this subject yet.</div> : null}
+      {!isLoading && assignment ? <PeerReviewForm
+        key={assignment.id}
+        submission={{ images, imageUrl: images[0]?.url, exerciseTitle: assignment.title || 'Maths exercise' }}
+        canReview={Boolean(paymentCompleted && assignment.status === 'assigned' && !isSubmitting)}
+        onSubmit={submitMarkedPages}
       /> : null}
     </AppShell>
   );

@@ -15,6 +15,8 @@ export const TutorExerciseDetailsPage = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const periodId = searchParams.get('period');
+  const studentId = searchParams.get('studentId');
+  const subjectInstanceId = searchParams.get('subjectInstanceId');
   const { role, basePath } = useEffectiveRole();
   const [exercise, setExercise] = useState(null);
   const [status, setStatus] = useState('Loading exercise...');
@@ -24,7 +26,7 @@ export const TutorExerciseDetailsPage = () => {
   const [isHistorical, setIsHistorical] = useState(false);
 
   useEffect(() => {
-    getExerciseAssignmentById(exerciseId)
+    getExerciseAssignmentById(exerciseId, { tutorId: profile?.uid, studentId, subjectInstanceId, periodId })
       .then(async (result) => {
         if (!result) {
           setStatus('Exercise not found.');
@@ -56,7 +58,7 @@ export const TutorExerciseDetailsPage = () => {
         }
       })
       .catch((error) => setStatus(error.message || 'Could not load exercise.'));
-  }, [exerciseId, profile?.uid, periodId]);
+  }, [exerciseId, profile?.uid, periodId, studentId, subjectInstanceId]);
 
   const availability = exercise ? getExerciseAvailability(exercise.assignmentDate, Boolean(exercise.submittedImageUrl || exercise.submitted === 'Yes')) : null;
 

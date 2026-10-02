@@ -4,10 +4,10 @@ import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
 import {
   assignStudentToTutor,
+  getAdminTutorOptions,
   getAdminSubjectAssignmentData,
   getGuideQuizResultsSummary,
 } from '../../services/firestoreService';
-import { DEFAULT_SUBJECT, SUBJECTS } from '../../lib/constants';
 
 const ScoreList = ({ title, description, users = [] }) => (
   <section className="space-y-4">
@@ -33,11 +33,14 @@ const ScoreList = ({ title, description, users = [] }) => (
 export const AdminUsersPage = () => {
   const { profile, logout } = useAuth();
   const [summary, setSummary] = useState({ students: [], tutors: [] });
-  const [selectedSubject, setSelectedSubject] = useState(DEFAULT_SUBJECT);
+  const [tutorOptions, setTutorOptions] = useState([]);
+  const [tutorsLoaded, setTutorsLoaded] = useState(false);
+  const [selectedSubject, setSelectedSubject] = useState('');
   const [assignmentData, setAssignmentData] = useState({ students: [], tutors: [], assignments: [], unassignedStudents: [] });
   const [studentId, setStudentId] = useState('');
   const [tutorId, setTutorId] = useState('');
   const [status, setStatus] = useState('');
+  const selectedTutor = tutorOptions.find((tutor) => tutor.uid === tutorId);
 
   useEffect(() => {
     getGuideQuizResultsSummary().then(setSummary).catch((error) => {
@@ -47,20 +50,39 @@ export const AdminUsersPage = () => {
   }, []);
 
   useEffect(() => {
+    getAdminTutorOptions().then((tutors) => {
+      setTutorOptions(tutors);
+      setTutorId(tutors[0]?.uid ?? '');
+      setSelectedSubject(tutors[0]?.subjects[0] ?? '');
+    }).catch((error) => {
+      console.error('[Examifying][AdminUsers] tutors:error', error);
+      setStatus(error.message || 'Could not load tutors and their subjects.');
+    }).finally(() => setTutorsLoaded(true));
+  }, []);
+
+  useEffect(() => {
+    if (!tutorsLoaded || !selectedSubject) return;
     getAdminSubjectAssignmentData(selectedSubject).then((data) => {
       setAssignmentData(data);
       setStudentId(data.unassignedStudents[0]?.uid ?? '');
-      setTutorId(data.tutors[0]?.uid ?? '');
     }).catch((error) => {
       console.error('[Examifying][AdminUsers] assignments:error', error);
       setAssignmentData({ students: [], tutors: [], assignments: [], unassignedStudents: [] });
       setStatus(error.message || 'Could not load subject assignments.');
     });
-  }, [selectedSubject]);
+  }, [selectedSubject, tutorsLoaded]);
+
+  const handleTutorChange = (nextTutorId) => {
+    const tutor = tutorOptions.find((item) => item.uid === nextTutorId);
+    setTutorId(nextTutorId);
+    setSelectedSubject(tutor?.subjects[0] ?? '');
+    setStatus('');
+  };
 
   const handleAssign = async (event) => {
     event.preventDefault();
-    if (!studentId || !tutorId) {
+    if (!studentId || !tutorId || !selectedTutor?.subjects.includes(selectedSubject)
+      || !assignmentData.tutors.some((tutor) => tutor.uid === tutorId)) {
       setStatus('Choose a student and tutor before assigning.');
       return;
     }
@@ -71,7 +93,6 @@ export const AdminUsersPage = () => {
       const data = await getAdminSubjectAssignmentData(selectedSubject);
       setAssignmentData(data);
       setStudentId(data.unassignedStudents[0]?.uid ?? '');
-      setTutorId(data.tutors[0]?.uid ?? '');
       setStatus('Student assigned successfully.');
     } catch (error) {
       setStatus(error.message || 'Could not assign student.');
@@ -95,15 +116,26 @@ export const AdminUsersPage = () => {
 
         <div className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
           <form onSubmit={handleAssign} className="space-y-4">
-            <label>
-              <span className="label">Subject</span>
-              <select className="input" value={selectedSubject} onChange={(event) => setSelectedSubject(event.target.value)}>
-                {SUBJECTS.map((subject) => <option key={subject}>{subject}</option>)}
+          <label>
+              <span className="label">Tutor / Teacher</span>
+              <select className="input" value={tutorId} onChange={(event) => handleTutorChange(event.target.value)} disabled={!tutorsLoaded || !tutorOptions.length}>
+                {tutorOptions.map((tutor) => (
+                  <option key={tutor.uid} value={tutor.uid}>
+                    {tutor.displayName || tutor.email || tutor.uid} {tutor.isTeacher || tutor.role === 'teacher' ? '(Teacher)' : '(Tutor)'}
+                  </option>
+                ))}
               </select>
             </label>
 
             <label>
-              <span className="label">Unassigned student</span>
+              <span className="label">Subject taught by this tutor</span>
+              <select className="input" value={selectedSubject} onChange={(event) => setSelectedSubject(event.target.value)} disabled={!selectedTutor?.subjects.length}>
+                {(selectedTutor?.subjects ?? []).map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+              </select>
+            </label>
+
+            <label>
+              <span className="label">Unassigned student for {selectedSubject || 'selected subject'}</span>
               <select className="input" value={studentId} onChange={(event) => setStudentId(event.target.value)}>
                 {assignmentData.unassignedStudents.map((student) => (
                   <option key={student.uid} value={student.uid}>
@@ -113,25 +145,19 @@ export const AdminUsersPage = () => {
               </select>
             </label>
 
-            <label>
-              <span className="label">Tutor / Teacher</span>
-              <select className="input" value={tutorId} onChange={(event) => setTutorId(event.target.value)}>
-                {assignmentData.tutors.map((tutor) => (
-                  <option key={tutor.uid} value={tutor.uid}>
-                    {tutor.displayName || tutor.email || tutor.uid} {tutor.isTeacher ? '(Teacher)' : '(Tutor)'}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <button type="submit" className="btn-primary w-full" disabled={!studentId || !tutorId}>
+            {!assignmentData.tutors.some((tutor) => tutor.uid === tutorId) && selectedSubject ? (
+              <p className="text-sm text-amber-700">This tutor is not currently approved for {selectedSubject}.</p>
+            ) : null}
+            <button type="submit" className="btn-primary w-full" disabled={!studentId || !tutorId || !selectedSubject || !assignmentData.tutors.some((tutor) => tutor.uid === tutorId)}>
               Assign tutor / teacher
             </button>
+            {!tutorsLoaded ? <p className="text-sm text-slate-500">Loading tutors...</p> : null}
+            {tutorsLoaded && !tutorOptions.length ? <p className="text-sm text-slate-500">No tutors or teachers have approved subjects yet.</p> : null}
             {status ? <p className="text-sm text-slate-600">{status}</p> : null}
           </form>
 
           <div className="space-y-3">
-            <p className="text-sm font-semibold text-slate-950">Current {selectedSubject} assignments</p>
+            <p className="text-sm font-semibold text-slate-950">Current {selectedSubject || 'subject'} assignments</p>
             {assignmentData.assignments.map((assignment) => (
               <div key={assignment.id} className="rounded-2xl bg-slate-50 p-4 text-sm">
                 <p className="font-semibold text-slate-900">{assignment.studentName}</p>

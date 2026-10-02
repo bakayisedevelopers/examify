@@ -60,7 +60,7 @@ export const TutorLessonsPage = () => {
           const statusLabel = missed ? 'Missed' : completed ? 'Completed' : 'Planned';
           const statusTone = missed ? 'bg-amber-100 text-amber-800' : completed ? 'bg-lime-100 text-lime-800' : 'bg-slate-100 text-slate-600';
           return (
-            <Link key={sessionKey(lesson)} to={`${basePath}/lessons/${lesson.id}`} className="panel block p-5 transition hover:border-lime-700/40">
+            <Link key={sessionKey(lesson)} to={`${basePath}/lessons/${lesson.id}?studentId=${encodeURIComponent(lesson.studentId)}&subjectInstanceId=${encodeURIComponent(lesson.subjectInstanceId || '')}`} className="panel block p-5 transition hover:border-lime-700/40">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' • ') || 'Lesson topics not recorded'}</p>

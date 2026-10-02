@@ -5,7 +5,7 @@ import { AppShell } from '../components/common/AppShell';
 import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
-import { cancelQuestionPaperAnalysis, getTopicResolverMappings, getTopicResolverSourceRecords, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
+import { cancelQuestionPaperAnalysis, getActiveSubjectsForStudent, getTopicResolverMappings, getTopicResolverSourceRecords, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
 import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../utils/tutorSubjects';
 import { getHardcodedTopics, getTopicCatalog } from '../data/topicCatalog';
@@ -188,13 +188,21 @@ export const PastExamPapersPage = () => {
   }, [topicResolverOpen]);
 
   const role = useMemo(() => profile?.role ?? ROLES.STUDENT, [profile]);
+  const [studentSubjects, setStudentSubjects] = useState([]);
+  useEffect(() => {
+    if (role !== ROLES.STUDENT || !profile?.uid) { setStudentSubjects([]); return undefined; }
+    let active = true;
+    getActiveSubjectsForStudent(profile.uid)
+      .then((subjects) => { if (active) setStudentSubjects(subjects); })
+      .catch((error) => console.error('[Examifying][PastPapers] active-subjects:error', error));
+    return () => { active = false; };
+  }, [profile?.uid, role]);
   const allowedSubjects = useMemo(() => {
     if (role === ROLES.ADMIN) return SUBJECTS;
     if (role === ROLES.TUTOR) return getApprovedTutorSubjects(profile);
     return getUserSubjects(profile);
   }, [profile, role]);
   const visibleSubjects = allowedSubjects.length ? allowedSubjects : SUBJECTS;
-  const studentSubjects = useMemo(() => getUserSubjects(profile), [profile]);
   const studentGrade = SOUTH_AFRICAN_GRADES.includes(profile?.grade) && profile.grade !== 'Select Grade' ? profile.grade : '';
   const isStudentExploring = Boolean(searchTerm.trim()) || Object.keys(studentFilterOverrides).length > 0;
   const studentFilterValues = isStudentExploring

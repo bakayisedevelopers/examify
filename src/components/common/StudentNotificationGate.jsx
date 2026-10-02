@@ -53,7 +53,7 @@ const buildAssignmentText = (assignment) => {
 export const StudentNotificationGate = ({ profile, children, required = true }) => {
   const { android, windows, aiStudio } = getNotificationEnvironment();
   const requiresNotificationPermission = required && (android || windows) && !aiStudio;
-  const [permission, setPermission] = useState(getNotificationPermission);
+  const [permission, setPermission] = useState('checking');
   const [error, setError] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
   const [deviceRegistered, setDeviceRegistered] = useState(false);
@@ -175,12 +175,17 @@ export const StudentNotificationGate = ({ profile, children, required = true }) 
       });
   }, [deviceRegistered, permission, profile?.uid]);
 
-  if (permission === 'granted' && deviceRegistered) return children;
+  if (aiStudio) return children;
+
+  if (permission === 'checking') {
+    return <div className="flex min-h-screen items-center justify-center text-slate-700">Loading Examifying…</div>;
+  }
+
+  // Browser permission is the access decision. Device token registration continues in the
+  // background so an already-enabled user can enter the app without seeing the prompt again.
+  if (permission === 'granted') return children;
 
   if (!requiresNotificationPermission) {
-    if (aiStudio) {
-      return children;
-    }
     return (
       <>
         <div className="mx-auto max-w-7xl px-4 pt-4 lg:px-6">

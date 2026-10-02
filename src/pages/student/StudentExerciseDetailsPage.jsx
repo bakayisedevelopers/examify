@@ -17,7 +17,7 @@ export const StudentExerciseDetailsPage = () => {
     let active = true;
     const load = async () => {
       try {
-        const assignment = await getExerciseAssignmentById(exerciseId);
+        const assignment = await getExerciseAssignmentById(exerciseId, { studentId: profile?.uid });
         if (!active) return;
         setExercise(assignment);
         if (!assignment) {

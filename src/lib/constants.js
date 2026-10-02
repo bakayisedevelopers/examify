@@ -1,3 +1,5 @@
+import { CAPS_SUBJECTS } from '../data/capsTopicCatalog.js';
+
 export const ROLES = {
   STUDENT: 'student',
   TUTOR: 'tutor',
@@ -7,10 +9,7 @@ export const ROLES = {
 
 export const DEFAULT_SUBJECT = 'Mathematics';
 
-export const SUBJECTS = [
-  'Mathematics',
-  'Mathematical Literacy',
-];
+export const SUBJECTS = CAPS_SUBJECTS;
 
 export const SUBJECT = DEFAULT_SUBJECT;
 

@@ -9,16 +9,11 @@ const normalizeSubject = (value = '') => {
   return normalized;
 };
 
-const getRegisteredSubjects = (student = {}) => [...new Set([
-  student.subject,
-  ...(Array.isArray(student.subjects) ? student.subjects : []),
-].filter(Boolean).map(normalizeSubject))];
-
 const assertGeneratorAccess = async ({ authUid, caller, studentId, episode }) => {
   if (authUid === studentId && caller.role === 'student') return;
   if (caller.role === 'admin') return;
 
-  const isTutorOrTeacher = caller.role === 'tutor' || caller.isTeacher === true || caller.isTeacher === 'true';
+  const isTutorOrTeacher = ['tutor', 'teacher'].includes(caller.role) || caller.isTeacher === true || caller.isTeacher === 'true';
   if (!isTutorOrTeacher) {
     throw new HttpsError('permission-denied', 'You cannot generate exercises for this student.');
   }
@@ -50,7 +45,6 @@ export const assertPaidExerciseGenerationAccess = async ({ authUid, studentId, s
   }
 
   const caller = callerSnapshot.data();
-  const student = studentSnapshot.data();
   let episodeSnapshot = explicitEpisodeSnapshot;
   if (!episodeSnapshot) {
     const episodes = await db.collection('users').doc(studentId).collection('subjects')
@@ -96,9 +90,11 @@ export const assertPaidExerciseGenerationAccess = async ({ authUid, studentId, s
     throw new HttpsError('failed-precondition', 'The active subscription details are invalid.');
   }
 
-  const includedSubjects = getRegisteredSubjects(student).slice(0, expectedQuote.subjectCount);
-  if (!includedSubjects.includes(normalizeSubject(subject))) {
-    throw new HttpsError('failed-precondition', "This subject is not included in the student's registered paid-subscription subjects.");
+  const activeEpisodes = await db.collection('users').doc(studentId).collection('subjects')
+    .where('status', '==', 'active').get();
+  if (!activeEpisodes.docs.some((document) => normalizeSubject(document.data().subjectKey) === normalizeSubject(subject))
+    || activeEpisodes.size > expectedQuote.subjectCount) {
+    throw new HttpsError('failed-precondition', 'The requested subject episode is not included in the active paid subscription.');
   }
 
   const paymentReference = subscription.latestReference;

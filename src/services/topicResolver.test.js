@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getTopicCatalog, resolveTopic } from '../data/topicCatalog.js';
 import { buildTopicResolverRows } from './topicResolver.js';
+import { SUBJECTS } from '../lib/constants.js';
 
 test('topic catalog is scoped to an exact subject and grade', () => {
   const gradeTen = getTopicCatalog({ subject: 'Mathematics', grade: 'Grade 10' });
@@ -24,9 +25,14 @@ test('known mathematics aliases resolve to the canonical child-parent label', ()
   );
 });
 
-test('non-Maths subjects are excluded from the resolver catalog', () => {
-  assert.equal(getTopicCatalog({ subject: 'Physical Sciences', grade: 'Grade 11' }).length, 0);
-  assert.equal(resolveTopic({ topic: 'Newton second law', subject: 'Physical Sciences', grade: 'Grade 11' }), null);
+test('all internally supported CAPS subjects are present in the subject catalog', () => {
+  assert.ok(SUBJECTS.includes('Physical Sciences'));
+  assert.ok(SUBJECTS.includes('Natural Sciences'));
+  assert.ok(SUBJECTS.includes('Geography'));
+  assert.ok(SUBJECTS.includes('English Home Language'));
+  assert.ok(getTopicCatalog({ subject: 'Physical Sciences', grade: 'Grade 11' }).length > 0);
+  assert.ok(getTopicCatalog({ subject: 'Geography', grade: 'Grade 12' }).length > 0);
+  assert.ok(resolveTopic({ topic: 'Newton second law', subject: 'Physical Sciences', grade: 'Grade 11' }));
 });
 
 test('Grade 10 and 11 Mathematics wording resolves into available grade topics', () => {
@@ -62,7 +68,7 @@ test('Maths CAPS catalogs are grade scoped and use canonical child-parent labels
   const grade12 = getTopicCatalog({ subject: 'Mathematics', grade: 'Grade 12' });
   assert.ok(grade11.every((entry) => entry.canonicalLabel.includes(' | ')));
   assert.ok(grade12.some((entry) => entry.canonicalLabel === 'Differentiation | Calculus'));
-  assert.equal(getTopicCatalog({ subject: 'Geography', grade: 'Grade 12' }).length, 0);
+  assert.ok(getTopicCatalog({ subject: 'Geography', grade: 'Grade 12' }).length > 0);
 });
 
 test('resolver groups topics by subject and grade and leaves unknown names for review', () => {
