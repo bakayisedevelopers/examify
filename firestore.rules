@@ -1,107 +1,144 @@
 rules_version = '2';
-
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() {
-      return request.auth != null;
+    function signedIn() { return request.auth != null; }
+    function profile(uid) { return get(/databases/$(database)/documents/users/$(uid)).data; }
+    function isAdmin() { return signedIn() && profile(request.auth.uid).role == 'admin'; }
+    function isParentOf(studentId) { return signedIn() && profile(studentId).parentId == request.auth.uid; }
+    function episode(studentId, subjectInstanceId) {
+      return get(/databases/$(database)/documents/users/$(studentId)/subjects/$(subjectInstanceId)).data;
+    }
+    function isEpisodeStaff(studentId, subjectInstanceId) {
+      return signedIn() && request.auth.uid in episode(studentId, subjectInstanceId).activeStaffIds;
+    }
+    function canTeach(studentId, subjectInstanceId) {
+      return isEpisodeStaff(studentId, subjectInstanceId)
+        && episode(studentId, subjectInstanceId).staffByUid[request.auth.uid] == 'co-owner';
+    }
+    function canMark(studentId, subjectInstanceId) {
+      return isEpisodeStaff(studentId, subjectInstanceId)
+        && episode(studentId, subjectInstanceId).staffByUid[request.auth.uid] in ['co-owner', 'marker'];
+    }
+    function canReadEpisode(studentId, subjectInstanceId) {
+      return signedIn() && (request.auth.uid == studentId || isParentOf(studentId) || isAdmin() || isEpisodeStaff(studentId, subjectInstanceId));
+    }
+    function exerciseIsOpen() {
+      return resource.data.assignmentOpensAt <= request.time && request.time < resource.data.locksAt;
+    }
+    function hasPaidAccess(studentId) {
+      let subscription = get(/databases/$(database)/documents/users/$(studentId)/subscriptions/current).data;
+      return subscription.planId in ['circle', 'personalized']
+        && ((subscription.status == 'active' && subscription.renewalDate > request.time)
+          || (subscription.status == 'past_due' && subscription.graceEndsAt > request.time));
     }
 
-    function isAdmin() {
-      return signedIn()
-        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
-    }
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.auth.uid == userId;
+      allow update: if signedIn() && (request.auth.uid == userId || isParentOf(userId) || isAdmin());
+      allow delete: if isAdmin();
 
-    function canReadAssignmentPeriod() {
-      return signedIn() && (
-        request.auth.uid == resource.data.tutorId
-        || request.auth.uid == resource.data.studentId
-        || isAdmin()
-        || get(/databases/$(database)/documents/users/$(resource.data.studentId)).data.parentId == request.auth.uid
-      );
-    }
+      match /subjects/{subjectInstanceId} {
+        allow read: if canReadEpisode(userId, subjectInstanceId);
+        allow update: if canTeach(userId, subjectInstanceId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'completedTopicCount', 'dailyExerciseTarget', 'updatedAt'
+          ]);
+        allow create, delete: if false;
 
-    match /{topLevelCollection}/{document=**} {
-      allow read: if topLevelCollection != 'subscriptionAuthorizations'
-        && topLevelCollection != 'tutorStudentAssignmentPeriods'
-        && topLevelCollection != 'staffStudentAccessPeriods'
-        && topLevelCollection != 'topicResolverMappings';
-      allow write: if topLevelCollection != 'subscriptions'
-        && topLevelCollection != 'payments'
-        && topLevelCollection != 'subscriptionAuthorizations'
-        && topLevelCollection != 'tutorStudentAssignments'
-        && topLevelCollection != 'staffStudentAccess'
-        && topLevelCollection != 'tutorStudentAssignmentPeriods'
-        && topLevelCollection != 'staffStudentAccessPeriods'
-        && topLevelCollection != 'topicResolverMappings';
-    }
+        match /topics/{topicKey} {
+          allow read: if canReadEpisode(userId, subjectInstanceId);
+          allow write: if isAdmin() || canMark(userId, subjectInstanceId);
+          match /understandingScores/{scoreId} {
+            allow read: if canReadEpisode(userId, subjectInstanceId);
+            allow write: if isAdmin() || canMark(userId, subjectInstanceId);
+          }
+        }
+        match /lessons/{lessonId} {
+          allow read: if canReadEpisode(userId, subjectInstanceId);
+          allow create, update, delete: if isAdmin() || canTeach(userId, subjectInstanceId);
+        }
+        match /reports/{reportId} {
+          allow read: if canReadEpisode(userId, subjectInstanceId);
+          allow create, update, delete: if isAdmin() || canTeach(userId, subjectInstanceId);
+        }
+        match /generationRuns/{dateKey} {
+          allow read: if canReadEpisode(userId, subjectInstanceId);
+          allow write: if isAdmin() || canTeach(userId, subjectInstanceId) || request.auth.uid == userId;
+        }
+        match /exercises/{exerciseId} {
+          allow read: if canReadEpisode(userId, subjectInstanceId);
+          allow create: if isAdmin() || canTeach(userId, subjectInstanceId)
+            || (signedIn() && request.auth.uid == userId && hasPaidAccess(userId)
+              && request.resource.data.studentId == userId
+              && request.resource.data.subjectInstanceId == subjectInstanceId);
+          allow delete: if isAdmin() || canTeach(userId, subjectInstanceId);
+          allow update: if isAdmin() || canMark(userId, subjectInstanceId)
+            || (signedIn() && request.auth.uid == userId && exerciseIsOpen()
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'submittedImageUrl', 'submittedImages', 'submittedFileName', 'submittedFileNames',
+                'submissionPageCount', 'submittedAt', 'updatedAt', 'peerReviewed',
+                'peerReviewStatus', 'peerNotes', 'peerReviewDate', 'submitted', 'submissionStatus'
+              ]));
+          match /submissions/{submissionId} {
+            allow read: if canReadEpisode(userId, subjectInstanceId);
+            allow create, update: if signedIn() && request.auth.uid == userId
+              && get(/databases/$(database)/documents/users/$(userId)/subjects/$(subjectInstanceId)/exercises/$(exerciseId)).data.assignmentOpensAt <= request.time
+              && request.time < get(/databases/$(database)/documents/users/$(userId)/subjects/$(subjectInstanceId)/exercises/$(exerciseId)).data.locksAt;
+            allow write: if isAdmin() || canMark(userId, subjectInstanceId);
+          }
+          match /peerMarkingAssignments/{assignmentId} {
+            allow read: if signedIn() && (resource.data.reviewerId == request.auth.uid || resource.data.revieweeId == request.auth.uid || isAdmin() || isEpisodeStaff(userId, subjectInstanceId));
+            allow write: if false;
+          }
+          match /peerReviews/{reviewId} {
+            allow read: if canReadEpisode(userId, subjectInstanceId) || (signedIn() && resource.data.reviewerId == request.auth.uid);
+            allow write: if false;
+          }
+        }
+      }
 
-    match /users/{userId}/subjects/{subjectInstanceId} {
-      allow read: if signedIn() && (
-        request.auth.uid == userId
-        || request.auth.uid in resource.data.activeStaffIds
-        || isAdmin()
-        || get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid
-      );
-      allow write: if isAdmin() || (signedIn() && (request.auth.uid == userId || request.auth.uid in resource.data.activeStaffIds));
-
-      match /{subcollection}/{docId=**} {
-        allow read: if signedIn() && (
-          request.auth.uid == userId
-          || isAdmin()
-          || request.auth.uid in get(/databases/$(database)/documents/users/$(userId)/subjects/$(subjectInstanceId)).data.activeStaffIds
-          || get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid
-        );
-        allow write: if signedIn() && (
-          request.auth.uid == userId
-          || isAdmin()
-          || request.auth.uid in get(/databases/$(database)/documents/users/$(userId)/subjects/$(subjectInstanceId)).data.activeStaffIds
-        );
+      match /subscriptions/{document=**} {
+        allow read: if signedIn() && (request.auth.uid == userId || isParentOf(userId) || isAdmin());
+        allow write: if false;
+      }
+      match /subscriptionAuthorizations/{document=**} { allow read, write: if false; }
+      match /payments/{paymentId} {
+        allow read: if signedIn() && (request.auth.uid == userId || resource.data.payerId == request.auth.uid || isParentOf(userId) || isAdmin());
+        allow write: if false;
+      }
+      match /guideQuizResults/{document=**} {
+        allow read, write: if signedIn() && (request.auth.uid == userId || isAdmin());
+      }
+      match /notifications/{document=**} {
+        allow read, update, delete: if signedIn() && request.auth.uid == userId;
+        allow create: if false;
+      }
+      match /notificationTokens/{document=**} {
+        allow read, write: if signedIn() && request.auth.uid == userId;
+      }
+      match /notificationLogs/{document=**} {
+        allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
+        allow write: if false;
+      }
+      match /tutorMarksDocuments/{document=**} {
+        allow read, write: if signedIn() && (request.auth.uid == userId || isAdmin());
       }
     }
 
     match /{path=**}/subjects/{subjectInstanceId} {
-      allow read: if signedIn() && (
-        request.auth.uid == resource.data.studentId
-        || request.auth.uid in resource.data.activeStaffIds
-        || isAdmin()
-      );
+      allow read: if signedIn() && (resource.data.studentId == request.auth.uid || request.auth.uid in resource.data.activeStaffIds || isAdmin());
     }
-
-    match /users/{userId}/subscriptionAuthorizations/{document=**} {
-      allow read, write: if false;
-    }
-
-    match /users/{userId}/subscriptions/{document=**} {
-      allow read: if signedIn() && (request.auth.uid == userId || isAdmin() || get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid);
-      allow write: if false;
-    }
-
-    match /users/{userId}/payments/{paymentId} {
-      allow read: if signedIn() && (request.auth.uid == userId || isAdmin() || resource.data.payerId == request.auth.uid || get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid);
-      allow write: if false;
-    }
-
     match /{path=**}/peerMarkingAssignments/{assignmentId} {
-      allow read: if signedIn() && (
-        resource.data.reviewerId == request.auth.uid
-        || resource.data.revieweeId == request.auth.uid
-        || isAdmin()
-        || (resource.data.activeStaffIds != null && request.auth.uid in resource.data.activeStaffIds)
-      );
+      allow read: if signedIn() && resource.data.reviewerId == request.auth.uid;
     }
-
-    match /topicResolverMappings/{mappingId} {
-      allow read, write: if isAdmin();
+    match /questionPapers/{paperId} {
+      allow read: if signedIn();
+      allow write: if isAdmin() || (signedIn() && profile(request.auth.uid).role in ['tutor', 'teacher']);
+      match /{document=**} { allow read: if signedIn(); allow write: if false; }
     }
-
-    match /tutorStudentAssignmentPeriods/{periodId} {
-      allow read: if canReadAssignmentPeriod();
-      allow write: if false;
-    }
-
-    match /staffStudentAccessPeriods/{periodId} {
-      allow read: if canReadAssignmentPeriod();
-      allow write: if false;
-    }
+    match /topicResolverMappings/{mappingId} { allow read, write: if isAdmin(); }
+    match /settings/{settingId} { allow read: if signedIn(); allow write: if isAdmin(); }
+    match /{document=**} { allow read, write: if false; }
   }
 }

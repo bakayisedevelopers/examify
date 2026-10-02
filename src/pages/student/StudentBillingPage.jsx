@@ -154,7 +154,7 @@ export const StudentBillingPage = () => {
           reference,
         });
 
-        const verification = await verifySubscriptionPayment(reference);
+        const verification = await verifySubscriptionPayment(reference, profile.uid);
 
         console.log('[Examifying][Billing] payment:verify:result', verification);
 

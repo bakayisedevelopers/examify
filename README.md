@@ -127,25 +127,11 @@ Any password is accepted in demo mode.
 
 ## Firestore entities modeled
 
-- `users`
-- `students`
-- `tutors`
-- `tutorStudentAssignments`
-- `studentProfiles`
-- `studentPerformance`
-- `coveredTopics`
-- `lessons`
-- `exercises`
-- `dailyExerciseAssignments`
-- `submissions`
-- `peerReviews`
-- `tutorReports`
-- `questionPapers`
-- `subscriptions`
-- `subscriptionAuthorizations`
-- `payments`
-- `notifications`
-- `settings`
+- `users/{studentId}/subjects/{subjectInstanceId}` is the authoritative enrollment episode.
+- Episode-owned `topics`, `understandingScores`, `lessons`, `reports`, `exercises`, `submissions`, `peerReviews`, `peerMarkingAssignments`, and `generationRuns` are nested beneath that episode.
+- Student billing is isolated under `users/{studentId}/subscriptions`, `subscriptionAuthorizations`, and `payments`.
+- User notifications, notification tokens and logs are nested under `users/{uid}`.
+- Shared data is limited to `questionPapers`, `topicResolverMappings`, and `settings`.
 
 ## Next recommended steps
 

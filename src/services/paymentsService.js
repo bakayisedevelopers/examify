@@ -18,13 +18,13 @@ export const initializeSubscriptionPayment = async (payload) => {
   return response.data;
 };
 
-export const verifySubscriptionPayment = async (reference) => {
+export const verifySubscriptionPayment = async (reference, studentId) => {
   if (!isFirebaseConfigured) {
     return { status: 'success', reference, authorizationStored: true };
   }
 
   const callable = httpsCallable(functions, 'verifyPaystackTransaction');
-  const response = await callable({ reference });
+  const response = await callable({ reference, studentId });
   return response.data;
 };
 

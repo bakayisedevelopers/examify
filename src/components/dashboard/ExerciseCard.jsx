@@ -2,10 +2,8 @@ import { CalendarDays, Lock, FileText } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { SubmissionUpload } from './SubmissionUpload';
-import { deleteExerciseSubmissionFiles, uploadSubmissionImages, uploadPeerReviewImage, uploadTutorMarkedWork } from '../../services/storageService';
+import { deleteExerciseSubmissionFiles, uploadSubmissionImages, uploadTutorMarkedWork } from '../../services/storageService';
 import { getQuestionPapersByIds, saveTutorMarkedExercise } from '../../services/firestoreService';
-import { collection, query, where, orderBy, onSnapshot, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../../firebase/config';
 import { MarkingCanvas as ImageEditor } from '../canvas/pictureEditorCanvas';
 import { TutorTopicScoreEditor } from '../tutor/TutorTopicScoreEditor';
 import { ImagePageViewer } from '../common/ImagePageViewer';
@@ -14,11 +12,9 @@ const imagePages = (images, fallbackUrl, fallbackName) => Array.isArray(images) 
   ? images
   : fallbackUrl ? [{ url: fallbackUrl, fileName: fallbackName || '' }] : [];
 
-export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId, tutorId, topicScores = {}, onTopicScoreSaved, showQuestionLinks = false, viewerRole = 'student', showPeerMarking = false, accessRole = 'co-owner' }) => {
+export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId, tutorId, topicScores = {}, onTopicScoreSaved, showQuestionLinks = false, viewerRole = 'student', accessRole = 'co-owner' }) => {
   const navigate = useNavigate();
   const [openingPapers, setOpeningPapers] = useState(false);
-  const [unreviewedExercises, setUnreviewedExercises] = useState([]);
-  const [reviewingItem, setReviewingItem] = useState(null);
   const [markedImages, setMarkedImages] = useState(() => imagePages(exercise.tutorMarkedImages, exercise.tutorMarkedImageUrl, exercise.tutorMarkedFileName));
   const peerMarkedImages = imagePages(exercise.peerMarkedImages, exercise.peerMarkedImageUrl ?? exercise.submittedReviewImageUrl ?? exercise.reviewImageUrl, exercise.peerMarkedFileName ?? exercise.submittedReviewFileName);
   const peerMarkingImages = imagePages(exercise.peerMarkingImages, exercise.peerMarkingImageUrl, exercise.peerMarkingFileName);
@@ -60,43 +56,12 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
     }
   };
 
-  const handleSaveReview = async (files) => {
-    if (!reviewingItem) return;
-
-    try {
-      const reviewedImages = await Promise.all(files.map(async (file, index) => {
-        const reviewFileName = (file.name || reviewingItem.submittedFileName || 'submission.png').replace(/\.[^/.]+$/, `-review-${index + 1}.png`);
-        const renamedFile = new File([file], reviewFileName, { type: file.type || 'image/png' });
-        const upload = await uploadPeerReviewImage({ file: renamedFile, studentId: studentId || reviewingItem.studentId, exerciseId: reviewingItem.id });
-        return { ...upload, pageNumber: index + 1 };
-      }));
-      const firstImage = reviewedImages[0];
-
-      // Update the reviewed exercise document
-      const exerciseRef = doc(db, "dailyExerciseAssignments", reviewingItem.id);
-      await updateDoc(exerciseRef, {
-        peerMarkedImages: reviewedImages,
-        peerMarkedImageUrl: firstImage.url,
-        peerMarkedFileName: firstImage.fileName,
-        submittedReviewImageUrl: firstImage.url,
-        submittedReviewFileName: firstImage.fileName,
-        peerReviewed: "Yes",
-        peerReviewStatus: "completed",
-        peerReviewDate: serverTimestamp(),
-      });
-
-      setReviewingItem(null); // Close editor
-    } catch (error) {
-      console.error('Failed to save review:', error);
-    }
-  };
-
   const handleSaveTutorMark = async (files) => {
     const uploads = [];
     setMarkStatus('Saving marked work...');
     try {
       const markedImages = await Promise.all(files.map(async (file, index) => {
-        const upload = await uploadTutorMarkedWork({ file, studentId: exercise.studentId, exerciseId: exercise.id });
+        const upload = await uploadTutorMarkedWork({ file, studentId: exercise.studentId, exerciseId: exercise.id, subjectInstanceId: exercise.subjectInstanceId });
         uploads.push(upload);
         return { ...upload, pageNumber: index + 1 };
       }));
@@ -116,42 +81,14 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
   };
 
   const handleStudentSubmit = async ({ files, exerciseId }) => {
-    const result = await uploadSubmissionImages({ files, exerciseId, studentId });
+    const result = await uploadSubmissionImages({ files, exerciseId, studentId, subjectInstanceId: exercise.subjectInstanceId });
     setStudentSubmissionUrl(result.submittedImageUrl);
     setStudentSubmissionFileName(result.submittedFileName);
     setStudentSubmissionImages(result.submittedImages ?? imagePages([], result.submittedImageUrl, result.submittedFileName));
     return result;
   };
 
-  useEffect(() => {
-    if (!exercise.submittedImageUrl) {
-      setUnreviewedExercises([]);
-      return;
-    }
 
-    const now = new Date();
-    const todayLocal = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-
-    const q = query(
-      collection(db, "dailyExerciseAssignments"),
-      where("assignmentDate", "==", todayLocal),
-      where("subject", "==", exercise.subject),
-      where("submittedImageUrl", "!=", ""),
-      orderBy("assignmentDate", "asc"),
-    );
-
-    const unsubscribe = onSnapshot(q, (querySnapshot) => {
-      const list = querySnapshot.docs
-        .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
-        .filter((item) =>
-          item.studentId !== studentId &&
-          item.peerReviewStatus === "pending"
-        );
-      setUnreviewedExercises(list);
-    });
-
-    return unsubscribe;
-  }, [exercise.submittedImageUrl, exercise.subject, studentId]);
 
   return (
     <div className="panel p-6 w-full">
@@ -273,49 +210,7 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
           </span>
         )}
       </div> : null}
-      {showPeerMarking ? <div className="panel space-y-4 p-6 w-full">
-        <h3 className="text-xl font-semibold text-slate-950">Mark for Others</h3>
-        {unreviewedExercises.length > 0 && (
-          <div className="mt-4 space-y-3">
-            <h4 className="font-semibold">Choose one To Review</h4>
-            {unreviewedExercises.map((item) => (
-              <div key={item.id} className="rounded-xl border p-3">
-                <p className="text-sm font-medium">{item.exerciseTitle || item.title || "Note exercise"}</p>
-                <p className="mt-2 text-sm font-semibold text-accent">Topic: {item.topic}</p>
-                {item?.paperIds?.length > 0 && (
-                  <div className="mt-4">
-                    <button
-                      type="button"
-                      onClick={() => handleOpenPapers(item)}
-                      disabled={openingPapers}
-                      className="btn-secondary inline-flex items-center gap-2"
-                    >
-                      <FileText className="h-4 w-4" />
-                      {openingPapers ? 'Opening...' : 'View Paper Used'}
-                    </button>
-                  </div>
-                )}
-                <button 
-                  onClick={() => setReviewingItem(item)} 
-                  className="btn-secondary text-sm mt-4"
-                >
-                  Mark ✅
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {reviewingItem && (
-          <div className="mt-4">
-            <h4 className="font-semibold mb-2">Reviewing: {reviewingItem.exerciseTitle || "Exercise"}</h4>
-            <ImageEditor
-              imageUrls={imagePages(reviewingItem.submittedImages, reviewingItem.submittedImageUrl, reviewingItem.submittedFileName)}
-              onSave={handleSaveReview}
-              onCancel={() => setReviewingItem(null)}
-            />
-          </div>
-        )}
-      </div> : null}
+
     </div>
   );
 };

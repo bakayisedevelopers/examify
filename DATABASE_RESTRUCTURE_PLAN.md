@@ -2,9 +2,7 @@
 
 ## Purpose
 
-This document outlines the student-centered Firestore layout where each subject enrollment episode owns all subject-specific learning and assessment data. It is the approved architectural plan for restructuring the Examifying database. No application code has been modified yet; this plan defines the target model and phased migration roadmap.
-
-Implementation will proceed phase by phase after review.
+This document outlines the student-centered Firestore layout where each subject enrollment episode owns all subject-specific learning and assessment data. It is the approved architectural plan for restructuring the Examifying database. The application now uses this model as its authoritative database architecture. Legacy top-level learning, assignment, peer-marking, and billing collections have been removed from application code.
 
 ---
 
@@ -272,7 +270,7 @@ Understanding scores are kept in the subcollection `topics/{canonicalTopicKey}/u
 
 ## Phased Implementation Plan
 
-### Phase 1: Constants, Paths, and Persistence Layer
+### Phase 1: Constants, Paths, and Persistence Layer [COMPLETED]
 - Update `MAX_DAILY_EXERCISES = 5` in `src/lib/constants.js`.
 - Define path helpers and subcollection constants in `src/firebase/schema.js`.
 - Implement write adapters in `src/services/firestoreService.js` for subject episodes, unique topics, understanding scores, lessons, exercises, and nested billing documents.
@@ -292,7 +290,7 @@ Understanding scores are kept in the subcollection `topics/{canonicalTopicKey}/u
   - Sync tutor assignments and staff access to active subject episode documents. (Done)
 - Update `firestore.rules` and `storage.rules` with strict scoped access. (Done)
 
-### Phase 4: Topics, Lessons, Scoring, Peer Marking & Generation
+### Phase 4: Topics, Lessons, Scoring, Peer Marking & Generation [COMPLETED]
 - Update lesson completion: creates/updates single unique topic doc and appends `Lesson` score.
 - Update exercise marking: appends `Exercise` score.
 - Update peer marking: submission callable and tutor review appending `markingReview` score.
@@ -301,7 +299,7 @@ Understanding scores are kept in the subcollection `topics/{canonicalTopicKey}/u
   - Cap daily target at 5.
   - Record idempotent `generationRuns/{dateKey}`.
 
-### Phase 5: Billing Automation, Cloud Function Triggers & Deployment
+### Phase 5: Billing Automation, Cloud Function Triggers & Deployment [COMPLETED]
 - Move Paystack transaction initiation, verification, and renewals to nested billing subcollections.
 - Update Cloud Function Firestore event triggers in `notifications.js` to match nested document patterns.
 - Deploy rules, indexes, Functions, and Hosting.
@@ -311,14 +309,14 @@ Understanding scores are kept in the subcollection `topics/{canonicalTopicKey}/u
 
 ## Verification Checklist
 
-- [ ] Each topic has exactly one document in `subjects/{instanceId}/topics/{canonicalTopicKey}` regardless of how many lessons cover it.
-- [ ] Completing a lesson appends a `Lesson` score in `understandingScores`.
-- [ ] Marking an exercise appends an `Exercise` score in `understandingScores`.
-- [ ] Tutor reviewing peer-marking appends a `markingReview` score in the reviewer's topic `understandingScores`.
-- [ ] Daily exercise generation scales from 1 up to a maximum of 5 based on completed topic count.
-- [ ] Missed exercises remain locked; only today's exercise can be worked on.
-- [ ] Cancelling a subject marks the episode cancelled; re-adding within 3 months restores topic progress but resets tutors/staff roles.
-- [ ] Changing grades creates a clean subject episode with zero topics.
-- [ ] Reviewers query assigned peer reviews via collection-group query and submit via callable function.
-- [ ] Subscriptions, authorizations, and payments are student-nested and server-protected.
-- [ ] All question papers, analysis runs, topic resolver mappings, and settings are preserved intact.
+- [x] Each topic has exactly one document in `subjects/{instanceId}/topics/{canonicalTopicKey}` regardless of how many lessons cover it.
+- [x] Completing a lesson appends a `Lesson` score in `understandingScores`.
+- [x] Marking an exercise appends an `Exercise` score in `understandingScores`.
+- [x] Tutor reviewing peer-marking appends a `markingReview` score in the reviewer's topic `understandingScores`.
+- [x] Daily exercise generation scales from 1 up to a maximum of 5 based on completed topic count.
+- [x] Missed exercises remain locked; only today's exercise can be worked on.
+- [x] Cancelling a subject marks the episode cancelled; re-adding within 3 months restores topic progress but resets tutors/staff roles.
+- [x] Changing grades creates a clean subject episode with zero topics.
+- [x] Reviewers query assigned peer reviews via collection-group query and submit via callable function.
+- [x] Subscriptions, authorizations, and payments are student-nested and server-protected.
+- [x] All question papers, analysis runs, topic resolver mappings, and settings are preserved intact.

@@ -1,52 +1,43 @@
 {
   "indexes": [
     {
-      "collectionGroup": "dailyExerciseAssignments",
-      "queryScope": "COLLECTION",
+      "collectionGroup": "subjects",
+      "queryScope": "COLLECTION_GROUP",
       "fields": [
         {
-          "fieldPath": "studentId",
-          "order": "ASCENDING"
+          "fieldPath": "activeStaffIds",
+          "arrayConfig": "CONTAINS"
         },
         {
-          "fieldPath": "assignmentDate",
-          "order": "DESCENDING"
-        },
-        {
-          "fieldPath": "__name__",
-          "order": "DESCENDING"
-        }
-      ],
-      "density": "SPARSE_ALL"
-    },
-    {
-      "collectionGroup": "dailyExerciseAssignments",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "studentId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "subject",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "assignmentDate",
+          "fieldPath": "status",
           "order": "ASCENDING"
         }
       ]
     },
     {
-      "collectionGroup": "dailyExerciseAssignments",
-      "queryScope": "COLLECTION",
+      "collectionGroup": "subjects",
+      "queryScope": "COLLECTION_GROUP",
       "fields": [
         {
-          "fieldPath": "studentId",
+          "fieldPath": "historicalStaffIds",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "peerMarkingAssignments",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "reviewerId",
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "subject",
+          "fieldPath": "status",
           "order": "ASCENDING"
         },
         {
@@ -56,8 +47,58 @@
       ]
     },
     {
-      "collectionGroup": "tutorStudentAssignments",
-      "queryScope": "COLLECTION",
+      "collectionGroup": "peerMarkingAssignments",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "assignmentDate",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "subject",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "grade",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "exercises",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "assignmentDate",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "subject",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "grade",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "subscriptions",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "renewalDate",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "generationRuns",
+      "queryScope": "COLLECTION_GROUP",
       "fields": [
         {
           "fieldPath": "studentId",
@@ -68,37 +109,15 @@
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "active",
+          "fieldPath": "dateKey",
           "order": "ASCENDING"
         }
       ]
     },
     {
-      "collectionGroup": "tutorStudentAssignments",
-      "queryScope": "COLLECTION",
+      "collectionGroup": "reports",
+      "queryScope": "COLLECTION_GROUP",
       "fields": [
-        {
-          "fieldPath": "tutorId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "subject",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "active",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "tutorReports",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "studentId",
-          "order": "ASCENDING"
-        },
         {
           "fieldPath": "subject",
           "order": "ASCENDING"
@@ -110,110 +129,17 @@
       ]
     },
     {
-      "collectionGroup": "coveredTopics",
-      "queryScope": "COLLECTION",
+      "collectionGroup": "exercises",
+      "queryScope": "COLLECTION_GROUP",
       "fields": [
-        {
-          "fieldPath": "studentId",
-          "order": "ASCENDING"
-        },
         {
           "fieldPath": "subject",
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "completedOn",
-          "order": "DESCENDING"
+          "fieldPath": "grade",
+          "order": "ASCENDING"
         }
-      ]
-    },
-    {
-      "collectionGroup": "dailyExerciseAssignments",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "subject", "order": "ASCENDING" },
-        { "fieldPath": "grade", "order": "ASCENDING" },
-        { "fieldPath": "topic", "order": "ASCENDING" },
-        { "fieldPath": "assignmentDate", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "dailyExerciseAssignments",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "subject", "order": "ASCENDING" },
-        { "fieldPath": "grade", "order": "ASCENDING" },
-        { "fieldPath": "topics", "arrayConfig": "CONTAINS" },
-        { "fieldPath": "assignmentDate", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "peerMarkingAssignments",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "reviewerId", "order": "ASCENDING" },
-        { "fieldPath": "subject", "order": "ASCENDING" },
-        { "fieldPath": "grade", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "peerMarkingAssignments",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "reviewerId", "order": "ASCENDING" },
-        { "fieldPath": "assignmentDate", "order": "ASCENDING" },
-        { "fieldPath": "subject", "order": "ASCENDING" },
-        { "fieldPath": "grade", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "peerMarkingAssignments",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "assignmentDate", "order": "ASCENDING" },
-        { "fieldPath": "subject", "order": "ASCENDING" },
-        { "fieldPath": "grade", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "topicResolverMappings",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "subject", "order": "ASCENDING" },
-        { "fieldPath": "grade", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "subjects",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "activeStaffIds", "arrayConfig": "CONTAINS" },
-        { "fieldPath": "status", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "subjects",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "historicalStaffIds", "arrayConfig": "CONTAINS" },
-        { "fieldPath": "status", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "peerMarkingAssignments",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "reviewerId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "assignmentDate", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "subscriptions",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "renewalDate", "order": "ASCENDING" }
       ]
     }
   ],

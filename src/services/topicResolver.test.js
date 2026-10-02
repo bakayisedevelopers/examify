@@ -24,43 +24,9 @@ test('known mathematics aliases resolve to the canonical child-parent label', ()
   );
 });
 
-test('Grade 10 and 11 Physical Sciences wording resolves by prioritized text rules', () => {
-  const examples = [
-    ['Acid-base titration', 'Acids and bases | Chemical Change'],
-    ['Acceleration on an inclined plane', 'Forces | Mechanics'],
-    ["Newton's Second Law of Motion", "Newton's laws of motion | Mechanics"],
-    ["Boyle's law", 'Gases and gas laws | Matter and Materials'],
-    ['Electromagnetic induction principles', 'Electromagnetic induction | Electricity and Magnetism'],
-    ['Refraction of light', 'Geometrical optics | Waves and Optics'],
-    ['Optics', 'Geometrical optics | Waves and Optics'],
-    ['Graph gradient', 'Graphs and data analysis | Scientific Investigations'],
-    ['Gas volume calculations', 'Stoichiometry and mole calculations | Chemical Change'],
-    ['Series and Parallel Circuits', 'Electric circuits | Electricity and Magnetism'],
-  ];
-
-  for (const [topic, expected] of examples) {
-    const match = resolveTopic({ topic, subject: 'Physical Sciences', grade: 'Grade 11' });
-    assert.equal(match?.canonicalLabel, expected, `Grade 11: ${topic}`);
-    assert.equal(match?.matchType, 'rule', `Grade 11: ${topic} should be a text-rule match`);
-  }
-
-  assert.equal(
-    resolveTopic({ topic: 'Acceleration on an inclined plane', subject: 'Physical Sciences', grade: 'Grade 10' })?.canonicalLabel,
-    'Kinematics | Mechanics',
-  );
-  assert.equal(
-    resolveTopic({ topic: 'Wavelength', subject: 'Physical Sciences', grade: 'Grade 10' })?.canonicalLabel,
-    'Waves and sound | Waves and Optics',
-  );
-  assert.equal(
-    resolveTopic({ topic: 'Balancing chemical equations', subject: 'Physical Sciences', grade: 'Grade 10' })?.canonicalLabel,
-    'Chemical equations and formulae | Chemical Change',
-  );
-  assert.equal(resolveTopic({ topic: "Boyle's law", subject: 'Physical Sciences', grade: 'Grade 10' }), null);
-  assert.equal(resolveTopic({ topic: 'Gas laws', subject: 'Physical Sciences', grade: 'Grade 10' }), null);
-  assert.equal(resolveTopic({ topic: 'Electromagnetic induction', subject: 'Physical Sciences', grade: 'Grade 10' }), null);
-  assert.ok(!getTopicCatalog({ subject: 'Physical Sciences', grade: 'Grade 10' })
-    .some((entry) => entry.childTopic === 'Geometrical optics'));
+test('non-Maths subjects are excluded from the resolver catalog', () => {
+  assert.equal(getTopicCatalog({ subject: 'Physical Sciences', grade: 'Grade 11' }).length, 0);
+  assert.equal(resolveTopic({ topic: 'Newton second law', subject: 'Physical Sciences', grade: 'Grade 11' }), null);
 });
 
 test('Grade 10 and 11 Mathematics wording resolves into available grade topics', () => {
@@ -91,16 +57,12 @@ test('text rules remain scoped and leave ambiguous terms for manual review', () 
   assert.equal(resolveTopic({ topic: 'Boyle law', subject: 'Mathematics', grade: 'Grade 11' }), null);
 });
 
-test('CAPS subject catalogs are grade scoped and use canonical child-parent labels', () => {
-  const geographyGrade11 = getTopicCatalog({ subject: 'Geography', grade: 'Grade 11' });
-  const geographyGrade12 = getTopicCatalog({ subject: 'Geography', grade: 'Grade 12' });
-  assert.ok(geographyGrade11.some((entry) => entry.canonicalLabel === 'Drought and desertification | The Atmosphere'));
-  assert.ok(geographyGrade12.some((entry) => entry.canonicalLabel === 'Mid-latitude cyclones | Climate and Weather'));
-  assert.equal(resolveTopic({ topic: 'Mid-latitude cyclones', subject: 'Geography', grade: 'Grade 11' }), null);
-  assert.ok(getTopicCatalog({ subject: 'Accounting', grade: 'Grade 10' }).every((entry) => entry.canonicalLabel.includes(' | ')));
-  assert.equal(getTopicCatalog({ subject: 'Accounting', grade: 'Grade 9' }).length, 0);
-  assert.ok(getTopicCatalog({ subject: 'isiZulu Home Language', grade: 'Grade 8' }).length > 0);
-  assert.ok(getTopicCatalog({ subject: 'Natural Sciences', grade: 'Grade 8' }).length > 0);
+test('Maths CAPS catalogs are grade scoped and use canonical child-parent labels', () => {
+  const grade11 = getTopicCatalog({ subject: 'Mathematics', grade: 'Grade 11' });
+  const grade12 = getTopicCatalog({ subject: 'Mathematics', grade: 'Grade 12' });
+  assert.ok(grade11.every((entry) => entry.canonicalLabel.includes(' | ')));
+  assert.ok(grade12.some((entry) => entry.canonicalLabel === 'Differentiation | Calculus'));
+  assert.equal(getTopicCatalog({ subject: 'Geography', grade: 'Grade 12' }).length, 0);
 });
 
 test('resolver groups topics by subject and grade and leaves unknown names for review', () => {
@@ -116,12 +78,12 @@ test('resolver groups topics by subject and grade and leaves unknown names for r
   assert.equal(rows.find((row) => row.sourceTopic === 'Novel research project').matchType, 'unmapped');
 });
 
-test('saved subject-grade mappings are restored only while their topic remains in the catalog', () => {
+test('saved Maths mappings are restored only while their topic remains in the catalog', () => {
   const rows = buildTopicResolverRows(
-    [{ subject: 'Geography', grade: 'Grade 12', topic: 'A cyclonic system' }],
-    [{ subject: 'Geography', grade: 'Grade 12', sourceTopic: 'A cyclonic system', canonicalTopic: 'Mid-latitude cyclones | Climate and Weather' }],
+    [{ subject: 'Mathematics', grade: 'Grade 12', topic: 'Quadratic sequence' }],
+    [{ subject: 'Mathematics', grade: 'Grade 12', sourceTopic: 'Quadratic sequence', canonicalTopic: 'Quadratic sequences | Number Patterns' }],
   );
-  assert.equal(rows[0].suggestedTopic, 'Mid-latitude cyclones | Climate and Weather');
+  assert.equal(rows[0].suggestedTopic, 'Quadratic sequences | Number Patterns');
   assert.equal(rows[0].matchType, 'saved');
   assert.equal(rows[0].isSaved, true);
 });

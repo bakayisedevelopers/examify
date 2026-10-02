@@ -2,6 +2,7 @@ import { deleteObject, getDownloadURL, ref, uploadBytes } from 'firebase/storage
 import {
   addDoc,
   collection,
+  collectionGroup,
   deleteDoc,
   doc,
   getDoc,
@@ -48,12 +49,11 @@ export const uploadSubmissionImages = async ({ files, studentId, exerciseId, sub
     }));
     return { submittedFileName: submittedImages[0].fileName, submittedImageUrl: submittedImages[0].url, submittedImages, exerciseId };
   }
+  if (!subjectInstanceId) throw new Error('An active subject episode is required to submit work.');
 
   const uploadedFiles = [];
   try {
-    const uploadBasePath = subjectInstanceId
-      ? `users/${studentId}/subjects/${subjectInstanceId}/exercises/${exerciseId}/submissions`
-      : `submissions/${studentId}/${exerciseId}`;
+    const uploadBasePath = `users/${studentId}/subjects/${subjectInstanceId}/exercises/${exerciseId}/submissions`;
 
     const uploads = await Promise.all(imageFiles.map(async (file, index) => {
       const namedFile = new File([file], `page-${index + 1}-${file.name || 'submission.png'}`, { type: file.type || 'image/png' });
@@ -63,19 +63,12 @@ export const uploadSubmissionImages = async ({ files, studentId, exerciseId, sub
     }));
     const submittedImages = uploads.map((upload, index) => ({ ...upload, pageNumber: index + 1 }));
     const firstImage = submittedImages[0];
-    const exerciseRef = doc(db, 'dailyExerciseAssignments', exerciseId);
-    let exerciseSnapshot = await getDoc(exerciseRef);
-    let resolvedSubjectInstanceId = subjectInstanceId;
-
-    if (!exerciseSnapshot.exists() && subjectInstanceId) {
-      const nestedRef = doc(db, 'users', studentId, 'subjects', subjectInstanceId, 'exercises', exerciseId);
-      exerciseSnapshot = await getDoc(nestedRef);
-    }
+    const exerciseRef = doc(db, 'users', studentId, 'subjects', subjectInstanceId, 'exercises', exerciseId);
+    const exerciseSnapshot = await getDoc(exerciseRef);
+    const resolvedSubjectInstanceId = subjectInstanceId;
 
     if (!exerciseSnapshot.exists()) throw new Error('This exercise could not be found.');
     const exercise = exerciseSnapshot.data();
-    resolvedSubjectInstanceId = resolvedSubjectInstanceId || exercise.subjectInstanceId;
-
     if (exercise.studentId && exercise.studentId !== studentId) throw new Error('This exercise belongs to another student.');
     if (exercise.submittedImageUrl || exercise.submitted === 'Yes' || exercise.submissionStatus === 'submitted') {
       throw new Error('Work has already been submitted for this exercise.');
@@ -123,16 +116,9 @@ export const uploadSubmissionImages = async ({ files, studentId, exerciseId, sub
       submissionStatus: 'submitted',
     };
 
-    if (exerciseRef) {
-      batch.set(exerciseRef, exercisePatch, { merge: true });
-    }
-    if (resolvedSubjectInstanceId) {
-      const nestedExRef = doc(db, 'users', studentId, 'subjects', resolvedSubjectInstanceId, 'exercises', exerciseId);
-      batch.set(nestedExRef, exercisePatch, { merge: true });
-      const nestedSubRef = doc(db, 'users', studentId, 'subjects', resolvedSubjectInstanceId, 'exercises', exerciseId, 'submissions', exerciseId);
-      batch.set(nestedSubRef, submissionData, { merge: true });
-    }
-    batch.set(doc(db, collections.submissions, exerciseId), submissionData, { merge: true });
+    batch.set(exerciseRef, exercisePatch, { merge: true });
+    const nestedSubRef = doc(db, 'users', studentId, 'subjects', resolvedSubjectInstanceId, 'exercises', exerciseId, 'submissions', exerciseId);
+    batch.set(nestedSubRef, submissionData, { merge: true });
     await batch.commit();
 
     callKiloImage({
@@ -168,16 +154,15 @@ export const uploadSubmissionImages = async ({ files, studentId, exerciseId, sub
   }
 };
 
-export const uploadSubmissionImage = async ({ file, studentId, exerciseId }) =>
-  uploadSubmissionImages({ files: [file], studentId, exerciseId });
+export const uploadSubmissionImage = async ({ file, studentId, exerciseId, subjectInstanceId }) =>
+  uploadSubmissionImages({ files: [file], studentId, exerciseId, subjectInstanceId });
 
 export const uploadTutorMarkedWork = async ({ file, studentId, exerciseId, subjectInstanceId }) => {
   if (!isFirebaseConfigured) {
     return { fileName: file?.name ?? 'marked-work.png', url: URL.createObjectURL(file) };
   }
-  const path = subjectInstanceId
-    ? `users/${studentId}/subjects/${subjectInstanceId}/exercises/${exerciseId}/tutor-marking`
-    : `tutorMarks/${studentId}/${exerciseId}`;
+  if (!subjectInstanceId) throw new Error('An active subject episode is required to upload marked work.');
+  const path = `users/${studentId}/subjects/${subjectInstanceId}/exercises/${exerciseId}/tutor-marking`;
   return uploadFile({ file, path });
 };
 
@@ -190,9 +175,8 @@ export const uploadPeerReviewImage = async ({ file, studentId, exerciseId, subje
   }
 
   try {
-    const path = subjectInstanceId
-      ? `users/${studentId}/subjects/${subjectInstanceId}/exercises/${exerciseId}/peer-reviews`
-      : `submissions/${studentId}/${exerciseId}`;
+    if (!subjectInstanceId) throw new Error('An active subject episode is required to upload peer marking.');
+    const path = `users/${studentId}/subjects/${subjectInstanceId}/exercises/${exerciseId}/peer-reviews`;
     const upload = await uploadFile({ file, path });
     return { 
       fileName: upload.fileName, 
@@ -223,7 +207,7 @@ export const getUreviewedExercises = async (studentId, subject) => {
   const todayLocal = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
 
   const q = query(
-    collection(db, "dailyExerciseAssignments"),
+    collectionGroup(db, 'exercises'),
     where("assignmentDate", "==", todayLocal),
     ...(subject ? [where("subject", "==", subject)] : []),
     where("submittedImageUrl", "!=", ""),
@@ -428,7 +412,7 @@ export const uploadTutorMarksDocument = async ({ file, tutor, onProgress }) => {
   }
 
   const documentDataUrl = await fileToDataUrl(file);
-  const upload = await uploadFile({ file, path: `tutorMarks/${tutor.uid}` });
+  const upload = await uploadFile({ file, path: `users/${tutor.uid}/tutorMarksDocuments` });
   const documentRecord = {
     tutorId: tutor.uid,
     fileName: upload.fileName,
@@ -443,7 +427,7 @@ export const uploadTutorMarksDocument = async ({ file, tutor, onProgress }) => {
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
-  const documentRef = await addDoc(collection(db, collections.tutorMarksDocuments), documentRecord);
+  const documentRef = await addDoc(collection(db, 'users', tutor.uid, 'tutorMarksDocuments'), documentRecord);
 
   return analyzeTutorMarksDocument({
     documentRef,
@@ -460,7 +444,7 @@ export const retryTutorMarksDocument = async ({ documentRecord, tutor, onProgres
   if (!documentRecord?.id || !documentRecord?.fileUrl) throw new Error('Cannot retry this document because its file record is incomplete.');
 
   return analyzeTutorMarksDocument({
-    documentRef: doc(db, collections.tutorMarksDocuments, documentRecord.id),
+    documentRef: doc(db, 'users', tutor.uid, 'tutorMarksDocuments', documentRecord.id),
     documentRecord,
     tutor,
     onProgress,
@@ -472,7 +456,8 @@ export const deleteTutorMarksDocument = async (documentRecord) => {
   if (!isFirebaseConfigured) return true;
   if (!documentRecord?.id) throw new Error('Cannot delete this document because its record is incomplete.');
 
-  await deleteDoc(doc(db, collections.tutorMarksDocuments, documentRecord.id));
+  if (!documentRecord.tutorId) throw new Error('Tutor document ownership is missing.');
+  await deleteDoc(doc(db, 'users', documentRecord.tutorId, 'tutorMarksDocuments', documentRecord.id));
 
   if (documentRecord.fileUrl) {
     try {

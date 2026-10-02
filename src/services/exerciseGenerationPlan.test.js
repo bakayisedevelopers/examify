@@ -21,7 +21,7 @@ test('seven-day regeneration window starts today and crosses month boundaries', 
 test('completed exercises consume that date capacity while pending ones remain replaceable', () => {
   const state = getRegenerationState({
     assignmentDates: ['2026-09-30', '2026-10-01'],
-    generationNumber: 2,
+    completedTopicCount: 2,
     history: [
       { id: 'done', assignmentDate: '2026-09-30', submitted: 'Yes' },
       { id: 'pending', assignmentDate: '2026-09-30' },
@@ -34,11 +34,11 @@ test('completed exercises consume that date capacity while pending ones remain r
   assert.deepEqual(state.overrideExerciseIdsByDate, { '2026-09-30': ['pending'], '2026-10-01': ['future'] });
 });
 
-test('daily limit increases from week 1 to 2 to 3 and stays capped thereafter', () => {
-  assert.equal(getRegenerationState({ generationNumber: 1 }).dailyLimit, 1);
-  assert.equal(getRegenerationState({ generationNumber: 2 }).dailyLimit, 2);
-  assert.equal(getRegenerationState({ generationNumber: 3 }).dailyLimit, 3);
-  assert.equal(getRegenerationState({ generationNumber: 8 }).dailyLimit, 3);
+test('daily limit follows completed topics and is capped at five', () => {
+  assert.equal(getRegenerationState({ completedTopicCount: 1 }).dailyLimit, 1);
+  assert.equal(getRegenerationState({ completedTopicCount: 2 }).dailyLimit, 2);
+  assert.equal(getRegenerationState({ completedTopicCount: 3 }).dailyLimit, 3);
+  assert.equal(getRegenerationState({ completedTopicCount: 8 }).dailyLimit, 5);
 });
 
 test('initial and manual triggers keep their week while lesson completion advances it', () => {

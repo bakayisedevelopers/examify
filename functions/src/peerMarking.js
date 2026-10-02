@@ -2,308 +2,110 @@ import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
 import { admin, getDb } from './admin.js';
+import { buildAssignments, getExerciseTopicKeys } from './peerMarkingAllocation.js';
 import { sendNotificationToUsers } from './notifications.js';
-import {
-  buildAssignments,
-  getExerciseTopicKeys,
-} from './peerMarkingAllocation.js';
 
-const hasSubmission = (data = {}) => Boolean(
-  (data.submittedImageUrl && data.submittedFileName) || data.submittedImages?.some((image) => image?.url),
-);
-
-const buildCohortKey = (exercise = {}) => ({
-  assignmentDate: exercise.assignmentDate,
-  subject: exercise.subject,
-  grade: exercise.grade,
+const hasSubmission = (exercise = {}) => exercise.submissionStatus === 'submitted'
+  || exercise.submitted === 'Yes' || Boolean(exercise.submittedImageUrl);
+const cohortFor = (exercise = {}) => ({
+  assignmentDate: exercise.assignmentDate ?? '', subject: exercise.subject ?? '', grade: exercise.grade ?? '',
 });
-
-const complete = (value) => value && value.assignmentDate && value.subject && value.grade;
-const safeId = (value) => String(value ?? '').replace(/[^a-zA-Z0-9_-]/g, '_');
-const chunks = (values, size = 30) => {
-  const result = [];
-  for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size));
-  return result;
-};
-const getExerciseTopicNames = (exercise = {}) => [...new Set([
-  exercise.topic,
-  ...(Array.isArray(exercise.topics) ? exercise.topics : []),
-].map((value) => String(value ?? '').trim()).filter(Boolean))];
-const topicKeyForMatch = (value) => String(value ?? '')
-  .normalize('NFKD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .toLowerCase()
-  .replace(/[^a-z0-9|]+/g, ' ')
-  .replace(/\s+/g, ' ')
-  .trim();
-
-const readMatchingCandidateExercises = async ({ db, cohort, topicNames }) => {
-  const topicBatches = chunks([...new Set(topicNames)].filter(Boolean));
-  const snapshots = await Promise.all(topicBatches.flatMap((topics) => [
-    db.collection('dailyExerciseAssignments')
-      .where('subject', '==', cohort.subject)
-      .where('grade', '==', cohort.grade)
-      .where('topic', 'in', topics)
-      .orderBy('assignmentDate', 'desc')
-      .limit(5000)
-      .get(),
-    db.collection('dailyExerciseAssignments')
-      .where('subject', '==', cohort.subject)
-      .where('grade', '==', cohort.grade)
-      .where('topics', 'array-contains-any', topics)
-      .orderBy('assignmentDate', 'desc')
-      .limit(5000)
-      .get(),
-  ]));
-  const unique = new Map();
-  snapshots.flatMap((snapshot) => snapshot.docs).forEach((document) => {
-    if (!unique.has(document.id)) unique.set(document.id, { id: document.id, ...document.data() });
-  });
-  return [...unique.values()].filter(hasSubmission);
-};
-
-const readReviewerHistory = async ({ db, reviewerIds, cohort }) => {
-  const snapshots = await Promise.all(chunks(reviewerIds).map((ids) => db.collection('peerMarkingAssignments')
-    .where('reviewerId', 'in', ids)
-    .where('subject', '==', cohort.subject)
-    .where('grade', '==', cohort.grade)
-    .get()));
-  const histories = snapshots.flatMap((snapshot) => snapshot.docs)
-    .map((document) => ({ id: document.id, ...document.data() }))
-    .filter((row) => row.status === 'completed' && row.reviewerId && row.exerciseId);
-  const markedExerciseIdsByReviewer = new Map();
-  const recentRevieweesByReviewer = new Map();
-  histories.forEach((row) => {
-    if (!markedExerciseIdsByReviewer.has(row.reviewerId)) markedExerciseIdsByReviewer.set(row.reviewerId, new Set());
-    if (!recentRevieweesByReviewer.has(row.reviewerId)) recentRevieweesByReviewer.set(row.reviewerId, new Set());
-    markedExerciseIdsByReviewer.get(row.reviewerId).add(row.exerciseId);
-    if (row.revieweeId) recentRevieweesByReviewer.get(row.reviewerId).add(row.revieweeId);
-  });
-  return { histories, markedExerciseIdsByReviewer, recentRevieweesByReviewer };
-};
-
-const readPreviouslyMarkedTargets = async ({ db, histories }) => {
-  const wantedIds = new Set();
-  histories.forEach((row) => wantedIds.add(row.exerciseId));
-  const targetSnapshots = await Promise.all(chunks([...wantedIds], 200).map((ids) => db.getAll(
-    ...ids.map((id) => db.collection('dailyExerciseAssignments').doc(id)),
-  )));
-  return targetSnapshots.flat().filter((snapshot) => snapshot.exists)
-    .map((snapshot) => ({ id: snapshot.id, ...snapshot.data() }))
-    .filter(hasSubmission);
-};
-
-const writeAssignmentIfAvailable = async ({ db, cohort, reviewer, target, matchedTopics = [] }) => {
-  const assignmentId = safeId(`${cohort.assignmentDate}_${cohort.grade}_${cohort.subject}_${reviewer.studentId}_${target.id}`);
-  const assignmentRef = db.collection('peerMarkingAssignments').doc(assignmentId);
-  const created = await db.runTransaction(async (transaction) => {
-    const existing = await transaction.get(db.collection('peerMarkingAssignments')
-      .where('reviewerId', '==', reviewer.studentId)
-      .where('assignmentDate', '==', cohort.assignmentDate)
-      .where('subject', '==', cohort.subject)
-      .where('grade', '==', cohort.grade));
-    if (!existing.empty) return false;
-    transaction.create(assignmentRef, {
-      reviewerId: reviewer.studentId,
-      revieweeId: target.studentId,
-      exerciseId: target.id,
-      reviewerExerciseId: reviewer.id,
-      assignmentDate: cohort.assignmentDate,
-      targetAssignmentDate: target.assignmentDate ?? '',
-      subject: cohort.subject,
-      grade: cohort.grade,
-      title: target.title ?? '',
-      topic: matchedTopics[0] ?? target.topic ?? target.topics?.[0] ?? '',
-      matchedTopics,
-      submittedImageUrl: target.submittedImageUrl ?? target.submittedImages?.[0]?.url ?? '',
-      submittedImages: Array.isArray(target.submittedImages) && target.submittedImages.length
-        ? target.submittedImages
-        : target.submittedImageUrl ? [{ url: target.submittedImageUrl, fileName: target.submittedFileName ?? '', pageNumber: 1 }] : [],
-      submittedFileName: target.submittedFileName ?? target.submittedImages?.[0]?.fileName ?? '',
-      paperIds: target.paperIds ?? [],
-      questionLinks: target.questionLinks ?? [],
-      status: 'assigned',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    return true;
-  });
-  return created ? assignmentId : '';
+const topicNames = (exercise = {}) => [...new Set([
+  ...(Array.isArray(exercise.topics) ? exercise.topics : []), exercise.topic,
+].filter(Boolean).map((topic) => String(topic).trim()))];
+const sameCohort = (left, right) => left.assignmentDate === right.assignmentDate
+  && left.subject === right.subject && String(left.grade) === String(right.grade);
+const parseExercisePath = (document) => {
+  const parts = document.ref.path.split('/');
+  return { studentId: parts[1], subjectInstanceId: parts[3], exerciseId: document.id };
 };
 
 export const assignPeerMarkingOnSubmission = onDocumentWritten(
-  { document: 'dailyExerciseAssignments/{exerciseId}', timeoutSeconds: 180, memory: '1GiB' },
+  { document: 'users/{studentId}/subjects/{subjectInstanceId}/exercises/{exerciseId}', timeoutSeconds: 180, memory: '1GiB' },
   async (event) => {
     const before = event.data?.before?.exists ? event.data.before.data() : null;
     const after = event.data?.after?.exists ? event.data.after.data() : null;
-    if (!after || !hasSubmission(after)) return;
-    if (before && hasSubmission(before) && before.submittedImageUrl === after.submittedImageUrl) return;
-
-    const cohort = buildCohortKey(after);
-    if (!complete(cohort)) {
-      logger.warn('Peer marking skipped because assignment lacks grade/subject/date', { exerciseId: event.params.exerciseId, cohort });
-      return;
-    }
-
+    if (!after || !hasSubmission(after) || (before && hasSubmission(before))) return;
+    const cohort = cohortFor(after);
+    if (!cohort.assignmentDate || !cohort.subject || !cohort.grade) return;
     const db = getDb();
-    const [todayExercisesSnapshot, existingSnapshot] = await Promise.all([
-      db.collection('dailyExerciseAssignments')
-        .where('assignmentDate', '==', cohort.assignmentDate)
-        .where('subject', '==', cohort.subject)
-        .where('grade', '==', cohort.grade)
-        .get(),
-      db.collection('peerMarkingAssignments')
-        .where('assignmentDate', '==', cohort.assignmentDate)
-        .where('subject', '==', cohort.subject)
-        .where('grade', '==', cohort.grade)
-        .get(),
-    ]);
-    const submittedRows = todayExercisesSnapshot.docs
-      .map((document) => ({ id: document.id, ...document.data() }))
-      .filter((item) => hasSubmission(item) && item.studentId);
-    const submittedByStudent = new Map();
-    submittedRows.forEach((item) => {
-      const current = submittedByStudent.get(item.studentId);
-      if (!current) {
-        submittedByStudent.set(item.studentId, { ...item, topics: getExerciseTopicNames(item) });
-        return;
-      }
-      current.topics = [...new Set([...current.topics, ...getExerciseTopicNames(item)])];
-    });
-    const submitted = [...submittedByStudent.values()];
-    const assignedReviewerIds = new Set(existingSnapshot.docs.map((document) => document.data().reviewerId).filter(Boolean));
-    const reviewers = submitted.filter((item) => !assignedReviewerIds.has(item.studentId));
+    const exerciseSnapshot = await db.collectionGroup('exercises')
+      .where('assignmentDate', '==', cohort.assignmentDate)
+      .where('subject', '==', cohort.subject)
+      .where('grade', '==', cohort.grade).get();
+    const submitted = exerciseSnapshot.docs
+      .filter((document) => hasSubmission(document.data()))
+      .map((document) => ({ id: document.id, ...document.data(), ...parseExercisePath(document), ref: document.ref }));
+    const assignmentSnapshot = await db.collectionGroup('peerMarkingAssignments')
+      .where('assignmentDate', '==', cohort.assignmentDate)
+      .where('subject', '==', cohort.subject)
+      .where('grade', '==', cohort.grade).get();
+    const assignedReviewerIds = new Set(assignmentSnapshot.docs.map((document) => document.data().reviewerId));
+    const reviewers = submitted.filter((exercise) => !assignedReviewerIds.has(exercise.studentId));
     if (!reviewers.length) return;
-
-    const reviewerIds = reviewers.map((reviewer) => reviewer.studentId);
-    const topicKeysByReviewer = new Map(reviewers.map((reviewer) => [
-      reviewer.studentId,
-      getExerciseTopicKeys(reviewer),
-    ]));
-    const topicNames = [...new Set(reviewers.flatMap(getExerciseTopicNames))];
-    if (!topicNames.length) return;
-
-    const [{ histories, markedExerciseIdsByReviewer, recentRevieweesByReviewer }, historicalCandidates] = await Promise.all([
-      readReviewerHistory({ db, reviewerIds, cohort }),
-      readMatchingCandidateExercises({ db, cohort, topicNames }),
-    ]);
-    const previouslyMarkedTargets = await readPreviouslyMarkedTargets({ db, histories });
-    const candidatesById = new Map();
-    [...submitted, ...historicalCandidates, ...previouslyMarkedTargets].forEach((candidate) => {
-      if (!candidatesById.has(candidate.id)) candidatesById.set(candidate.id, candidate);
-    });
-
+    const historicalSnapshot = await db.collectionGroup('exercises')
+      .where('subject', '==', cohort.subject).where('grade', '==', cohort.grade).get();
+    const candidates = historicalSnapshot.docs.filter((document) => hasSubmission(document.data()))
+      .map((document) => ({ id: document.id, ...document.data(), ...parseExercisePath(document), ref: document.ref }));
     const pairs = buildAssignments({
-      reviewers,
-      candidates: [...candidatesById.values()],
-      topicKeysByReviewer,
-      markedExerciseIdsByReviewer,
-      recentRevieweesByReviewer,
-      assignedReviewerIds,
-      currentDate: cohort.assignmentDate,
-      subject: cohort.subject,
-      grade: cohort.grade,
+      reviewers, candidates,
+      topicKeysByReviewer: new Map(reviewers.map((reviewer) => [reviewer.studentId, getExerciseTopicKeys(reviewer)])),
+      markedExerciseIdsByReviewer: new Map(), recentRevieweesByReviewer: new Map(), assignedReviewerIds,
+      currentDate: cohort.assignmentDate, subject: cohort.subject, grade: cohort.grade,
     });
-    const createdAssignments = [];
-    for (const pair of pairs) {
-      const matchedTopics = getExerciseTopicNames(pair.target).filter((topic) => getExerciseTopicKeys(pair.reviewer).has(topicKeyForMatch(topic)));
-      const assignmentId = await writeAssignmentIfAvailable({ db, cohort, ...pair, matchedTopics });
-      if (assignmentId) createdAssignments.push({ assignmentId, ...pair });
+    for (const { reviewer, target } of pairs) {
+      if (!sameCohort(cohortFor(reviewer), cohort)) continue;
+      const assignmentRef = target.ref.collection('peerMarkingAssignments').doc(reviewer.studentId);
+      const matchedTopics = topicNames(target).filter((topic) => getExerciseTopicKeys(reviewer).has(topic.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()));
+      await assignmentRef.set({
+        assignmentId: assignmentRef.id,
+        reviewerId: reviewer.studentId, reviewerSubjectInstanceId: reviewer.subjectInstanceId,
+        reviewerExerciseId: reviewer.id, revieweeId: target.studentId, revieweeSubjectInstanceId: target.subjectInstanceId,
+        exerciseId: target.id, assignmentPath: assignmentRef.path, exercisePath: target.ref.path,
+        reviewerExercisePath: reviewer.ref.path, assignmentDate: cohort.assignmentDate,
+        subject: cohort.subject, grade: cohort.grade, topic: matchedTopics[0] ?? topicNames(target)[0] ?? '', topics: matchedTopics,
+        title: target.title ?? '', submittedImageUrl: target.submittedImageUrl ?? '', submittedImages: target.submittedImages ?? [],
+        status: 'assigned', createdAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      await sendNotificationToUsers({ userIds: [reviewer.studentId], title: 'New work to mark',
+        body: `${cohort.subject} exercise is ready for peer marking.`, type: 'peer-marking.assigned', url: '/student?tab=mark',
+        data: { assignmentId: assignmentRef.id, assignmentPath: assignmentRef.path, exerciseId: target.id }, tag: `peer-marking-${assignmentRef.id}` });
     }
-
-    await Promise.all(createdAssignments.map(({ assignmentId, reviewer, target }) => sendNotificationToUsers({
-      userIds: [reviewer.studentId],
-      title: 'New work to mark',
-      body: `${target.subject ?? cohort.subject} ${target.title ?? 'exercise'} is ready for peer marking.`,
-      type: 'peer-marking.assigned',
-      url: '/student?tab=mark',
-      data: {
-        assignmentId,
-        exerciseId: target.id,
-        subject: target.subject ?? cohort.subject,
-        assignmentDate: cohort.assignmentDate,
-      },
-      tag: `peer-marking-${assignmentId}`,
-    })));
-    logger.info('Peer marking assignments created', {
-      cohort,
-      submittedCount: submitted.length,
-      waitingReviewerCount: reviewers.length,
-      pairCount: createdAssignments.length,
-    });
+    logger.info('Nested peer-marking allocation completed', { reviewerCount: reviewers.length, pairCount: pairs.length });
   },
 );
 
 export const completePeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, async (request) => {
   const uid = request.auth?.uid;
-  if (!uid) throw new HttpsError('unauthenticated', 'You must be signed in to submit peer marking.');
-  const { assignmentId, reviewImages = [], reviewImageUrl, reviewFileName } = request.data ?? {};
-  if (!assignmentId) throw new HttpsError('invalid-argument', 'assignmentId is required.');
-  const pages = Array.isArray(reviewImages) && reviewImages.length
-    ? reviewImages
-    : (reviewImageUrl ? [{ url: reviewImageUrl, fileName: reviewFileName || 'review.png', pageNumber: 1 }] : []);
-  if (!pages.length) throw new HttpsError('invalid-argument', 'At least one marked image page is required.');
-
+  if (!uid) throw new HttpsError('unauthenticated', 'Sign in to submit peer marking.');
+  const { assignmentPath, reviewImages = [], reviewImageUrl, reviewFileName } = request.data ?? {};
+  if (!assignmentPath || !/^users\/[^/]+\/subjects\/[^/]+\/exercises\/[^/]+\/peerMarkingAssignments\/[^/]+$/.test(assignmentPath)) {
+    throw new HttpsError('invalid-argument', 'A valid nested assignment path is required.');
+  }
+  const pages = reviewImages.length ? reviewImages : reviewImageUrl ? [{ url: reviewImageUrl, fileName: reviewFileName, pageNumber: 1 }] : [];
+  if (!pages.length) throw new HttpsError('invalid-argument', 'At least one marked image is required.');
   const db = getDb();
-  const assignmentRef = db.collection('peerMarkingAssignments').doc(assignmentId);
-  const assignmentSnap = await assignmentRef.get();
-  if (!assignmentSnap.exists) throw new HttpsError('not-found', 'Peer marking assignment not found.');
-  const assignment = assignmentSnap.data();
-
-  if (assignment.reviewerId !== uid) {
-    throw new HttpsError('permission-denied', 'You are not assigned to review this work.');
-  }
-  if (assignment.status === 'completed') {
-    throw new HttpsError('failed-precondition', 'This peer review has already been completed.');
-  }
-
-  const primaryPage = pages[0];
+  const assignmentRef = db.doc(assignmentPath);
+  const assignmentSnapshot = await assignmentRef.get();
+  if (!assignmentSnapshot.exists) throw new HttpsError('not-found', 'Peer-marking assignment not found.');
+  const assignment = assignmentSnapshot.data();
+  if (assignment.reviewerId !== uid) throw new HttpsError('permission-denied', 'This work is assigned to another student.');
+  if (assignment.status !== 'assigned') throw new HttpsError('failed-precondition', 'This assignment is no longer available.');
   const now = admin.firestore.Timestamp.now();
-  const completion = {
-    reviewImageUrl: primaryPage.url,
-    reviewFileName: primaryPage.fileName,
-    reviewImages: pages,
-    status: 'completed',
-    completedAt: now,
-    updatedAt: now,
-  };
-
+  const primary = pages[0];
+  const reviewRef = assignmentRef.parent.parent.collection('peerReviews').doc();
   const batch = db.batch();
-  batch.update(assignmentRef, completion);
-
-  const peerMarkFields = {
-    peerReviewed: 'Yes',
-    peerReviewStatus: 'completed',
-    peerReviewDate: now,
-    peerMarkedImageUrl: primaryPage.url,
-    peerMarkedFileName: primaryPage.fileName,
-    peerMarkedImages: pages,
-    submittedReviewImageUrl: primaryPage.url,
-    submittedReviewFileName: primaryPage.fileName,
-    submittedReviewImages: pages,
-    peerReviewerId: uid,
-    peerMarkingAssignmentId: assignmentId,
-    markedExerciseId: assignment.exerciseId,
-  };
-
-  if (assignment.exerciseId) {
-    batch.set(db.collection('dailyExerciseAssignments').doc(assignment.exerciseId), peerMarkFields, { merge: true });
-    batch.set(db.collection('submissions').doc(assignment.exerciseId), { ...completion, ...peerMarkFields }, { merge: true });
-  }
-
-  if (assignment.reviewerExerciseId) {
-    batch.set(db.collection('dailyExerciseAssignments').doc(assignment.reviewerExerciseId), {
-      peerMarkingImageUrl: primaryPage.url,
-      peerMarkingFileName: primaryPage.fileName,
-      peerMarkingImages: pages,
-      markedPeerExerciseId: assignment.exerciseId,
-      peerMarkingAssignmentId: assignmentId,
-      peerMarkingRevieweeId: assignment.revieweeId,
-      peerMarkingStatus: 'completed',
-      updatedAt: now,
-    }, { merge: true });
-  }
-
+  batch.set(reviewRef, { reviewerId: uid, reviewerSubjectInstanceId: assignment.reviewerSubjectInstanceId,
+    peerAssignmentId: assignmentRef.id, reviewImages: pages, reviewImageUrl: primary.url,
+    reviewedAt: now, status: 'completed' });
+  batch.update(assignmentRef, { reviewId: reviewRef.id, reviewImages: pages, reviewImageUrl: primary.url,
+    reviewFileName: primary.fileName ?? '', status: 'completed', completedAt: now, updatedAt: now });
+  batch.update(assignmentRef.parent.parent, { peerReviewed: 'Yes', peerReviewStatus: 'completed',
+    peerReviewDate: now, peerMarkedImages: pages, peerReviewerId: uid, updatedAt: now });
+  if (assignment.reviewerExercisePath) batch.set(db.doc(assignment.reviewerExercisePath), {
+    peerMarkingImages: pages, markedPeerExerciseId: assignment.exerciseId,
+    peerMarkingAssignmentId: assignmentRef.id, peerMarkingStatus: 'completed', updatedAt: now,
+  }, { merge: true });
   await batch.commit();
-  return { success: true, assignmentId, ...completion };
+  return { success: true, assignmentId: assignmentRef.id, reviewId: reviewRef.id, status: 'completed' };
 });

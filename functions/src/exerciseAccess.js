@@ -14,7 +14,7 @@ const getRegisteredSubjects = (student = {}) => [...new Set([
   ...(Array.isArray(student.subjects) ? student.subjects : []),
 ].filter(Boolean).map(normalizeSubject))];
 
-const assertGeneratorAccess = async ({ db, authUid, caller, studentId, subject }) => {
+const assertGeneratorAccess = async ({ authUid, caller, studentId, episode }) => {
   if (authUid === studentId && caller.role === 'student') return;
   if (caller.role === 'admin') return;
 
@@ -23,36 +23,26 @@ const assertGeneratorAccess = async ({ db, authUid, caller, studentId, subject }
     throw new HttpsError('permission-denied', 'You cannot generate exercises for this student.');
   }
 
-  const assignmentId = `${studentId}_${authUid}_${subject}`;
-  const [primaryAssignment, sharedAccess] = await Promise.all([
-    db.collection('tutorStudentAssignments').doc(assignmentId).get(),
-    db.collection('staffStudentAccess').doc(assignmentId).get(),
-  ]);
-  const primaryData = primaryAssignment.exists ? primaryAssignment.data() : null;
-  const sharedData = sharedAccess.exists ? sharedAccess.data() : null;
-  const isPrimaryTutor = primaryData?.active === true
-    && primaryData.studentId === studentId
-    && primaryData.tutorId === authUid
-    && primaryData.subject === subject;
-  const isCoOwner = sharedData?.active === true
-    && sharedData.accessRole === 'co-owner'
-    && sharedData.studentId === studentId
-    && sharedData.tutorId === authUid
-    && sharedData.subject === subject;
+  const isPrimaryTutor = episode.primaryTutorId === authUid;
+  const isCoOwner = episode.staffByUid?.[authUid] === 'co-owner';
   if (!isPrimaryTutor && !isCoOwner) {
     throw new HttpsError('permission-denied', 'Co-owner access to this student and subject is required to generate exercises.');
   }
 };
 
-export const assertPaidExerciseGenerationAccess = async ({ authUid, studentId, subject }) => {
+export const assertPaidExerciseGenerationAccess = async ({ authUid, studentId, subject, subjectInstanceId }) => {
   if (!authUid) throw new HttpsError('unauthenticated', 'Sign in before generating exercises.');
   if (!studentId || !subject) throw new HttpsError('invalid-argument', 'A student and subject are required for exercise generation.');
 
   const db = getDb();
-  const [callerSnapshot, studentSnapshot, subscriptionSnapshot] = await Promise.all([
+  const episodeRef = subjectInstanceId
+    ? db.collection('users').doc(studentId).collection('subjects').doc(subjectInstanceId)
+    : null;
+  const [callerSnapshot, studentSnapshot, subscriptionSnapshot, explicitEpisodeSnapshot] = await Promise.all([
     db.collection('users').doc(authUid).get(),
     db.collection('users').doc(studentId).get(),
-    db.collection('subscriptions').doc(studentId).get(),
+    db.collection('users').doc(studentId).collection('subscriptions').doc('current').get(),
+    episodeRef ? episodeRef.get() : Promise.resolve(null),
   ]);
   if (!callerSnapshot.exists) throw new HttpsError('permission-denied', 'The signed-in account was not found.');
   if (!studentSnapshot.exists || studentSnapshot.data().role !== 'student') {
@@ -61,7 +51,18 @@ export const assertPaidExerciseGenerationAccess = async ({ authUid, studentId, s
 
   const caller = callerSnapshot.data();
   const student = studentSnapshot.data();
-  await assertGeneratorAccess({ db, authUid, caller, studentId, subject });
+  let episodeSnapshot = explicitEpisodeSnapshot;
+  if (!episodeSnapshot) {
+    const episodes = await db.collection('users').doc(studentId).collection('subjects')
+      .where('status', '==', 'active').where('subjectKey', '==', subject).limit(1).get();
+    episodeSnapshot = episodes.docs[0] ?? null;
+  }
+  if (!episodeSnapshot?.exists || episodeSnapshot.data().status !== 'active'
+    || normalizeSubject(episodeSnapshot.data().subjectKey) !== normalizeSubject(subject)) {
+    throw new HttpsError('failed-precondition', 'An active matching subject episode is required.');
+  }
+  const episode = episodeSnapshot.data();
+  await assertGeneratorAccess({ authUid, caller, studentId, episode });
 
   if (!subscriptionSnapshot.exists) {
     throw new HttpsError('failed-precondition', 'An active paid subscription is required for exercise generation.');
@@ -104,7 +105,7 @@ export const assertPaidExerciseGenerationAccess = async ({ authUid, studentId, s
   if (!paymentReference) {
     throw new HttpsError('failed-precondition', 'A confirmed payment is required for this subscription.');
   }
-  const paymentSnapshot = await db.collection('payments').doc(paymentReference).get();
+  const paymentSnapshot = await db.collection('users').doc(studentId).collection('payments').doc(paymentReference).get();
   const payment = paymentSnapshot.exists ? paymentSnapshot.data() : null;
   const paymentMatchesSubscription = Boolean(payment
     && payment.status === 'success'
@@ -124,5 +125,6 @@ export const assertPaidExerciseGenerationAccess = async ({ authUid, studentId, s
     subscriptionPlanId: subscription.planId,
     subscriptionPlanName: expectedQuote.planName,
     subscriptionPaymentReference: paymentReference,
+    subjectInstanceId: episodeSnapshot.id,
   };
 };
