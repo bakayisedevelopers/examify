@@ -70,7 +70,7 @@ export const REGIONS = [
   'Western Cape',
 ];
 
-export const MAX_DAILY_EXERCISES = 3;
+export const MAX_DAILY_EXERCISES = 5;
 export const WEEKLY_EXERCISE_DAYS = 7;
 export const MIN_AI_SOURCE_PAPERS = 2;
 export const MAX_AI_SOURCE_PAPERS = 4;

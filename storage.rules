@@ -19,5 +19,9 @@ service firebase.storage {
     match /tutorMarks/{allPaths=**} {
       allow read, write: if true;
     }
+
+    match /users/{allPaths=**} {
+      allow read, write: if request.auth != null;
+    }
   }
 }

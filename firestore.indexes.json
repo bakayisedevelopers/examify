@@ -182,6 +182,39 @@
         { "fieldPath": "subject", "order": "ASCENDING" },
         { "fieldPath": "grade", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "subjects",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "activeStaffIds", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "subjects",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "historicalStaffIds", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peerMarkingAssignments",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "reviewerId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "assignmentDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "subscriptions",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "renewalDate", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

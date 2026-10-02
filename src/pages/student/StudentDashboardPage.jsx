@@ -13,7 +13,7 @@ import {
   getPeerMarkingAssignmentsForStudent,
   getStudentAccessState,
   getStudentSubscriptionState,
-  getTodayExercise,
+  getTodayExercises,
   subscribeToExerciseGenerationStatus,
 } from '../../services/firestoreService';
 import { uploadPeerReviewImage } from '../../services/storageService';
@@ -163,13 +163,14 @@ export const StudentDashboardPage = () => {
         const readiness = [];
         const assignedSubjects = await getAssignedSubjectsForStudent(profile.uid);
         const subjectsToCheck = availableSubjects.filter((subject) => assignedSubjects.includes(subject));
-        Promise.all(subjectsToCheck.map((subject) => getTodayExercise(profile.uid, subject)))
-          .then((rows) => {
+        Promise.all(subjectsToCheck.map((subject) => getTodayExercises(profile.uid, subject)))
+          .then((nestedRows) => {
             if (active) {
+              const rows = nestedRows.flat();
               setTodayExercises(rows.filter(Boolean).sort((left, right) => String(left.subject).localeCompare(String(right.subject))));
               setIsLoadingExercises(false);
             }
-            return rows;
+            return nestedRows;
           })
           .catch((error) => {
             if (active) {

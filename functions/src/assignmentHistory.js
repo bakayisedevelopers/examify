@@ -214,6 +214,20 @@ export const updateStudentSubjects = onCall({ cpu: 'gcf_gen1' }, async (request)
         now,
       }));
 
+      // Find and cancel active subject episode
+      const activeEpSnap = await db.collection('users').doc(studentId).collection('subjects')
+        .where('subjectKey', '==', subject)
+        .where('status', '==', 'active')
+        .get();
+      activeEpSnap.docs.forEach((ep) => {
+        transaction.update(ep.ref, {
+          status: 'cancelled',
+          cancelledAt: admin.firestore.Timestamp.fromDate(now),
+          cancelledBy: uid,
+          updatedAt: admin.firestore.Timestamp.fromDate(now),
+        });
+      });
+
       const remainingSubjects = currentSubjects.filter((item) => item !== subject);
       const activePrimary = primaryRows.filter((item) => item.active === true && item.subject !== subject);
       const subjectMarks = (Array.isArray(student.tutorSubjectMarks) ? student.tutorSubjectMarks : []).filter((item) => item.subject !== subject);
@@ -255,20 +269,6 @@ export const updateStudentSubjects = onCall({ cpu: 'gcf_gen1' }, async (request)
       const periodId = item.data().currentPeriodId;
       return periodId ? transaction.get(db.collection(periodsCollection).doc(periodId)) : Promise.resolve(null);
     }));
-    const tutorCandidates = new Map();
-    additions.forEach((subject) => {
-      const candidates = [
-        ...historyRows.filter((item) => item.subject === subject && item.assignmentType === 'primary'),
-        ...staleBySubject.get(subject).primary.map((item) => item.data()),
-      ].filter((item) => item.tutorId);
-      candidates.sort((left, right) => toMillis(right.endedAt || right.assignedAt || right.startedAt) - toMillis(left.endedAt || left.assignedAt || left.startedAt));
-      if (candidates[0]) tutorCandidates.set(subject, candidates[0].tutorId);
-    });
-    const tutorProfiles = new Map();
-    await Promise.all([...new Set(tutorCandidates.values())].map(async (tutorId) => {
-      const snapshot = await transaction.get(db.collection('users').doc(tutorId));
-      tutorProfiles.set(tutorId, snapshot.exists ? snapshot.data() : null);
-    }));
 
     const closeStale = (rows, periodsCollection, offset) => rows.forEach((item, index) => closePeriod({
       transaction,
@@ -283,28 +283,116 @@ export const updateStudentSubjects = onCall({ cpu: 'gcf_gen1' }, async (request)
     closeStale(stalePrimary, PRIMARY_PERIODS, 0);
     closeStale(staleShared, SHARED_PERIODS, stalePrimary.length);
 
-    const newPrimaryTutors = [];
-    additions.forEach((subject) => {
-      const previousTutorId = tutorCandidates.get(subject);
-      const tutorProfile = previousTutorId ? tutorProfiles.get(previousTutorId) : null;
-      if (!tutorProfile || !approvedSubjects(tutorProfile).includes(subject) || !isTutor(tutorProfile)) return;
-      const pointerRef = db.collection(PRIMARY).doc(assignmentId({ studentId, tutorId: previousTutorId, subject }));
-      startPeriod({
-        transaction, db, collectionName: PRIMARY_PERIODS, pointerRef,
-        studentId, tutorId: previousTutorId, subject, accessRole: 'co-owner', actorId: uid, now,
+    // Active episode creation and 3-month topic restore (without tutor carryover)
+    for (const subject of additions) {
+      // Ensure single active episode: cancel any lingering active episode for this subject
+      const existingActiveSnap = await db.collection('users').doc(studentId).collection('subjects')
+        .where('subjectKey', '==', subject)
+        .where('status', '==', 'active')
+        .get();
+      existingActiveSnap.docs.forEach((ep) => {
+        transaction.update(ep.ref, {
+          status: 'cancelled',
+          cancelledAt: admin.firestore.Timestamp.fromDate(now),
+          cancelledBy: uid,
+          endReason: 'superseded_by_new_episode',
+          updatedAt: admin.firestore.Timestamp.fromDate(now),
+        });
       });
-      newPrimaryTutors.push(previousTutorId);
-    });
+
+      const prevEpSnap = await db.collection('users').doc(studentId).collection('subjects')
+        .where('subjectKey', '==', subject)
+        .where('status', '==', 'cancelled')
+        .orderBy('cancelledAt', 'desc')
+        .limit(1)
+        .get();
+
+      let restored = false;
+      const newEpRef = db.collection('users').doc(studentId).collection('subjects').doc();
+
+      if (!prevEpSnap.empty) {
+        const prevDoc = prevEpSnap.docs[0];
+        const prevData = prevDoc.data();
+        const cancelledAtMillis = prevData.cancelledAt?.toMillis ? prevData.cancelledAt.toMillis() : (prevData.cancelledAt ? new Date(prevData.cancelledAt).getTime() : 0);
+        const isWithinThreeMonths = cancelledAtMillis && (now.getTime() - cancelledAtMillis <= 90 * 24 * 60 * 60 * 1000);
+        const isSameGrade = prevData.grade === student.grade;
+
+        if (isWithinThreeMonths && isSameGrade) {
+          restored = true;
+          transaction.set(newEpRef, {
+            studentId,
+            subjectKey: subject,
+            subjectName: subject,
+            grade: student.grade || prevData.grade || '',
+            curriculum: 'CAPS',
+            status: 'active',
+            startedAt: admin.firestore.Timestamp.fromDate(now),
+            cancelledAt: null,
+            previousSubjectInstanceId: prevDoc.id,
+            restoredFromSubjectInstanceId: prevDoc.id,
+            restoredAt: admin.firestore.Timestamp.fromDate(now),
+            completedTopicCount: prevData.completedTopicCount || 0,
+            dailyExerciseTarget: Math.min(5, Math.max(1, prevData.completedTopicCount || 1)),
+            primaryTutorId: '',
+            staffByUid: {},
+            activeStaffIds: [],
+            historicalStaffIds: [],
+            staffMemberships: [],
+            initialReport: prevData.initialReport || '',
+            studentName: student.displayName || student.email || 'Student',
+            createdAt: admin.firestore.Timestamp.fromDate(now),
+            updatedAt: admin.firestore.Timestamp.fromDate(now),
+          });
+
+          // Copy topics from previous episode
+          const topicsSnap = await prevDoc.ref.collection('topics').get();
+          for (const topicDoc of topicsSnap.docs) {
+            const newTopicRef = newEpRef.collection('topics').doc(topicDoc.id);
+            transaction.set(newTopicRef, topicDoc.data());
+
+            const scoresSnap = await topicDoc.ref.collection('understandingScores').get();
+            for (const scoreDoc of scoresSnap.docs) {
+              transaction.set(newTopicRef.collection('understandingScores').doc(scoreDoc.id), scoreDoc.data());
+            }
+          }
+        }
+      }
+
+      if (!restored) {
+        transaction.set(newEpRef, {
+          studentId,
+          subjectKey: subject,
+          subjectName: subject,
+          grade: student.grade || '',
+          curriculum: 'CAPS',
+          status: 'active',
+          startedAt: admin.firestore.Timestamp.fromDate(now),
+          cancelledAt: null,
+          completedTopicCount: 0,
+          dailyExerciseTarget: 1,
+          primaryTutorId: '',
+          staffByUid: {},
+          activeStaffIds: [],
+          historicalStaffIds: [],
+          staffMemberships: [],
+          initialReport: '',
+          studentName: student.displayName || student.email || 'Student',
+          createdAt: admin.firestore.Timestamp.fromDate(now),
+          updatedAt: admin.firestore.Timestamp.fromDate(now),
+        });
+      }
+    }
+
     const remainingActivePrimary = primaryRows.filter((item) => item.active === true && !additions.includes(item.subject));
     const nextSubjectList = [...new Set([...currentSubjects, ...additions])];
     transaction.update(studentRef, {
       subjects: nextSubjectList,
       subject: student.subject || nextSubjectList[0] || null,
-      assignedTutorIds: [...new Set([...remainingActivePrimary.map((item) => item.tutorId), ...newPrimaryTutors].filter(Boolean))],
-      assignedSubjects: [...new Set([...remainingActivePrimary.map((item) => item.subject), ...additions.filter((subject) => newPrimaryTutors.some((tutorId) => tutorCandidates.get(subject) === tutorId))].filter(Boolean))],
+      assignedTutorIds: [...new Set(remainingActivePrimary.map((item) => item.tutorId).filter(Boolean))],
+      assignedSubjects: [...new Set(remainingActivePrimary.map((item) => item.subject).filter(Boolean))],
       updatedAt: admin.firestore.Timestamp.fromDate(now),
     });
-    return { studentId, subjects: additions, reassignedTutorIds: newPrimaryTutors };
+    return { studentId, subjects: additions, reassignedTutorIds: [] };
   });
 });
 
@@ -343,6 +431,26 @@ export const assignStudentToTutor = onCall({ cpu: 'gcf_gen1' }, async (request) 
       assignedSubjects: [...new Set([...activeRows.map((item) => item.subject), subject].filter(Boolean))],
       updatedAt: admin.firestore.Timestamp.fromDate(now),
     }, { merge: true });
+
+    // Sync to active subject episode
+    const activeEpSnap = await db.collection('users').doc(studentId).collection('subjects')
+      .where('subjectKey', '==', subject)
+      .where('status', '==', 'active')
+      .limit(1)
+      .get();
+    if (!activeEpSnap.empty) {
+      const epDoc = activeEpSnap.docs[0];
+      const epData = epDoc.data();
+      const currentStaffIds = Array.isArray(epData.activeStaffIds) ? epData.activeStaffIds : [];
+      const nextStaffIds = [...new Set([...currentStaffIds, tutorId])];
+      transaction.update(epDoc.ref, {
+        primaryTutorId: tutorId,
+        activeStaffIds: nextStaffIds,
+        [`staffByUid.${tutorId}`]: 'co-owner',
+        updatedAt: admin.firestore.Timestamp.fromDate(now),
+      });
+    }
+
     return { id: pointerRef.id, studentId, tutorId, subject };
   });
 });
@@ -404,6 +512,25 @@ export const manageStaffStudentAccess = onCall({ cpu: 'gcf_gen1' }, async (reque
         });
       }
       startPeriod({ transaction, db, collectionName: SHARED_PERIODS, pointerRef, studentId, tutorId, subject, accessRole, actorId, now });
+
+      // Sync to active subject episode
+      const activeEpSnap = await db.collection('users').doc(studentId).collection('subjects')
+        .where('subjectKey', '==', subject)
+        .where('status', '==', 'active')
+        .limit(1)
+        .get();
+      if (!activeEpSnap.empty) {
+        const epDoc = activeEpSnap.docs[0];
+        const epData = epDoc.data();
+        const currentStaffIds = Array.isArray(epData.activeStaffIds) ? epData.activeStaffIds : [];
+        const nextStaffIds = [...new Set([...currentStaffIds, tutorId])];
+        transaction.update(epDoc.ref, {
+          activeStaffIds: nextStaffIds,
+          [`staffByUid.${tutorId}`]: accessRole,
+          updatedAt: admin.firestore.Timestamp.fromDate(now),
+        });
+      }
+
       return { id: pointerRef.id, studentId, tutorId, subject, accessRole, active: true };
     }
 
@@ -413,6 +540,7 @@ export const manageStaffStudentAccess = onCall({ cpu: 'gcf_gen1' }, async (reque
     if (!targetSnapshot.exists || targetSnapshot.data().studentId !== studentId || targetSnapshot.data().subject !== subject || targetSnapshot.data().active !== true) {
       throw new HttpsError('not-found', 'Active staff access record not found.');
     }
+    const revokedTutorId = targetSnapshot.data().tutorId;
     let period = null;
     if (targetSnapshot.data().currentPeriodId) {
       const periodSnapshot = await transaction.get(db.collection(SHARED_PERIODS).doc(targetSnapshot.data().currentPeriodId));
@@ -428,6 +556,96 @@ export const manageStaffStudentAccess = onCall({ cpu: 'gcf_gen1' }, async (reque
       reason: 'access_revoked',
       now,
     });
+
+    // Sync to active subject episode
+    const activeEpSnap = await db.collection('users').doc(studentId).collection('subjects')
+      .where('subjectKey', '==', subject)
+      .where('status', '==', 'active')
+      .limit(1)
+      .get();
+    if (!activeEpSnap.empty) {
+      const epDoc = activeEpSnap.docs[0];
+      const epData = epDoc.data();
+      const currentStaffIds = Array.isArray(epData.activeStaffIds) ? epData.activeStaffIds : [];
+      const nextStaffIds = currentStaffIds.filter((id) => id !== revokedTutorId);
+      transaction.update(epDoc.ref, {
+        activeStaffIds: nextStaffIds,
+        [`staffByUid.${revokedTutorId}`]: 'revoked',
+        updatedAt: admin.firestore.Timestamp.fromDate(now),
+      });
+    }
+
     return { id: accessId, revoked: true };
+  });
+});
+
+export const changeStudentGrade = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const uid = requireUid(request);
+  const { studentId, newGrade } = request.data ?? {};
+  if (!studentId || !newGrade) throw new HttpsError('invalid-argument', 'A student ID and new grade are required.');
+
+  const db = getDb();
+  const studentRef = db.collection('users').doc(studentId);
+  return db.runTransaction(async (transaction) => {
+    const studentSnapshot = await transaction.get(studentRef);
+    if (!studentSnapshot.exists || studentSnapshot.data().role !== 'student') {
+      throw new HttpsError('not-found', 'Student profile not found.');
+    }
+    const student = studentSnapshot.data();
+    await authorizeStudentChange({ transaction, db, uid, studentId, student });
+
+    const oldGrade = student.grade;
+    if (oldGrade === newGrade) return { studentId, grade: newGrade, unchanged: true };
+
+    const now = new Date();
+    // Cancel all existing active subject episodes with endReason: 'grade_changed'
+    const activeEpsSnap = await db.collection('users').doc(studentId).collection('subjects')
+      .where('status', '==', 'active')
+      .get();
+
+    const registeredSubjects = [...new Set([student.subject, ...(Array.isArray(student.subjects) ? student.subjects : [])].filter(Boolean))];
+
+    activeEpsSnap.docs.forEach((ep) => {
+      transaction.update(ep.ref, {
+        status: 'cancelled',
+        cancelledAt: admin.firestore.Timestamp.fromDate(now),
+        cancelledBy: uid,
+        endReason: 'grade_changed',
+        updatedAt: admin.firestore.Timestamp.fromDate(now),
+      });
+    });
+
+    // Create fresh active subject episode for each registered subject with zero topics
+    for (const subject of registeredSubjects) {
+      const newEpRef = db.collection('users').doc(studentId).collection('subjects').doc();
+      transaction.set(newEpRef, {
+        studentId,
+        subjectKey: subject,
+        subjectName: subject,
+        grade: newGrade,
+        curriculum: 'CAPS',
+        status: 'active',
+        startedAt: admin.firestore.Timestamp.fromDate(now),
+        cancelledAt: null,
+        completedTopicCount: 0,
+        dailyExerciseTarget: 1,
+        primaryTutorId: '',
+        staffByUid: {},
+        activeStaffIds: [],
+        historicalStaffIds: [],
+        staffMemberships: [],
+        initialReport: '',
+        studentName: student.displayName || student.email || 'Student',
+        createdAt: admin.firestore.Timestamp.fromDate(now),
+        updatedAt: admin.firestore.Timestamp.fromDate(now),
+      });
+    }
+
+    transaction.update(studentRef, {
+      grade: newGrade,
+      updatedAt: admin.firestore.Timestamp.fromDate(now),
+    });
+
+    return { studentId, previousGrade: oldGrade, newGrade, resetEpisodesCount: registeredSubjects.length };
   });
 });

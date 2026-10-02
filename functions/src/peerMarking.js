@@ -1,6 +1,7 @@
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
+import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
-import { getDb } from './admin.js';
+import { admin, getDb } from './admin.js';
 import { sendNotificationToUsers } from './notifications.js';
 import {
   buildAssignments,
@@ -232,3 +233,77 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
     });
   },
 );
+
+export const completePeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'You must be signed in to submit peer marking.');
+  const { assignmentId, reviewImages = [], reviewImageUrl, reviewFileName } = request.data ?? {};
+  if (!assignmentId) throw new HttpsError('invalid-argument', 'assignmentId is required.');
+  const pages = Array.isArray(reviewImages) && reviewImages.length
+    ? reviewImages
+    : (reviewImageUrl ? [{ url: reviewImageUrl, fileName: reviewFileName || 'review.png', pageNumber: 1 }] : []);
+  if (!pages.length) throw new HttpsError('invalid-argument', 'At least one marked image page is required.');
+
+  const db = getDb();
+  const assignmentRef = db.collection('peerMarkingAssignments').doc(assignmentId);
+  const assignmentSnap = await assignmentRef.get();
+  if (!assignmentSnap.exists) throw new HttpsError('not-found', 'Peer marking assignment not found.');
+  const assignment = assignmentSnap.data();
+
+  if (assignment.reviewerId !== uid) {
+    throw new HttpsError('permission-denied', 'You are not assigned to review this work.');
+  }
+  if (assignment.status === 'completed') {
+    throw new HttpsError('failed-precondition', 'This peer review has already been completed.');
+  }
+
+  const primaryPage = pages[0];
+  const now = admin.firestore.Timestamp.now();
+  const completion = {
+    reviewImageUrl: primaryPage.url,
+    reviewFileName: primaryPage.fileName,
+    reviewImages: pages,
+    status: 'completed',
+    completedAt: now,
+    updatedAt: now,
+  };
+
+  const batch = db.batch();
+  batch.update(assignmentRef, completion);
+
+  const peerMarkFields = {
+    peerReviewed: 'Yes',
+    peerReviewStatus: 'completed',
+    peerReviewDate: now,
+    peerMarkedImageUrl: primaryPage.url,
+    peerMarkedFileName: primaryPage.fileName,
+    peerMarkedImages: pages,
+    submittedReviewImageUrl: primaryPage.url,
+    submittedReviewFileName: primaryPage.fileName,
+    submittedReviewImages: pages,
+    peerReviewerId: uid,
+    peerMarkingAssignmentId: assignmentId,
+    markedExerciseId: assignment.exerciseId,
+  };
+
+  if (assignment.exerciseId) {
+    batch.set(db.collection('dailyExerciseAssignments').doc(assignment.exerciseId), peerMarkFields, { merge: true });
+    batch.set(db.collection('submissions').doc(assignment.exerciseId), { ...completion, ...peerMarkFields }, { merge: true });
+  }
+
+  if (assignment.reviewerExerciseId) {
+    batch.set(db.collection('dailyExerciseAssignments').doc(assignment.reviewerExerciseId), {
+      peerMarkingImageUrl: primaryPage.url,
+      peerMarkingFileName: primaryPage.fileName,
+      peerMarkingImages: pages,
+      markedPeerExerciseId: assignment.exerciseId,
+      peerMarkingAssignmentId: assignmentId,
+      peerMarkingRevieweeId: assignment.revieweeId,
+      peerMarkingStatus: 'completed',
+      updatedAt: now,
+    }, { merge: true });
+  }
+
+  await batch.commit();
+  return { success: true, assignmentId, ...completion };
+});

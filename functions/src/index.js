@@ -11,6 +11,7 @@ export {
   assignStudentToTutor,
   manageStaffStudentAccess,
   updateStudentSubjects,
+  changeStudentGrade,
 } from './assignmentHistory.js';
 
 export {
@@ -35,7 +36,10 @@ export {
   cancelQuestionPaperAnalysis,
 } from './questionPaperAnalysis.js';
 
-export { assignPeerMarkingOnSubmission } from './peerMarking.js';
+export {
+  assignPeerMarkingOnSubmission,
+  completePeerMarkingAssignment,
+} from './peerMarking.js';
 
 
 export {

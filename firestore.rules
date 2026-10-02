@@ -35,6 +35,61 @@ service cloud.firestore {
         && topLevelCollection != 'topicResolverMappings';
     }
 
+    match /users/{userId}/subjects/{subjectInstanceId} {
+      allow read: if signedIn() && (
+        request.auth.uid == userId
+        || request.auth.uid in resource.data.activeStaffIds
+        || isAdmin()
+        || get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid
+      );
+      allow write: if isAdmin() || (signedIn() && (request.auth.uid == userId || request.auth.uid in resource.data.activeStaffIds));
+
+      match /{subcollection}/{docId=**} {
+        allow read: if signedIn() && (
+          request.auth.uid == userId
+          || isAdmin()
+          || request.auth.uid in get(/databases/$(database)/documents/users/$(userId)/subjects/$(subjectInstanceId)).data.activeStaffIds
+          || get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid
+        );
+        allow write: if signedIn() && (
+          request.auth.uid == userId
+          || isAdmin()
+          || request.auth.uid in get(/databases/$(database)/documents/users/$(userId)/subjects/$(subjectInstanceId)).data.activeStaffIds
+        );
+      }
+    }
+
+    match /{path=**}/subjects/{subjectInstanceId} {
+      allow read: if signedIn() && (
+        request.auth.uid == resource.data.studentId
+        || request.auth.uid in resource.data.activeStaffIds
+        || isAdmin()
+      );
+    }
+
+    match /users/{userId}/subscriptionAuthorizations/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /users/{userId}/subscriptions/{document=**} {
+      allow read: if signedIn() && (request.auth.uid == userId || isAdmin() || get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /users/{userId}/payments/{paymentId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isAdmin() || resource.data.payerId == request.auth.uid || get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /{path=**}/peerMarkingAssignments/{assignmentId} {
+      allow read: if signedIn() && (
+        resource.data.reviewerId == request.auth.uid
+        || resource.data.revieweeId == request.auth.uid
+        || isAdmin()
+        || (resource.data.activeStaffIds != null && request.auth.uid in resource.data.activeStaffIds)
+      );
+    }
+
     match /topicResolverMappings/{mappingId} {
       allow read, write: if isAdmin();
     }
