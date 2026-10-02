@@ -4,6 +4,10 @@ import { admin, getDb } from './admin.js';
 import { applyFreeSubscription, chargeAuthorizationForSubscription } from './paystack.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
 
+const subscriptionRef = (db, studentId) => db.collection('users').doc(studentId).collection('subscriptions').doc('current');
+const paymentRef = (db, studentId, reference) => db.collection('users').doc(studentId).collection('payments').doc(reference);
+const authorizationRef = (db, studentId) => db.collection('users').doc(studentId).collection('subscriptionAuthorizations').doc('current');
+
 const MAX_RENEWAL_ATTEMPTS = 3;
 const RENEWAL_GRACE_DAYS = 3;
 const RETRY_DELAY_HOURS = 24;
@@ -19,7 +23,7 @@ const setManualPaymentRequired = async ({ db, studentId, dueDate, reason }) => {
   }
 
   await Promise.all([
-    db.collection('subscriptions').doc(studentId).set({
+    subscriptionRef(db, studentId).set({
       status: 'past_due',
       autoRenew: false,
       manualPaymentRequired: true,
@@ -48,7 +52,7 @@ const markUncertainAttempt = async ({ db, studentId, subscription, dueDate, atte
   const retryDate = new Date(Date.now() + RETRY_DELAY_HOURS * 60 * 60 * 1000);
 
   await Promise.all([
-    db.collection('subscriptions').doc(studentId).set({
+    subscriptionRef(db, studentId).set({
       status: 'past_due',
       autoRenew: false,
       manualPaymentRequired: false,
@@ -74,7 +78,7 @@ const markUncertainAttempt = async ({ db, studentId, subscription, dueDate, atte
       subscriptionStatus: 'past_due',
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true }),
-    db.collection('payments').doc(reference).set({
+    paymentRef(db, studentId, reference).set({
       reference,
       studentId,
       payerId: attempt.payerId || studentId,
@@ -114,12 +118,15 @@ export const processSubscriptionRenewals = onSchedule(
   async () => {
     const db = getDb();
     const now = new Date();
-    const dueSnapshot = await db.collection('subscriptions').where('renewalDate', '<=', now).get();
+    const dueSnapshot = await db.collectionGroup('subscriptions')
+      .where('status', 'in', ['active', 'past_due'])
+      .where('renewalDate', '<=', now)
+      .get();
     logger.info('Found subscriptions due for renewal or expiry', { count: dueSnapshot.size });
 
     for (const subscriptionDoc of dueSnapshot.docs) {
       const subscription = subscriptionDoc.data();
-      const studentId = subscription.studentId || subscriptionDoc.id;
+      const studentId = subscription.studentId || subscriptionDoc.ref.parent.parent?.id;
       const dueDate = subscription.renewalDate?.toDate?.() ?? null;
       if (!studentId || !dueDate || dueDate > now || subscription.planId === 'free') continue;
       if (!['active', 'past_due'].includes(subscription.status)) continue;
@@ -130,7 +137,7 @@ export const processSubscriptionRenewals = onSchedule(
 
       if (inFlightAttempt) {
         try {
-          const authorizationSnapshot = await db.collection('subscriptionAuthorizations').doc(studentId).get();
+          const authorizationSnapshot = await authorizationRef(db, studentId).get();
           const authorization = authorizationSnapshot.exists ? authorizationSnapshot.data() : null;
           const quote = getAttemptQuote(subscription);
           const result = await chargeAuthorizationForSubscription({
@@ -226,7 +233,7 @@ export const processSubscriptionRenewals = onSchedule(
       const nextAttemptAt = subscription.nextRenewalAttemptAt?.toDate?.();
       if (nextAttemptAt && nextAttemptAt > now) continue;
 
-      const authorizationSnapshot = await db.collection('subscriptionAuthorizations').doc(studentId).get();
+      const authorizationSnapshot = await authorizationRef(db, studentId).get();
       const authorization = authorizationSnapshot.exists ? authorizationSnapshot.data() : null;
       if (authorization?.reusable !== true || !authorization.authorizationCode || !authorization.email) {
         await setManualPaymentRequired({
@@ -283,7 +290,7 @@ export const processSubscriptionRenewals = onSchedule(
         }
       } catch (error) {
         logger.error('Subscription renewal outcome needs verification', { studentId, error: error?.message ?? String(error) });
-        const latestSnapshot = await db.collection('subscriptions').doc(studentId).get();
+        const latestSnapshot = await subscriptionRef(db, studentId).get();
         await markUncertainAttempt({
           db,
           studentId,

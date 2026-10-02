@@ -1,31 +1,7 @@
 export const collections = {
   users: 'users',
-  students: 'students',
-  tutors: 'tutors',
-  tutorStudentAssignments: 'tutorStudentAssignments',
-  tutorStudentAssignmentPeriods: 'tutorStudentAssignmentPeriods',
-  staffStudentAccess: 'staffStudentAccess',
-  staffStudentAccessPeriods: 'staffStudentAccessPeriods',
-  studentProfiles: 'studentProfiles',
-  studentPerformance: 'studentPerformance',
-  coveredTopics: 'coveredTopics',
-  lessons: 'lessons',
-  exercises: 'exercises',
-  dailyExerciseAssignments: 'dailyExerciseAssignments',
-  exerciseGenerationStatus: 'exerciseGenerationStatus',
-  submissions: 'submissions',
-  peerReviews: 'peerReviews',
-  peerMarkingAssignments: 'peerMarkingAssignments',
-  notificationLogs: 'notificationLogs',
-  tutorReports: 'tutorReports',
-  tutorMarksDocuments: 'tutorMarksDocuments',
   questionPapers: 'questionPapers',
   topicResolverMappings: 'topicResolverMappings',
-  subscriptions: 'subscriptions',
-  subscriptionAuthorizations: 'subscriptionAuthorizations',
-  payments: 'payments',
-  guideQuizResults: 'guideQuizResults',
-  notifications: 'notifications',
   settings: 'settings',
 };
 
@@ -76,10 +52,6 @@ export const paths = {
 };
 
 export const firestoreIndexes = {
-  dailyExerciseAssignments: ['studentId', 'assignmentDate'],
-  submissions: ['studentId', 'exerciseId'],
-  coveredTopics: ['studentId', 'topicId'],
-  peerReviews: ['reviewerId', 'submissionId'],
   subjects: ['activeStaffIds', 'status'],
   peerMarkingAssignmentsGroup: ['reviewerId', 'status', 'assignmentDate'],
 };

@@ -26,12 +26,9 @@ export const getParentIdsForStudent = async (db, studentId) => {
 
 export const getTutorIdsForStudentSubject = async (db, studentId, subject) => {
   if (!studentId || !subject) return [];
-  const snapshot = await db.collection('tutorStudentAssignments')
-    .where('studentId', '==', studentId)
-    .where('subject', '==', subject)
-    .where('active', '==', true)
-    .get();
-  return unique(snapshot.docs.map((doc) => doc.data().tutorId));
+  const snapshot = await db.collection('users').doc(studentId).collection('subjects')
+    .where('subjectKey', '==', subject).where('status', '==', 'active').limit(1).get();
+  return snapshot.empty ? [] : unique(snapshot.docs[0].data().activeStaffIds ?? []);
 };
 
 export const sendNotificationToUsers = async ({
@@ -93,7 +90,7 @@ export const sendNotificationToUsers = async ({
         cleanupBatch.set(tokens[index].ref, { active: false, invalidatedAt: new Date(), invalidationReason: code }, { merge: true });
       }
     });
-    cleanupBatch.set(db.collection('notificationLogs').doc(), {
+    cleanupBatch.set(db.collection('users').doc(userId).collection('notificationLogs').doc(), {
       type,
       userId,
       title,
@@ -142,7 +139,7 @@ export const notifyNewUser = onDocumentCreated(
 );
 
 export const notifyExerciseSubmission = onDocumentWritten(
-  { document: 'dailyExerciseAssignments/{exerciseId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
+  { document: 'users/{studentId}/subjects/{subjectInstanceId}/exercises/{exerciseId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
   async (event) => {
     const before = event.data?.before?.exists ? event.data.before.data() : null;
     const after = event.data?.after?.exists ? event.data.after.data() : null;
@@ -168,7 +165,7 @@ export const notifyExerciseSubmission = onDocumentWritten(
 );
 
 export const notifyPeerMarkingCompleted = onDocumentWritten(
-  { document: 'peerMarkingAssignments/{assignmentId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
+  { document: 'users/{studentId}/subjects/{subjectInstanceId}/exercises/{exerciseId}/peerMarkingAssignments/{assignmentId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
   async (event) => {
     const before = event.data?.before?.exists ? event.data.before.data() : null;
     const after = event.data?.after?.exists ? event.data.after.data() : null;
@@ -192,7 +189,7 @@ export const notifyPeerMarkingCompleted = onDocumentWritten(
 );
 
 export const notifyPaymentStatus = onDocumentWritten(
-  { document: 'payments/{paymentId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
+  { document: 'users/{studentId}/payments/{paymentId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
   async (event) => {
     const before = event.data?.before?.exists ? event.data.before.data() : null;
     const after = event.data?.after?.exists ? event.data.after.data() : null;
@@ -219,27 +216,27 @@ export const notifyPaymentStatus = onDocumentWritten(
 );
 
 export const notifyTutorAssignment = onDocumentWritten(
-  { document: 'tutorStudentAssignments/{assignmentId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
+  { document: 'users/{studentId}/subjects/{subjectInstanceId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
   async (event) => {
     const db = getDb();
     const before = event.data?.before?.exists ? event.data.before.data() : null;
     const assignment = event.data?.after?.exists ? event.data.after.data() : null;
-    if (!assignment?.studentId || !assignment?.tutorId || assignment.active !== true || before?.active === true) return;
+    if (!assignment?.studentId || !assignment?.primaryTutorId || assignment.primaryTutorId === before?.primaryTutorId) return;
     const parentIds = await getParentIdsForStudent(db, assignment.studentId);
     await sendNotificationToUsers({
-      userIds: unique([assignment.studentId, assignment.tutorId, ...parentIds]),
+      userIds: unique([assignment.studentId, assignment.primaryTutorId, ...parentIds]),
       title: 'Tutor assignment updated',
       body: `A tutor has been assigned for ${assignment.subject || 'your subject'}.`,
       type: 'tutor-assignment.created',
       url: assignment.tutorId ? '/student/profile/subjects' : '/',
-      data: { assignmentId: event.params.assignmentId, studentId: assignment.studentId, tutorId: assignment.tutorId, subject: assignment.subject ?? '' },
-      tag: `tutor-assignment-${event.params.assignmentId}`,
+      data: { subjectInstanceId: event.params.subjectInstanceId, studentId: assignment.studentId, tutorId: assignment.primaryTutorId, subject: assignment.subjectKey ?? '' },
+      tag: `tutor-assignment-${event.params.subjectInstanceId}`,
     });
   }
 );
 
 export const notifyTutorReport = onDocumentCreated(
-  { document: 'tutorReports/{reportId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
+  { document: 'users/{studentId}/subjects/{subjectInstanceId}/reports/{reportId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
   async (event) => {
     const db = getDb();
     const report = event.data?.data();
@@ -258,7 +255,7 @@ export const notifyTutorReport = onDocumentCreated(
 );
 
 export const notifyCompletedLesson = onDocumentCreated(
-  { document: 'coveredTopics/{lessonId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
+  { document: 'users/{studentId}/subjects/{subjectInstanceId}/lessons/{lessonId}', timeoutSeconds: 90, memory: '256MiB', cpu: 'gcf_gen1' },
   async (event) => {
     const db = getDb();
     const lesson = event.data?.data();

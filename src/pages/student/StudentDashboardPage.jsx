@@ -106,7 +106,7 @@ export const StudentDashboardPage = () => {
   const [generationProgress, setGenerationProgress] = useState(0);
   const [generationMessage, setGenerationMessage] = useState('');
   const [readinessRows, setReadinessRows] = useState([]);
-  const [exerciseGenerationStatuses, setExerciseGenerationStatuses] = useState({});
+  const [generationStatuses, setGenerationStatuses] = useState({});
   const [subscriptionPlanId, setSubscriptionPlanId] = useState('free');
   const [subscriptionPlanName, setSubscriptionPlanName] = useState('Free');
   const [requiresSubscriptionSelection, setRequiresSubscriptionSelection] = useState(true);
@@ -114,7 +114,7 @@ export const StudentDashboardPage = () => {
   useEffect(() => {
     if (!profile?.uid) return undefined;
     const unsubscribes = availableSubjects.map((subject) => subscribeToExerciseGenerationStatus(profile.uid, subject, (status) => {
-      setExerciseGenerationStatuses((current) => ({ ...current, [subject]: status }));
+      setGenerationStatuses((current) => ({ ...current, [subject]: status }));
     }));
     return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
   }, [profile?.uid, availableSubjects]);
@@ -262,10 +262,15 @@ export const StudentDashboardPage = () => {
     const reviewImages = await Promise.all(files.map(async (file, index) => {
       const reviewFileName = (file.name || reviewingAssignment.submittedFileName || 'submission.png').replace(/\.[^/.]+$/, `-peer-review-${index + 1}.png`);
       const renamedFile = new File([file], reviewFileName, { type: file.type || 'image/png' });
-      const upload = await uploadPeerReviewImage({ file: renamedFile, studentId: profile.uid, exerciseId: reviewingAssignment.exerciseId });
+      const upload = await uploadPeerReviewImage({
+        file: renamedFile,
+        studentId: profile.uid,
+        exerciseId: reviewingAssignment.reviewerExerciseId,
+        subjectInstanceId: reviewingAssignment.reviewerSubjectInstanceId,
+      });
       return { ...upload, pageNumber: index + 1 };
     }));
-    await completePeerMarkingAssignment({ assignmentId: reviewingAssignment.id, reviewerId: profile.uid, reviewImages });
+    await completePeerMarkingAssignment({ assignmentId: reviewingAssignment.id, assignmentPath: reviewingAssignment.assignmentPath, reviewerId: profile.uid, reviewImages });
     setPeerAssignments(await getPeerMarkingAssignmentsForStudent(profile.uid));
     setReviewingAssignment(null);
   };
@@ -324,7 +329,7 @@ export const StudentDashboardPage = () => {
     >
       {loadError ? <div className="panel p-4 text-sm text-amber-700">{loadError}</div> : null}
 
-      {Object.entries(exerciseGenerationStatuses).filter(([, status]) => {
+      {Object.entries(generationStatuses).filter(([, status]) => {
         if (!status) return false;
         if (status.status === 'processing') return Date.now() < Number(status.expiresAtMs ?? 0);
         return Date.now() - Number(status.finishedAtMs || 0) < 120000;

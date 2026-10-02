@@ -5,6 +5,10 @@ import { getDb, admin } from './admin.js';
 import { getPaystackConfig } from './config.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
 
+const studentSubscriptionRef = (db, studentId) => db.collection('users').doc(studentId).collection('subscriptions').doc('current');
+const studentPaymentRef = (db, studentId, reference) => db.collection('users').doc(studentId).collection('payments').doc(reference);
+const studentAuthorizationRef = (db, studentId) => db.collection('users').doc(studentId).collection('subscriptionAuthorizations').doc('current');
+
 const paystackRequest = async ({ path, method = 'POST', payload }) => {
   const { paystackSecretKey, paystackBaseUrl } = getPaystackConfig();
 
@@ -64,7 +68,7 @@ export const applyFreeSubscription = async ({ studentId, pendingReference = null
     updatedAt: now,
     ...(reason ? { lastSubscriptionChangeReason: reason } : {}),
   };
-  batch.set(db.collection('subscriptions').doc(studentId), subscriptionPatch, { merge: true });
+  batch.set(studentSubscriptionRef(db, studentId), subscriptionPatch, { merge: true });
   batch.set(db.collection('users').doc(studentId), {
     paymentCompleted: false,
     subscriptionStatus: 'active',
@@ -78,7 +82,7 @@ export const applyFreeSubscription = async ({ studentId, pendingReference = null
     updatedAt: now,
   }, { merge: true });
   if (pendingReference) {
-    batch.set(db.collection('payments').doc(pendingReference), {
+    batch.set(studentPaymentRef(db, studentId, pendingReference), {
       status: pendingStatus,
       appliedAt: pendingStatus === 'applied' ? now : admin.firestore.FieldValue.delete(),
       updatedAt: now,
@@ -136,19 +140,21 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
       throw new HttpsError('invalid-argument', 'callbackUrl is required when initializing payment.');
     }
 
+    let callbackUrlWithStudent;
     try {
-      const parsedCallbackUrl = new URL(paystackCallbackUrl);
-      if (!['http:', 'https:'].includes(parsedCallbackUrl.protocol)) {
+      callbackUrlWithStudent = new URL(paystackCallbackUrl);
+      callbackUrlWithStudent.searchParams.set('studentId', studentId);
+      if (!['http:', 'https:'].includes(callbackUrlWithStudent.protocol)) {
         throw new Error('Unsupported callback URL protocol.');
       }
     } catch {
       throw new HttpsError('invalid-argument', 'callbackUrl must be a valid http or https URL.');
     }
 
-    const subscriptionRef = db.collection('subscriptions').doc(studentId);
+    const subscriptionRef = studentSubscriptionRef(db, studentId);
     const [currentSubscriptionSnapshot, authorizationSnapshot] = await Promise.all([
       subscriptionRef.get(),
-      db.collection('subscriptionAuthorizations').doc(studentId).get(),
+      studentAuthorizationRef(db, studentId).get(),
     ]);
     const currentSubscription = currentSubscriptionSnapshot.exists ? currentSubscriptionSnapshot.data() : null;
     const renewalDate = currentSubscription?.renewalDate?.toDate?.() ?? null;
@@ -185,7 +191,7 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
     if (samePlan) {
       if (currentSubscription.pendingPlanReference) {
         const batch = db.batch();
-        batch.set(db.collection('payments').doc(currentSubscription.pendingPlanReference), {
+        batch.set(studentPaymentRef(db, studentId, currentSubscription.pendingPlanReference), {
           status: 'cancelled',
           cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
           cancellationReason: 'returned_to_current_plan',
@@ -217,7 +223,7 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
       const reusableAuthorization = isReusableAuthorization(authorizationSnapshot.data());
       const batch = db.batch();
       if (currentSubscription.pendingPlanReference) {
-        batch.set(db.collection('payments').doc(currentSubscription.pendingPlanReference), {
+        batch.set(studentPaymentRef(db, studentId, currentSubscription.pendingPlanReference), {
           status: 'superseded',
           supersededAt: admin.firestore.FieldValue.serverTimestamp(),
           supersededBy: reference,
@@ -238,7 +244,7 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
         pendingSubscriptionPlan: pendingPlan,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
-      batch.set(db.collection('payments').doc(reference), {
+      batch.set(studentPaymentRef(db, studentId, reference), {
         reference,
         studentId,
         payerId,
@@ -287,13 +293,13 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
       };
       const batch = db.batch();
       if (currentSubscription?.pendingPlanReference) {
-        batch.set(db.collection('payments').doc(currentSubscription.pendingPlanReference), {
+        batch.set(studentPaymentRef(db, studentId, currentSubscription.pendingPlanReference), {
           status: 'cancelled',
           cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
           cancellationReason: 'activated_free_plan',
         }, { merge: true });
       }
-      batch.set(db.collection('payments').doc(reference), {
+      batch.set(studentPaymentRef(db, studentId, reference), {
         reference,
         studentId,
         payerId,
@@ -340,7 +346,7 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
         amount: Math.round(quote.amount * 100),
         currency: 'ZAR',
         reference,
-        callback_url: paystackCallbackUrl,
+        callback_url: callbackUrlWithStudent.toString(),
         metadata: {
           studentId,
           payerId,
@@ -352,7 +358,7 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
       },
     });
 
-    await db.collection('payments').doc(reference).set({
+    await studentPaymentRef(db, studentId, reference).set({
       reference,
       studentId,
       payerId,
@@ -392,9 +398,9 @@ export const manageStudentSubscription = onCall({ cpu: 'gcf_gen1' }, async (requ
 
   const db = getDb();
   await assertCanManageStudentSubscription({ db, payerId, studentId });
-  const subscriptionRef = db.collection('subscriptions').doc(studentId);
+  const subscriptionRef = studentSubscriptionRef(db, studentId);
   const userRef = db.collection('users').doc(studentId);
-  const authorizationSnapshot = await db.collection('subscriptionAuthorizations').doc(studentId).get();
+  const authorizationSnapshot = await studentAuthorizationRef(db, studentId).get();
   const reusableAuthorization = isReusableAuthorization(authorizationSnapshot.data());
   const now = new Date();
 
@@ -416,7 +422,7 @@ export const manageStudentSubscription = onCall({ cpu: 'gcf_gen1' }, async (requ
     }
 
     const pendingReference = subscription.pendingPlanReference ?? null;
-    const pendingPaymentRef = pendingReference ? db.collection('payments').doc(pendingReference) : null;
+    const pendingPaymentRef = pendingReference ? studentPaymentRef(db, studentId, pendingReference) : null;
     const pendingPaymentSnapshot = pendingPaymentRef ? await transaction.get(pendingPaymentRef) : null;
     const cancelPendingPayment = () => {
       if (pendingPaymentRef && pendingPaymentSnapshot?.exists) {
@@ -542,15 +548,16 @@ export const manageStudentSubscription = onCall({ cpu: 'gcf_gen1' }, async (requ
 });
 
 export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (request) => {
-  const { reference } = request.data ?? {};
+  const { reference, studentId } = request.data ?? {};
   const payerId = request.auth?.uid;
   if (!payerId) throw new HttpsError('unauthenticated', 'Sign in to verify your payment.');
-  if (!reference) {
-    throw new HttpsError('invalid-argument', 'reference is required.');
+  if (!reference || !studentId) {
+    throw new HttpsError('invalid-argument', 'reference and studentId are required.');
   }
 
   const db = getDb();
-  const paymentRef = db.collection('payments').doc(reference);
+  await assertCanManageStudentSubscription({ db, payerId, studentId });
+  const paymentRef = studentPaymentRef(db, studentId, reference);
   const paymentSnapshot = await paymentRef.get();
   if (!paymentSnapshot.exists) throw new HttpsError('not-found', 'Payment record not found.');
   const payment = paymentSnapshot.data();
@@ -604,7 +611,7 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
   }, { merge: true });
 
   if (succeeded) {
-    const subscriptionRef = db.collection('subscriptions').doc(payment.studentId);
+    const subscriptionRef = studentSubscriptionRef(db, payment.studentId);
     const currentSubscriptionSnapshot = await subscriptionRef.get();
     const currentSubscription = currentSubscriptionSnapshot.exists ? currentSubscriptionSnapshot.data() : null;
     const oldPendingReference = currentSubscription?.pendingPlanReference;
@@ -613,13 +620,13 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
       const pendingWasApplied = oldPendingPlan?.planId === quote.planId
         && oldPendingPlan?.billingPeriod === quote.billingPeriod
         && Number(oldPendingPlan?.subjectCount) === Number(quote.subjectCount);
-      batch.set(db.collection('payments').doc(oldPendingReference), {
+      batch.set(studentPaymentRef(db, payment.studentId, oldPendingReference), {
         status: pendingWasApplied ? 'applied' : 'cancelled',
         ...(pendingWasApplied ? { appliedAt: admin.firestore.FieldValue.serverTimestamp() } : { cancelledAt: admin.firestore.FieldValue.serverTimestamp() }),
       }, { merge: true });
     }
     if (reusableAuthorization) {
-      batch.set(db.collection('subscriptionAuthorizations').doc(payment.studentId), {
+      batch.set(studentAuthorizationRef(db, payment.studentId), {
         studentId: payment.studentId,
         payerId,
         email: transaction.customer?.email ?? payment.email,
@@ -636,7 +643,7 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
         reference,
       }, { merge: true });
     } else {
-      batch.delete(db.collection('subscriptionAuthorizations').doc(payment.studentId));
+      batch.delete(studentAuthorizationRef(db, payment.studentId));
     }
 
     batch.set(subscriptionRef, {
@@ -698,7 +705,7 @@ export const chargeAuthorizationForSubscription = async ({
   reference: requestedReference = null,
 }) => {
   const db = getDb();
-  const subscriptionRef = db.collection('subscriptions').doc(studentId);
+  const subscriptionRef = studentSubscriptionRef(db, studentId);
   const dueDate = renewalDate?.toDate?.() ?? (renewalDate instanceof Date ? renewalDate : null);
   if (!dueDate || !subscriptionQuote || !payerId) {
     throw new HttpsError('failed-precondition', 'The subscription renewal data is incomplete.');
@@ -866,7 +873,7 @@ export const chargeAuthorizationForSubscription = async ({
       new Date(Date.now() + subscriptionQuote.billingCycleDays * 24 * 60 * 60 * 1000)
     ) : null;
     const batch = db.batch();
-    batch.set(db.collection('payments').doc(claim.reference), {
+    batch.set(studentPaymentRef(db, studentId, claim.reference), {
       reference: claim.reference,
       studentId,
       payerId: claim.payerId,
@@ -911,7 +918,7 @@ export const chargeAuthorizationForSubscription = async ({
         lastChargeAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
       if (claim.pendingPlanReference) {
-        batch.set(db.collection('payments').doc(claim.pendingPlanReference), {
+        batch.set(studentPaymentRef(db, studentId, claim.pendingPlanReference), {
           status: 'applied',
           appliedAt: admin.firestore.FieldValue.serverTimestamp(),
         }, { merge: true });
@@ -992,8 +999,8 @@ export const chargeStoredAuthorization = onCall(async (request) => {
   const [payerSnapshot, studentSnapshot, subscriptionSnapshot, authSnapshot] = await Promise.all([
     db.collection('users').doc(payerId).get(),
     db.collection('users').doc(studentId).get(),
-    db.collection('subscriptions').doc(studentId).get(),
-    db.collection('subscriptionAuthorizations').doc(studentId).get(),
+    studentSubscriptionRef(db, studentId).get(),
+    studentAuthorizationRef(db, studentId).get(),
   ]);
   if (!payerSnapshot.exists || !studentSnapshot.exists || studentSnapshot.data().role !== 'student') {
     throw new HttpsError('not-found', 'The student subscription was not found.');

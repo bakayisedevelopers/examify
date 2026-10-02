@@ -6,6 +6,7 @@ export {
 } from './paystack.js';
 
 export { processSubscriptionRenewals } from './subscriptionRenewals.js';
+export { auditSubscriptionChanges, auditAuthorizationChanges } from './subscriptionAudit.js';
 
 export {
   assignStudentToTutor,

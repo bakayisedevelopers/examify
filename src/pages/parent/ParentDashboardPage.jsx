@@ -121,8 +121,9 @@ export const ParentDashboardPage = () => {
 
       const params = new URLSearchParams(location.search);
       const reference = params.get('reference') || params.get('trxref');
+      const paymentStudentId = params.get('studentId');
 
-      if (!reference) return;
+      if (!reference || !paymentStudentId) return;
       if (lastVerifiedReferenceRef.current === reference) return;
 
       try {
@@ -130,7 +131,7 @@ export const ParentDashboardPage = () => {
         setLoading(true);
         setStatus('Verifying your payment...');
 
-        const verification = await verifySubscriptionPayment(reference);
+        const verification = await verifySubscriptionPayment(reference, paymentStudentId);
 
         if (verification?.status !== 'success') {
           setStatus(`Payment verification returned status: ${verification?.status ?? 'unknown'}`);

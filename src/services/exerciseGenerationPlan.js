@@ -29,8 +29,8 @@ export const getSevenDayWindow = (today) => {
   });
 };
 
-export const getRegenerationState = ({ history = [], assignmentDates = [], generationNumber = 1, maxDailyExercises = 5 } = {}) => {
-  const limit = Math.min(maxDailyExercises, Math.max(1, generationNumber));
+export const getRegenerationState = ({ history = [], assignmentDates = [], completedTopicCount = 1, maxDailyExercises = 5 } = {}) => {
+  const limit = Math.min(maxDailyExercises, Math.max(1, completedTopicCount));
   const exercisesByDate = new Map();
   history.forEach((exercise) => {
     const date = String(exercise?.assignmentDate ?? '').slice(0, 10);
