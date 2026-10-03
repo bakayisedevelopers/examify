@@ -76,9 +76,10 @@ export const TutorStudentDetailsPage = () => {
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
   useEffect(() => {
-    if (!studentId || !profile?.uid || periodId) return undefined;
-    return subscribeToExerciseGenerationStatus(studentId, subject, setRegenerationStatus);
-  }, [profile?.uid, studentId, subject, periodId]);
+    if (!studentId || !profile?.uid || periodId || student?.subject !== subject || !student?.subjectInstanceId) return undefined;
+    setRegenerationStatus(null);
+    return subscribeToExerciseGenerationStatus(studentId, subject, setRegenerationStatus, student.subjectInstanceId);
+  }, [profile?.uid, studentId, subject, periodId, student?.subject, student?.subjectInstanceId]);
 
   const load = async () => {
     if (!profile?.uid) return;
@@ -161,13 +162,6 @@ export const TutorStudentDetailsPage = () => {
   const canMark = canManage || student?.accessRole === 'marker';
   const todayLocal = today();
   const regenerationEndDate = getSevenDayWindow(todayLocal).at(-1);
-  const regenerableExercises = exercises.filter((exercise) =>
-    String(exercise.assignmentDate ?? '') >= todayLocal
-    && String(exercise.assignmentDate ?? '') <= regenerationEndDate
-    && !exercise.submittedImageUrl
-    && exercise.submitted !== 'Yes'
-    && exercise.submissionStatus !== 'submitted'
-  );
   const regenerationInProgress = isRegenerating || (
     regenerationStatus?.status === 'processing'
     && Date.now() < Number(regenerationStatus.expiresAtMs ?? 0)
@@ -208,8 +202,15 @@ export const TutorStudentDetailsPage = () => {
   };
 
   const regenerateExercises = async () => {
-    if (isRegenerating || !student || !regenerableExercises.length) return;
-    const confirmed = window.confirm(`Regenerate uncompleted exercises from today through ${regenerationEndDate} for ${student.displayName || student.name || 'this student'}? Completed exercises and exercises outside this 7-day window will be kept.`);
+    if (isRegenerating) {
+      setStatus('Exercise regeneration is already in progress.');
+      return;
+    }
+    if (!student || !student.subjectInstanceId) {
+      setStatus('Student access details are still loading. Reload the page and try again.');
+      return;
+    }
+    const confirmed = window.confirm(`Regenerate exercises for ${student.displayName || student.name || 'this student'} from today through ${regenerationEndDate}? Unsubmitted exercises in this window will be replaced, missing days can be filled, and submitted work will be kept.`);
     if (!confirmed) return;
     setIsRegenerating(true);
     setStatus('Starting exercise regeneration...');
@@ -443,7 +444,7 @@ export const TutorStudentDetailsPage = () => {
       <section className="panel space-y-4 p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <SectionHeader eyebrow="Exercises" title="Assigned exercises" description="Click an exercise to view details and paper links." />
-            {canManage ? <button type="button" className="btn-secondary inline-flex items-center gap-2 disabled:cursor-not-allowed" onClick={regenerateExercises} disabled={!regenerableExercises.length || regenerationInProgress}>
+            {canManage ? <button type="button" className="btn-secondary inline-flex items-center gap-2 disabled:cursor-not-allowed" onClick={regenerateExercises} disabled={regenerationInProgress}>
               {regenerationInProgress ? <><LoaderCircle className="h-4 w-4 animate-spin text-lime-400" aria-hidden="true" /> Regenerating...</> : 'Regenerate next 7 days'}
             </button> : null}
           </div>

@@ -126,10 +126,19 @@ const getApprovedTutorOrTeacherProfiles = (profiles, subject = null) => {
   return [...new Map([...tutors, ...teachers].map((profile) => [profile.uid, profile])).values()];
 };
 
-export const getActiveSubjectEpisode = async (studentId, subject = DEFAULT_SUBJECT) => {
+export const getActiveSubjectEpisode = async (studentId, subject = DEFAULT_SUBJECT, subjectInstanceId = null) => {
   if (!studentId || !isFirebaseConfigured) return null;
   ensureDb();
   const normalizedTarget = normalizeEligibleSubject(subject) ?? subject;
+  if (subjectInstanceId) {
+    const episodeSnapshot = await getDoc(doc(db, 'users', studentId, 'subjects', subjectInstanceId));
+    if (!episodeSnapshot.exists()) return null;
+    const episode = episodeSnapshot.data();
+    const normalizedEpisodeSubject = normalizeEligibleSubject(episode.subjectKey) ?? episode.subjectKey;
+    return episode.status === 'active' && normalizedEpisodeSubject === normalizedTarget
+      ? { id: episodeSnapshot.id, ...episode }
+      : null;
+  }
   const subjectsQuery = query(
     collection(db, 'users', studentId, 'subjects'),
     where('subjectKey', '==', normalizedTarget),
@@ -141,7 +150,7 @@ export const getActiveSubjectEpisode = async (studentId, subject = DEFAULT_SUBJE
   return matchingDoc ? { id: matchingDoc.id, ...matchingDoc.data() } : null;
 };
 
-export const ensureActiveSubjectEpisode = async (studentId, subject = DEFAULT_SUBJECT) => {
+export const ensureActiveSubjectEpisode = async (studentId, subject = DEFAULT_SUBJECT, context = {}) => {
   if (!studentId) return null;
   if (!isFirebaseConfigured) {
     return {
@@ -155,7 +164,7 @@ export const ensureActiveSubjectEpisode = async (studentId, subject = DEFAULT_SU
     };
   }
   ensureDb();
-  const existing = await getActiveSubjectEpisode(studentId, subject);
+  const existing = await getActiveSubjectEpisode(studentId, subject, context.subjectInstanceId);
   if (existing) return existing;
   throw new Error(`No active ${subject} episode exists. Add the subject before continuing.`);
 };
@@ -629,8 +638,8 @@ export const getRoleDashboardData = async (role, options = {}) => {
   return emptyDashboardData[role] ?? { stats: [] };
 };
 
-const episodeExercises = async (studentId, subject, constraints = []) => {
-  const episode = await getActiveSubjectEpisode(studentId, subject);
+const episodeExercises = async (studentId, subject, constraints = [], subjectInstanceId = null) => {
+  const episode = await getActiveSubjectEpisode(studentId, subject, subjectInstanceId);
   if (!episode?.id) return [];
   const snapshot = await getDocs(query(
     collection(db, 'users', studentId, 'subjects', episode.id, 'exercises'),
@@ -674,11 +683,11 @@ export const getFutureExercises = async (studentId, subject = DEFAULT_SUBJECT) =
   return episodeExercises(studentId, subject, [where('assignmentDate', '>', weekFromToday), orderBy('assignmentDate', 'asc'), limit(20)]);
 };
 
-const getAssignmentHistory = async (studentId, subject = DEFAULT_SUBJECT, maxRecords = GENERATION_HISTORY_LIMIT) => {
+const getAssignmentHistory = async (studentId, subject = DEFAULT_SUBJECT, maxRecords = GENERATION_HISTORY_LIMIT, subjectInstanceId = null) => {
   if (!studentId) return [];
   if (!isFirebaseConfigured) return buildStudentDashboard(studentId, subject).exerciseHistory ?? [];
   ensureDb();
-  return episodeExercises(studentId, subject, [orderBy('assignmentDate', 'desc'), limit(maxRecords)]);
+  return episodeExercises(studentId, subject, [orderBy('assignmentDate', 'desc'), limit(maxRecords)], subjectInstanceId);
 };
 
 const getLastAssignmentDate = (history = []) =>
@@ -1332,16 +1341,16 @@ export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT) 
   }
 
   ensureDb();
-  const episode = await getActiveSubjectEpisode(student.uid, subject);
   const tutorContext = Boolean(student.accessRole && student.subjectInstanceId);
+  const episode = await getActiveSubjectEpisode(student.uid, subject, tutorContext ? student.subjectInstanceId : null);
   const [studentSnapshot, nestedSubSnapshot, papers, reports, lessons, assignmentHistory, generationRunSnapshot, completedTopicSummaries] = await Promise.all([
     getDoc(doc(db, collections.users, student.uid)),
     tutorContext ? Promise.resolve({ exists: () => false })
       : getDoc(doc(db, 'users', student.uid, 'subscriptions', 'current')).catch(() => ({ exists: () => false })),
     getQuestionPapers({ grade: student.grade, region: student.province, subject }),
-    getTutorReports(student.uid, subject),
-    getCompletedLessons(student.uid, subject),
-    getAssignmentHistory(student.uid, subject),
+    getTutorReports(student.uid, subject, episode?.id),
+    getCompletedLessons(student.uid, subject, episode?.id),
+    getAssignmentHistory(student.uid, subject, GENERATION_HISTORY_LIMIT, episode?.id),
     episode?.id ? getDoc(doc(db, 'users', student.uid, 'subjects', episode.id, 'generationRuns', localDateKey())) : Promise.resolve({ exists: () => false }),
     episode?.id ? getEpisodeTopicSummaries(student.uid, episode.id) : Promise.resolve([]),
   ]);
@@ -1402,12 +1411,12 @@ export const getAssignedStudentsForTutor = async (tutorId, subject = DEFAULT_SUB
   return contexts.filter((context) => context.subject === subject);
 };
 
-export const getTutorReports = async (studentId, subject = DEFAULT_SUBJECT) => {
+export const getTutorReports = async (studentId, subject = DEFAULT_SUBJECT, subjectInstanceId = null) => {
   if (!isFirebaseConfigured) return mockTutorReports.filter((report) => (!studentId || report.studentId === studentId)
     && (report.subject ?? DEFAULT_SUBJECT) === subject && report.reportType !== 'initial');
   ensureDb();
   if (studentId) {
-    const episode = await getActiveSubjectEpisode(studentId, subject);
+    const episode = await getActiveSubjectEpisode(studentId, subject, subjectInstanceId);
     if (!episode?.id) return [];
     const snapshot = await getDocs(query(collection(db, 'users', studentId, 'subjects', episode.id, 'reports'), orderBy('updatedAt', 'desc')));
     return snapshot.docs.map((item) => ({ id: item.id, ...item.data(), subjectInstanceId: episode.id }))
@@ -1441,23 +1450,23 @@ export const saveTutorReport = async ({ reportId, studentId, tutorId, note, stud
   return { id: reportRef.id, ...payload };
 };
 
-export const getCompletedLessons = async (studentId, subject = DEFAULT_SUBJECT) => {
+export const getCompletedLessons = async (studentId, subject = DEFAULT_SUBJECT, subjectInstanceId = null) => {
   if (!isFirebaseConfigured) return mockCompletedLessons.filter((lesson) => (!studentId || lesson.studentId === studentId) && (lesson.subject ?? DEFAULT_SUBJECT) === subject && isCompletedLessonReadyForGeneration(lesson));
   ensureDb();
   let snapshot;
-  let subjectInstanceId = '';
+  let resolvedSubjectInstanceId = subjectInstanceId ?? '';
   if (studentId) {
-    const episode = await getActiveSubjectEpisode(studentId, subject);
+    const episode = await getActiveSubjectEpisode(studentId, subject, subjectInstanceId);
     if (!episode?.id) return [];
-    subjectInstanceId = episode.id;
+    resolvedSubjectInstanceId = episode.id;
     snapshot = await getDocs(query(collection(db, 'users', studentId, 'subjects', episode.id, 'lessons'), where('status', '==', 'completed')));
   } else {
     snapshot = await getDocs(query(collectionGroup(db, 'lessons'), where('subject', '==', subject), where('status', '==', 'completed')));
   }
   const lessons = await hydrateEpisodeLessonScores(
-    snapshot.docs.map((item) => ({ id: item.id, ...item.data(), subjectInstanceId: item.data().subjectInstanceId || subjectInstanceId, documentPath: item.ref.path })),
+    snapshot.docs.map((item) => ({ id: item.id, ...item.data(), subjectInstanceId: item.data().subjectInstanceId || resolvedSubjectInstanceId, documentPath: item.ref.path })),
     studentId,
-    subjectInstanceId,
+    resolvedSubjectInstanceId,
   );
   return lessons.filter(isCompletedLessonReadyForGeneration);
 };
@@ -2548,12 +2557,12 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     };
   }
 
-  let assignmentHistory = await getAssignmentHistory(student?.uid, subject);
+  let assignmentHistory = await getAssignmentHistory(student?.uid, subject, GENERATION_HISTORY_LIMIT, student?.subjectInstanceId);
   const assignmentDates = targetAssignmentDates ?? (replacesExerciseWindow
     ? getSevenDayWindow(getLocalDate())
     : buildAssignmentDates({ mode, assignmentHistory }));
   if (replacesExerciseWindow && isFirebaseConfigured && student?.uid) {
-    const activeEpisode = await getActiveSubjectEpisode(student.uid, subject);
+    const activeEpisode = await getActiveSubjectEpisode(student.uid, subject, student.subjectInstanceId);
     if (!activeEpisode?.id) throw new Error('Active subject episode not found.');
     const windowSnapshot = await getDocs(query(
       collection(db, 'users', student.uid, 'subjects', activeEpisode.id, 'exercises'),
@@ -2985,9 +2994,10 @@ export const regenerateFutureUnsubmittedExercisesForTutor = async ({ tutorId, st
   }
 
   ensureDb();
-  const episode = await getActiveSubjectEpisode(student.uid, subject);
-  if (!episode?.id) throw new Error('Active subject episode not found.');
-  const statusRef = doc(db, 'users', student.uid, 'subjects', episode.id, 'generationRuns', localDateKey());
+  const subjectInstanceId = assignedContext.subjectInstanceId;
+  if (!subjectInstanceId) throw new Error('The active subject assignment could not be found. Reload the student and try again.');
+  const dateKey = localDateKey();
+  const statusRef = doc(db, 'users', student.uid, 'subjects', subjectInstanceId, 'generationRuns', dateKey);
   const startedAtMs = Date.now();
   const acquired = await runTransaction(db, async (transaction) => {
     const currentStatus = await transaction.get(statusRef);
@@ -2997,8 +3007,9 @@ export const regenerateFutureUnsubmittedExercisesForTutor = async ({ tutorId, st
     transaction.set(statusRef, {
       studentId: student.uid,
       tutorId,
-      subjectInstanceId: episode.id,
+      subjectInstanceId,
       subject,
+      dateKey,
       status: 'processing',
       message: 'Preparing analyzed paper metadata for exercise regeneration.',
       startedAtMs,
@@ -3013,8 +3024,9 @@ export const regenerateFutureUnsubmittedExercisesForTutor = async ({ tutorId, st
   const saveStatus = (status, message) => setDoc(statusRef, {
     studentId: student.uid,
     tutorId,
-    subjectInstanceId: episode.id,
+    subjectInstanceId,
     subject,
+    dateKey,
     mode: 'weekly',
     lastTrigger: 'manual',
     status,
@@ -3043,15 +3055,33 @@ export const regenerateFutureUnsubmittedExercisesForTutor = async ({ tutorId, st
   }
 };
 
-export const subscribeToExerciseGenerationStatus = (studentId, subject, callback) => {
+export const subscribeToExerciseGenerationStatus = (studentId, subject, callback, subjectInstanceId = null) => {
   if (!studentId || !subject || !isFirebaseConfigured) return () => {};
   ensureDb();
-  const statusQuery = query(collectionGroup(db, 'generationRuns'), where('studentId', '==', studentId), where('subject', '==', subject), where('dateKey', '==', localDateKey()), limit(1));
-  return onSnapshot(
-    statusQuery,
-    (snapshot) => callback(snapshot.empty ? null : snapshot.docs[0].data()),
-    (error) => console.error('[Examifying][Firestore] exercise generation status subscription failed', error),
-  );
+  let cancelled = false;
+  let unsubscribe = () => {};
+  const episodePromise = subjectInstanceId
+    ? Promise.resolve({ id: subjectInstanceId })
+    : getActiveSubjectEpisode(studentId, subject);
+  episodePromise.then((episode) => {
+    if (cancelled) return;
+    if (!episode?.id) {
+      callback(null);
+      return;
+    }
+    const statusRef = doc(db, 'users', studentId, 'subjects', episode.id, 'generationRuns', localDateKey());
+    unsubscribe = onSnapshot(
+      statusRef,
+      (snapshot) => callback(snapshot.exists() ? snapshot.data() : null),
+      (error) => console.error('[Examifying][Firestore] exercise generation status subscription failed', error),
+    );
+  }).catch((error) => {
+    if (!cancelled) console.error('[Examifying][Firestore] exercise generation status subscription failed', error);
+  });
+  return () => {
+    cancelled = true;
+    unsubscribe();
+  };
 };
 
 export const subscribeToSubjectUnderstandingSummary = (studentId, subject, callback) => {
