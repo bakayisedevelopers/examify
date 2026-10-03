@@ -6,6 +6,7 @@ import { callGeminiGenerateContent } from './gemini.js';
 const MODEL = 'gemini-3.5-flash-lite';
 const MAX_SOURCE_TOPICS = 25;
 const MAX_ALLOWED_TOPICS = 300;
+const MAX_GEMINI_ATTEMPTS = 2;
 
 const normalizeLabel = (value) => String(value ?? '')
   .normalize('NFKD')
@@ -29,7 +30,7 @@ const parseTopicArray = (value = '') => {
   }
 };
 
-export const resolveTopicsWithGemini = onCall({ timeoutSeconds: 120, memory: '256MiB' }, async (request) => {
+export const resolveTopicsWithGemini = onCall({ timeoutSeconds: 240, memory: '256MiB' }, async (request) => {
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError('unauthenticated', 'Sign in as an admin to resolve topics.');
 
@@ -66,20 +67,38 @@ export const resolveTopicsWithGemini = onCall({ timeoutSeconds: 120, memory: '25
     `Source topics to resolve:\n${JSON.stringify(topics)}`,
   ].join('\n\n');
 
-  const generated = await callGeminiGenerateContent({
-    prompt,
-    model: MODEL,
-    useGoogleSearch: true,
-    responseFormat: { type: 'json_array' },
-    maxTokens: 0,
-    thinkingLevel: 'low',
-    temperature: 0,
-  });
+  let generated;
+  let proposed = [];
+  for (let attempt = 1; attempt <= MAX_GEMINI_ATTEMPTS; attempt += 1) {
+    generated = await callGeminiGenerateContent({
+      prompt,
+      model: MODEL,
+      useGoogleSearch: true,
+      responseFormat: { type: 'json_array' },
+      maxTokens: 0,
+      thinkingLevel: 'low',
+      temperature: 0,
+    });
+    proposed = generated.text.trim() ? parseTopicArray(generated.text) : [];
+    if (proposed.length === topics.length) break;
+
+    const candidate = generated.raw?.candidates?.[0] ?? {};
+    logger.warn('Gemini topic-resolution attempt returned an empty or incomplete list', {
+      model: generated.model,
+      attempt,
+      maxAttempts: MAX_GEMINI_ATTEMPTS,
+      topicCount: topics.length,
+      proposedCount: proposed.length,
+      textLength: generated.text.length,
+      finishReason: candidate.finishReason ?? null,
+      promptBlockReason: generated.raw?.promptFeedback?.blockReason ?? null,
+      candidateTokenCount: generated.usage?.candidatesTokenCount ?? null,
+    });
+  }
+
   if (!generated.text.trim()) {
-    logger.warn('Gemini returned no topic-resolution text', { model: generated.model, topicCount: topics.length });
     throw new HttpsError('unavailable', 'Gemini returned an empty topic-resolution response. Please retry.');
   }
-  const proposed = parseTopicArray(generated.text);
   if (proposed.length !== topics.length) {
     logger.warn('Gemini returned an incomplete topic-resolution list', {
       model: generated.model,
