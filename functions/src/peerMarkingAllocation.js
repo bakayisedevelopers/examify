@@ -28,22 +28,27 @@ export const getExerciseTopicKeys = (exercise = {}) => {
   return new Set(values.map(normalise).filter(Boolean));
 };
 
-const candidateMatches = (candidate, reviewer, topicKeys, { grade, subject }) => {
+const candidateMatches = (candidate, reviewer, { grade, subject }) => {
   if (!candidate.studentId || candidate.studentId === reviewer.studentId) return false;
   if (String(candidate.grade ?? '') !== String(grade ?? '') || normalise(candidate.subject) !== normalise(subject)) return false;
   if (!dateKey(candidate.assignmentDate) || dateKey(candidate.assignmentDate) > dateKey(reviewer.assignmentDate)) return false;
   if (!(candidate.submittedImageUrl && candidate.submittedFileName) && !candidate.submittedImages?.some((image) => image?.url)) return false;
-  const candidateTopics = getExerciseTopicKeys(candidate);
-  const sharedTopicCount = [...candidateTopics].filter((topic) => topicKeys.has(topic)).length;
-  return sharedTopicCount >= Math.min(topicKeys.size, 2);
+  return true;
 };
 
 const chooseCandidate = ({ candidates, reviewer, topicKeys, markedIds, recentReviewees, currentDate, cohort }) => {
-  const matching = candidates
-    .filter((candidate) => candidateMatches(candidate, reviewer, topicKeys, cohort))
+  const eligible = candidates
+    .filter((candidate) => candidateMatches(candidate, reviewer, cohort))
     .filter((candidate, index, list) => list.findIndex((item) => item.id === candidate.id) === index);
+  const shared = eligible.filter((candidate) => [...getExerciseTopicKeys(candidate)].some((topic) => topicKeys.has(topic)));
+  const pools = shared.length
+    ? [shared, eligible.filter((candidate) => !shared.includes(candidate))]
+    : [eligible];
+  const sharedCount = (candidate) => [...getExerciseTopicKeys(candidate)].filter((topic) => topicKeys.has(topic)).length;
 
   const rank = (left, right, preferOlder = false) => {
+    const topicMatchDifference = sharedCount(right) - sharedCount(left);
+    if (topicMatchDifference) return topicMatchDifference;
     const leftRevieweeSeen = recentReviewees.has(left.studentId) ? 1 : 0;
     const rightRevieweeSeen = recentReviewees.has(right.studentId) ? 1 : 0;
     if (leftRevieweeSeen !== rightRevieweeSeen) return leftRevieweeSeen - rightRevieweeSeen;
@@ -54,14 +59,16 @@ const chooseCandidate = ({ candidates, reviewer, topicKeys, markedIds, recentRev
     return String(left.id).localeCompare(String(right.id));
   };
 
-  const fresh = matching.filter((candidate) => !markedIds.has(candidate.id)).sort((left, right) => rank(left, right));
-  if (fresh.length) return fresh[0];
+  for (const pool of pools) {
+    const fresh = pool.filter((candidate) => !markedIds.has(candidate.id)).sort((left, right) => rank(left, right));
+    if (fresh.length) return fresh[0];
 
-  const repeated = matching.filter((candidate) => markedIds.has(candidate.id));
-  for (const minimumAge of [21, 14, 7, 3]) {
-    const eligible = repeated.filter((candidate) => ageInDays(currentDate, candidate.assignmentDate) > minimumAge)
-      .sort((left, right) => rank(left, right, true));
-    if (eligible.length) return eligible[0];
+    const repeated = pool.filter((candidate) => markedIds.has(candidate.id));
+    for (const minimumAge of [21, 14, 7, 3]) {
+      const available = repeated.filter((candidate) => ageInDays(currentDate, candidate.assignmentDate) > minimumAge)
+        .sort((left, right) => rank(left, right, true));
+      if (available.length) return available[0];
+    }
   }
   return null;
 };

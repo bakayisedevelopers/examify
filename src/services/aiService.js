@@ -134,6 +134,9 @@ const buildPrompt = ({
   region,
   subject = 'Mathematics',
   completedTopics = [],
+  eligibleTopics = completedTopics,
+  markedTopicSuggestions = [],
+  markedTopicUsageLimits = {},
   tutorReports = [],
   pastMarks = [],
   questionPaperMetadata = [],
@@ -155,7 +158,8 @@ You are Examifying's ${subject} exercise recommendation assistant for South Afri
 
 Business rules:
 - Recommend ${subject} only.
-- Recommend exercises only from tutor-completed topics.
+- Use only topics listed in Eligible topics. Topics marked done through a completed lesson are eligible. A topic recorded from marking but not attended is eligible only when its 28-day average understanding score is at least 0.7 (70%).
+- Marked-only topics are suggestions, not completed lesson topics. Use each marked-only topic no more than its limit in Marked-topic usage limits across this entire seven-day generation; the limit is two uses per marked-only topic.
 - Prefer references to question papers and question numbers instead of rewriting full question text.
 - Consider grade, region, tutor reports, tutor notes, topic-based question metadata, question paper metadata, stored question indexes, and past marks.
 - Return a compact JSON object with a top-level key called "recommendations".
@@ -187,6 +191,9 @@ Region: ${region ?? 'Unknown'}
 Subject: ${subject}
 Generation mode: ${mode}
 Completed topics: ${JSON.stringify(completedTopics)}
+Eligible topics for this generation: ${JSON.stringify(eligibleTopics)}
+Marked-only topic suggestions (score scale is 0 to 1): ${JSON.stringify(markedTopicSuggestions)}
+Marked-topic usage limits across this seven-day generation: ${JSON.stringify(markedTopicUsageLimits)}
 Tutor reports: ${JSON.stringify(tutorReports)}
 Tutor notes: ${tutorNotes}
 Past marks: ${JSON.stringify(pastMarks)}
@@ -216,7 +223,7 @@ Additional mandatory generation rules:
 - Return no unplanned exercise documents, no extra questions, and no missing questions. When exerciseCount is zero, return no recommendation for that date.
 - Each question object is one indexed question reference and one topic. Each parent recommendation is one exercise document for the date, even when its questions come from different topics or question papers.
 - Never return more than Maximum exercise documents per date. The frontend validates parent document counts and nested question counts separately and rejects the entire plan if either is short or over.
-- Each question reference must belong to a tutor-completed topic.
+- Each question reference must belong to an eligible topic, and marked-only topics must follow the stated per-topic usage limit across all seven dates.
 - Choose questions from Topic-based source metadata first. For each topic, prefer using questions from at least two different papers when available.
 - Do not use a question for a topic unless that question appears under that exact topic in Topic-based source metadata.
 - Return exactly one question reference for each question object, without ranges like "1.1.3 - 1.1.5".

@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getCurrentGenerationNumber, getGenerationWeekForTrigger, getRegenerationState, getSevenDayWindow } from './exerciseGenerationPlan.js';
+import {
+  getCurrentGenerationNumber,
+  getEligibleExerciseTopics,
+  getGenerationWeekForTrigger,
+  getRegenerationState,
+  getSevenDayWindow,
+  selectTopicsForExerciseDay,
+} from './exerciseGenerationPlan.js';
 
 test('generation week advances from the greatest recorded week', () => {
   assert.equal(getCurrentGenerationNumber([{ generationWeek: 1 }, { generationWeek: 3 }, { generationWeek: 2 }]), 3);
@@ -47,4 +54,32 @@ test('initial and manual triggers keep their week while lesson completion advanc
   assert.equal(getGenerationWeekForTrigger(1, { lessonCompleted: true }), 2);
   assert.equal(getGenerationWeekForTrigger(2, { lessonCompleted: true }), 3);
   assert.equal(getGenerationWeekForTrigger(3, { lessonCompleted: true }), 4);
+});
+
+test('generation eligibility includes all done topics and marked-only topics at 70 percent or higher', () => {
+  const topics = getEligibleExerciseTopics([
+    { topic: 'Done without recent score', topicStatus: 'done', understandingLevel: null },
+    { topic: 'Marked at threshold', topicStatus: 'marked', understandingLevel: 0.7 },
+    { topic: 'Marked above threshold', topicStatus: 'marked', understandingLevel: 0.84 },
+    { topic: 'Marked below threshold', topicStatus: 'marked', understandingLevel: 0.69 },
+  ]);
+  assert.deepEqual(topics.map((topic) => topic.topic), [
+    'Done without recent score', 'Marked at threshold', 'Marked above threshold',
+  ]);
+});
+
+test('a marked-only topic can be planned no more than twice in a seven-day generation', () => {
+  const marked = { topic: 'Marked topic', topicStatus: 'marked', understandingLevel: 0.75 };
+  const done = { topic: 'Done topic', topicStatus: 'done', understandingLevel: 0.5 };
+  const usageCounts = new Map();
+  const plan = Array.from({ length: 7 }, (_, dayIndex) => selectTopicsForExerciseDay({
+    topicSummaries: [marked, done],
+    maxTopicsPerDay: 1,
+    dayIndex,
+    generationNumber: 1,
+    topicUsageCounts: usageCounts,
+    markedTopicUsageLimit: 2,
+  }));
+  assert.equal(plan.flat().filter((topic) => topic === marked.topic).length, 2);
+  assert.ok(plan.every((topics) => topics.length === 1));
 });

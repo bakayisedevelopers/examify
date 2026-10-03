@@ -230,7 +230,10 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
     const scoreResults = [];
     scoreEntries.forEach((entry, index) => {
       const [topicSnapshot, recentScores, ...existingScores] = topicReads[index];
-      if (!topicSnapshot.exists()) throw new HttpsError('failed-precondition', `Complete a lesson on ${entry.topicName} before recording a review score.`);
+      const topicData = topicSnapshot.exists() ? topicSnapshot.data() : {};
+      const topicIsDone = topicData.topicStatus === 'done'
+        || topicData.attendanceStatus === 'attended'
+        || Boolean(topicData.firstCompletedAt);
       const additionalScores = [];
       const questionScores = entry.questionMarks.map((mark, questionIndex) => {
         const score = scoreForQuestion(mark);
@@ -255,10 +258,20 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
         return { questionReference: mark.questionReference, paperId: mark.paperId, pageNumber: mark.pageNumber, score, earnedMarks: mark.earnedMarks, totalMarks: mark.totalMarks };
       });
       const rollup = makeTopicRollup(recentScores, now, additionalScores);
-      transaction.update(entry.topicRef, {
+      transaction.set(entry.topicRef, {
+        ...(!topicSnapshot.exists() ? {
+          canonicalTopicKey: entry.canonicalTopicKey,
+          topicName: entry.topicName,
+          createdAt: now,
+        } : {}),
+        ...(!topicIsDone ? {
+          topicStatus: 'marked',
+          attendanceStatus: 'not-attended',
+          firstMarkedAt: topicData.firstMarkedAt ?? now,
+        } : {}),
         ...rollup,
         tutorReport: 'Tutor evaluation of peer marking', updatedAt: now,
-      });
+      }, { merge: true });
       scoreResults.push({ topic: entry.topicName, understandingLevel: entry.score, averageUnderstandingLevel: rollup.understandingLevel, questionScores });
     });
     transaction.update(assignmentSnapshot.ref, {

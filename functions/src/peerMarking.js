@@ -16,6 +16,13 @@ const topicNames = (exercise = {}) => [...new Set([
   ...(Array.isArray(exercise.questionLinks) ? exercise.questionLinks.map((entry) => entry?.topic) : []),
   ...String(exercise.topic || '').split('|'),
 ].filter(Boolean).map((topic) => String(topic).trim()))];
+const normalizeTopic = (value) => String(value ?? '')
+  .normalize('NFKD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
 const sameCohort = (left, right) => left.assignmentDate === right.assignmentDate
   && left.subject === right.subject && String(left.grade) === String(right.grade);
 const parseExercisePath = (document) => {
@@ -59,19 +66,24 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
     for (const { reviewer, target } of pairs) {
       if (!sameCohort(cohortFor(reviewer), cohort)) continue;
       const assignmentRef = target.ref.collection('peerMarkingAssignments').doc(reviewer.studentId);
-      const matchedTopics = topicNames(target).filter((topic) => getExerciseTopicKeys(reviewer).has(topic.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()));
+      const reviewerTopics = getExerciseTopicKeys(reviewer);
+      const matchedTopics = topicNames(target).filter((topic) => reviewerTopics.has(normalizeTopic(topic)));
+      const targetTopics = topicNames(target);
+      const assignedTopics = matchedTopics.length ? matchedTopics : targetTopics;
+      const assignedTopicKeys = new Set(assignedTopics.map(normalizeTopic));
+      const assignedQuestionLinks = (Array.isArray(target.questionLinks) ? target.questionLinks : [])
+        .filter((link) => !matchedTopics.length || assignedTopicKeys.has(normalizeTopic(link.topic)));
       await assignmentRef.set({
         assignmentId: assignmentRef.id,
         reviewerId: reviewer.studentId, reviewerSubjectInstanceId: reviewer.subjectInstanceId,
         reviewerExerciseId: reviewer.id, revieweeId: target.studentId, revieweeSubjectInstanceId: target.subjectInstanceId,
         exerciseId: target.id, assignmentPath: assignmentRef.path, exercisePath: target.ref.path,
         reviewerExercisePath: reviewer.ref.path, assignmentDate: cohort.assignmentDate,
-        subject: cohort.subject, grade: cohort.grade, topic: matchedTopics[0] ?? topicNames(target)[0] ?? '', topics: matchedTopics,
-        topicBreakdown: Array.isArray(target.topicBreakdown) ? target.topicBreakdown : [],
-        questionLinks: (Array.isArray(target.questionLinks) ? target.questionLinks : [])
-          .filter((link) => !matchedTopics.length || matchedTopics.some((topic) =>
-            String(link.topic || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
-              === String(topic).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim())),
+        subject: cohort.subject, grade: cohort.grade, topic: assignedTopics[0] ?? '', topics: assignedTopics,
+        matchedTopics, topicMatchType: matchedTopics.length ? 'shared' : 'unshared-fallback',
+        topicBreakdown: (Array.isArray(target.topicBreakdown) ? target.topicBreakdown : [])
+          .filter((item) => !matchedTopics.length || assignedTopicKeys.has(normalizeTopic(item.topic))),
+        questionLinks: assignedQuestionLinks,
         paperIds: Array.isArray(target.paperIds) ? target.paperIds : [],
         title: target.title ?? '', submittedImageUrl: target.submittedImageUrl ?? '', submittedImages: target.submittedImages ?? [],
         status: 'assigned', createdAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp(),

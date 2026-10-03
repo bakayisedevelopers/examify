@@ -26,7 +26,15 @@ import { collections, paths, subcollections } from '../firebase/schema';
 export { paths, subcollections };
 import { getHardcodedTopics, normalizeTopicKey as normalizeCatalogTopicKey } from '../data/topicCatalog';
 import { recommendExercises } from './aiService';
-import { getCurrentGenerationNumber, getGenerationWeekForTrigger, getRegenerationState, getSevenDayWindow, isExerciseSubmitted } from './exerciseGenerationPlan';
+import {
+  getCurrentGenerationNumber,
+  getEligibleExerciseTopics,
+  getGenerationWeekForTrigger,
+  getRegenerationState,
+  getSevenDayWindow,
+  isExerciseSubmitted,
+  selectTopicsForExerciseDay,
+} from './exerciseGenerationPlan';
 import {
   mockCompletedLessons,
   mockDashboardData,
@@ -243,16 +251,18 @@ const persistLessonOutcome = async ({
         if (Number(scoreSnapshot.data().score) !== entry.score) {
           throw new Error('Completed lesson scores are immutable. Add a new score event instead of replacing the original tutor score.');
         }
-        return;
+      } else {
+        transaction.set(entry.scoreRef, {
+          sourceType: 'Lesson', sourceId: lessonRef.id, score: entry.score, scoreScale: 'ratio-0-to-1',
+          tutorId, notes: tutorReport, createdAt: serverTimestamp(),
+        });
       }
-      transaction.set(entry.scoreRef, {
-        sourceType: 'Lesson', sourceId: lessonRef.id, score: entry.score, scoreScale: 'ratio-0-to-1',
-        tutorId, notes: tutorReport, createdAt: serverTimestamp(),
-      });
       if (!topicSnapshot.exists()) {
         transaction.set(entry.topicRef, {
           canonicalTopicKey: entry.canonicalTopicKey,
           topicName: entry.topic,
+          topicStatus: 'done',
+          attendanceStatus: 'attended',
           firstCompletedAt: serverTimestamp(),
           lastCoveredAt: serverTimestamp(),
           understandingLevel: entry.score,
@@ -266,6 +276,9 @@ const persistLessonOutcome = async ({
         return;
       }
       transaction.update(entry.topicRef, {
+        topicStatus: 'done',
+        attendanceStatus: 'attended',
+        ...(!topicSnapshot.data().firstCompletedAt ? { firstCompletedAt: serverTimestamp() } : {}),
         lastCoveredAt: serverTimestamp(),
         ...(tutorReport ? { tutorReport } : {}),
         updatedAt: serverTimestamp(),
@@ -465,10 +478,16 @@ const dateValueForSummary = (value) => {
 const getTopicSummariesFromDocuments = (topicDocuments = []) => topicDocuments
   .map((item, index) => {
     const topic = String(item.topicName || item.canonicalTopicKey || item.id || '').trim();
-    const completedAt = item.lastCoveredAt ?? item.firstCompletedAt ?? item.createdAt ?? null;
+    const topicStatus = item.topicStatus === 'marked' || item.attendanceStatus === 'not-attended' ? 'marked' : 'done';
+    const attendanceStatus = topicStatus === 'marked' ? 'not-attended' : 'attended';
+    const completedAt = topicStatus === 'marked'
+      ? item.firstMarkedAt ?? item.scoreUpdatedAt ?? item.createdAt ?? null
+      : item.lastCoveredAt ?? item.firstCompletedAt ?? item.createdAt ?? null;
     const completedDate = dateValueForSummary(completedAt);
     return {
       topic,
+      topicStatus,
+      attendanceStatus,
       understandingLevel: item.understandingScale === 'ratio-0-to-1'
         && item.understandingLevel !== null && item.understandingLevel !== undefined
         && Number.isFinite(Number(item.understandingLevel)) && Number(item.understandingLevel) >= 0 && Number(item.understandingLevel) <= 1
@@ -500,44 +519,11 @@ const buildSubjectUnderstandingSummary = (subject, topicSummaries = []) => {
       ? Math.round((scoredTopics.reduce((total, topic) => total + topic.understandingLevel, 0) / scoredTopics.length) * 10000) / 10000
       : null,
     scoredTopicCount: scoredTopics.length,
-    completedTopicCount: topicSummaries.length,
+    completedTopicCount: topicSummaries.filter((topic) => topic.topicStatus !== 'marked').length,
+    markedTopicCount: topicSummaries.filter((topic) => topic.topicStatus === 'marked').length,
   };
 };
 
-
-const pickWeeklyTopicsForDay = ({ topicSummaries = [], maxQuestionsPerDay, dayIndex = 0, generationNumber = 1 }) => {
-  if (!topicSummaries.length) return [];
-
-  const sortedByStrength = [...topicSummaries].sort((left, right) => {
-    const understandingDifference = (right.understandingLevel ?? 0) - (left.understandingLevel ?? 0);
-    if (understandingDifference !== 0) return understandingDifference;
-    return new Date(left.completedOn || 0) - new Date(right.completedOn || 0);
-  });
-
-  if (generationNumber <= 2) {
-    return topicSummaries.slice(0, maxQuestionsPerDay).map((item) => item.topic);
-  }
-
-  const selected = [];
-  const offsetPool = dayIndex % Math.max(sortedByStrength.length, 1);
-  const rotated = [...sortedByStrength.slice(offsetPool), ...sortedByStrength.slice(0, offsetPool)];
-
-  rotated.forEach((topicSummary) => {
-    if (selected.length < maxQuestionsPerDay && !selected.includes(topicSummary.topic)) {
-      selected.push(topicSummary.topic);
-    }
-  });
-
-  if (selected.length < maxQuestionsPerDay) {
-    topicSummaries.forEach((topicSummary) => {
-      if (selected.length < maxQuestionsPerDay && !selected.includes(topicSummary.topic)) {
-        selected.push(topicSummary.topic);
-      }
-    });
-  }
-
-  return selected;
-};
 
 const buildTutorDashboard = ({ tutorId = 'mock-tutor-1', subject = DEFAULT_SUBJECT } = {}) => {
   const assignedStudentIds = new Set(
@@ -852,12 +838,14 @@ const paperMetadataForAi = (paper = {}) => ({
   topics: paper.topics ?? [],
 });
 
-const selectTopicPaperMetadata = ({ papers = [], assignmentHistory = [], completedTopics = [] }) => {
+const selectTopicPaperMetadata = ({ papers = [], assignmentHistory = [], completedTopics = [], topicSummaries = [] }) => {
   const recentPaperIds = new Set(getRecentGenerationSummaries(assignmentHistory, 2).flatMap((group) => group.paperIds));
   const analyzedPapers = papers.filter(isAnalyzedQuestionPaper);
   const selectedPaperMap = new Map();
 
-  const topicPaperMetadata = completedTopics.map((topic) => {
+  const topics = topicSummaries.length ? topicSummaries : completedTopics.map((topic) => ({ topic, topicStatus: 'done' }));
+  const topicPaperMetadata = topics.map((topicSummary) => {
+    const topic = topicSummary.topic;
     const paperMatches = analyzedPapers
       .map((paper) => ({
         paper,
@@ -873,6 +861,9 @@ const selectTopicPaperMetadata = ({ papers = [], assignmentHistory = [], complet
 
     return {
       topic,
+      topicStatus: topicSummary.topicStatus === 'marked' ? 'marked' : 'done',
+      understandingLevel: topicSummary.understandingLevel ?? null,
+      markedTopicSuggestionLimit: topicSummary.topicStatus === 'marked' ? 2 : null,
       paperCount: selected.length,
       reusedRecentPapers: selected.some(({ paper }) => recentPaperIds.has(paper.id)),
       papers: selected.map(({ paper, questions }) => ({
@@ -908,6 +899,10 @@ const buildAssignmentDates = ({ mode, assignmentHistory = [] }) => {
 
 const buildAiQuestionPlan = ({ topicSummaries = [], assignmentDates = [], generationNumber = 1, dailyExerciseCaps = {} }) => {
   const maxQuestionsPerExercise = Math.min(MAX_QUESTIONS_PER_EXERCISE, topicSummaries.length);
+  const topicUsageCounts = new Map();
+  const markedTopicUsageLimits = Object.fromEntries(topicSummaries
+    .filter((item) => item.topicStatus === 'marked')
+    .map((item) => [item.topic, 2]));
   const getExerciseCount = (assignmentDate) => Math.max(0, Math.min(
     MAX_EXERCISES_PER_DATE,
     Number.isFinite(Number(dailyExerciseCaps[assignmentDate])) ? Number(dailyExerciseCaps[assignmentDate]) : 1,
@@ -915,11 +910,13 @@ const buildAiQuestionPlan = ({ topicSummaries = [], assignmentDates = [], genera
   const perDayTopics = assignmentDates.map((assignmentDate, dayIndex) => {
     const exerciseCount = getExerciseCount(assignmentDate);
     const requestedCount = exerciseCount ? maxQuestionsPerExercise : 0;
-    const topics = pickWeeklyTopicsForDay({
+    const topics = selectTopicsForExerciseDay({
       topicSummaries,
-      maxQuestionsPerDay: requestedCount,
+      maxTopicsPerDay: requestedCount,
       dayIndex,
       generationNumber,
+      topicUsageCounts,
+      markedTopicUsageLimit: 2,
     });
     return {
       assignmentDate,
@@ -942,6 +939,12 @@ const buildAiQuestionPlan = ({ topicSummaries = [], assignmentDates = [], genera
       exactQuestionCountPerExercise: true,
       requiredExerciseDocumentsByDate: Object.fromEntries(perDayTopics.map((day) => [day.assignmentDate, day.exerciseCount])),
       requiredQuestionsByDate: Object.fromEntries(perDayTopics.map((day) => [day.assignmentDate, day.requiredCount])),
+      topicEligibility: {
+        doneTopicsAlwaysEligible: true,
+        markedOnlyMinimumAverage: 0.7,
+        markedTopicUsageLimits,
+      },
+      markedTopicUsageLimits,
       weightedTowardHigherUnderstandingFromFourthTopic: topicSummaries.length > 3,
     },
   };
@@ -962,6 +965,21 @@ const validateExactRecommendationPlan = ({ recommendations = [], questionPlan = 
     || day.exerciseCount !== (day.requiredCount > 0 ? 1 : 0));
   if (inconsistentDay) {
     return { valid: false, reason: `The exercise and question counts do not match the topic slots for ${inconsistentDay[0]}.` };
+  }
+  const markedTopicUsageLimits = new Map(Object.entries(questionPlan.rules?.markedTopicUsageLimits ?? {})
+    .map(([topic, limit]) => [normalizeTopicKey(topic), Number(limit)]));
+  const markedTopicUsageCounts = new Map();
+  for (const day of questionPlan.perDayTopics ?? []) {
+    for (const topic of day.topics ?? []) {
+      const key = normalizeTopicKey(topic);
+      const limit = markedTopicUsageLimits.get(key);
+      if (limit === undefined) continue;
+      const uses = (markedTopicUsageCounts.get(key) ?? 0) + 1;
+      if (uses > limit) {
+        return { valid: false, reason: `The plan uses marked-only topic ${topic} more than ${limit} times in this seven-day generation.` };
+      }
+      markedTopicUsageCounts.set(key, uses);
+    }
   }
 
   for (const recommendation of recommendations) {
@@ -2579,10 +2597,21 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
   const topicSummaries = Array.isArray(studentState.completedTopicSummaries)
     ? studentState.completedTopicSummaries
     : getTopicSummary(completedLessons);
-  if (!topicSummaries.length) {
-    return { generated: false, reason: 'Complete a topic lesson before generating exercises.', assignments: [], criteria: studentState.generationStatus };
+  const eligibleTopicSummaries = getEligibleExerciseTopics(topicSummaries);
+  if (!eligibleTopicSummaries.length) {
+    return { generated: false, reason: 'No completed or sufficiently understood marked topics are available for exercise generation.', assignments: [], criteria: studentState.generationStatus };
   }
-  const completedTopics = topicSummaries.map((item) => item.topic);
+  const completedTopics = topicSummaries.filter((item) => item.topicStatus !== 'marked').map((item) => item.topic);
+  const eligibleTopics = eligibleTopicSummaries.map((item) => item.topic);
+  const markedTopicSuggestions = eligibleTopicSummaries
+    .filter((item) => item.topicStatus === 'marked')
+    .map((item) => ({
+      topic: item.topic,
+      averageUnderstandingLevel: item.understandingLevel,
+      averageUnderstandingPercent: Math.round(item.understandingLevel * 100),
+      maxSuggestionsInThisGeneration: 2,
+      suggestionOnly: true,
+    }));
   const {
     selectedPapers,
     topicPaperMetadata,
@@ -2595,12 +2624,12 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
   } = selectTopicPaperMetadata({
     papers,
     assignmentHistory,
-    completedTopics,
+    topicSummaries: eligibleTopicSummaries,
   });
   if (!topicsWithSources.length) {
     return {
       generated: false,
-      reason: 'No analyzed question metadata matched the completed topics.',
+      reason: 'No analyzed question metadata matched the eligible topics.',
       criteria: {
         ...studentState.generationStatus,
         ...subscriptionTrace,
@@ -2642,7 +2671,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
   };
   const effectiveOverrideExerciseIdsByDate = { ...regenerationState.overrideExerciseIdsByDate, ...overrideExerciseIdsByDate };
   const aiPlan = buildAiQuestionPlan({
-    topicSummaries,
+    topicSummaries: eligibleTopicSummaries,
     assignmentDates,
     generationNumber,
     dailyExerciseCaps: effectiveDailyExerciseCaps,
@@ -2670,6 +2699,8 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     mode,
     assignmentDates,
     completedTopics,
+    eligibleTopics,
+    markedTopicSuggestions,
     tutorReports: [...new Set([
       ...subjectTutorReports,
       ...completedLessons.map((lesson) => lesson.topicReport ?? lesson.note).filter(Boolean),
@@ -2678,7 +2709,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     pastMarks: [student?.latestMark, student?.previousYearMark].filter((value) => value !== undefined && value !== null),
     questionPaperMetadata: selectedPapers.map((paper) => ({
       ...paperMetadataForAi(paper),
-      topics: (paper.topics ?? []).filter((topic) => questionMatchesTopics({ topic }, completedTopics)),
+      topics: (paper.topics ?? []).filter((topic) => questionMatchesTopics({ topic }, eligibleTopics)),
     })),
     topicPaperMetadata,
     selectedPapers: selectedPapers.map((paper) => ({
@@ -2691,8 +2722,8 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       copySuffix: paper.copySuffix ?? '',
       displayName: paper.displayName ?? '',
       paperMetadata: paper.paperMetadata ?? {},
-      topics: (paper.topics ?? []).filter((topic) => questionMatchesTopics({ topic }, completedTopics)),
-      questions: summarizePaperQuestions(paper, completedTopics),
+      topics: (paper.topics ?? []).filter((topic) => questionMatchesTopics({ topic }, eligibleTopics)),
+      questions: summarizePaperQuestions(paper, eligibleTopics),
     })),
     selectedPaperIds: selectedPapers.map((paper) => paper.id),
     maxExercisesPerDay: aiPlan.maxExercisesPerDay,
@@ -2709,11 +2740,13 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       })),
       completedOn: lesson.completedOn ?? lesson.createdAt ?? '',
     })),
-    understandingByTopic: topicSummaries.map((summary) => ({
+    understandingByTopic: eligibleTopicSummaries.map((summary) => ({
       topic: summary.topic,
       understandingLevel: summary.understandingLevel,
       completedOn: summary.completedOn,
+      topicStatus: summary.topicStatus,
     })),
+    markedTopicUsageLimits: aiPlan.rules.markedTopicUsageLimits,
     recentExerciseHistory,
     previousGenerationSummaries: getRecentGenerationSummaries(assignmentHistory, 2),
     reusedRecentPapers,
@@ -2755,7 +2788,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     generationBatchId,
     mode,
     subject,
-    topicSummaries,
+    topicSummaries: eligibleTopicSummaries,
     maxExercisesPerDay: aiPlan.maxExercisesPerDay,
     dailyExerciseCaps: effectiveDailyExerciseCaps,
     allowedAssignmentDates: assignmentDates,

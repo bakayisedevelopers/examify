@@ -100,7 +100,9 @@ service cloud.firestore {
             && request.resource.data.understandingScale == 'ratio-0-to-1');
           allow update: if isAdmin() || (canMark(userId, subjectInstanceId)
             && request.resource.data.canonicalTopicKey == topicKey
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastCoveredAt', 'tutorReport', 'updatedAt']));
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'lastCoveredAt', 'tutorReport', 'updatedAt', 'topicStatus', 'attendanceStatus', 'firstCompletedAt'
+            ]));
           allow delete: if isAdmin();
           match /understandingScores/{scoreId} {
             allow read: if canReadEpisode(userId, subjectInstanceId);

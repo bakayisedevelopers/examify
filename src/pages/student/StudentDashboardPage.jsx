@@ -120,7 +120,7 @@ const SubjectUnderstandingSummary = ({ rows, isLoading }) => (
             {percentage !== null ? <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100" role="progressbar" aria-label={`${row.subject} average understanding`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={percentage}>
               <div className="h-full rounded-full bg-lime-500 transition-all" style={{ width: `${percentage}%` }} />
             </div> : null}
-            <p className="mt-2 text-xs text-slate-500">{row.scoredTopicCount} of {row.completedTopicCount} completed topics have a current score.</p>
+            <p className="mt-2 text-xs text-slate-500">{row.scoredTopicCount} topics have scores ({row.completedTopicCount} lesson-completed, {row.markedTopicCount ?? 0} marked only).</p>
           </div>
         );
       })}
@@ -188,7 +188,7 @@ export const StudentDashboardPage = () => {
         if (!active) return;
         loadedSubjects.add(subject);
         if (error) setLoadError((current) => current || error.message || `Could not load ${subject} understanding scores.`);
-        const nextSummary = summary || { subject, understandingLevel: null, scoredTopicCount: 0, completedTopicCount: 0 };
+        const nextSummary = summary || { subject, understandingLevel: null, scoredTopicCount: 0, completedTopicCount: 0, markedTopicCount: 0 };
         setSubjectUnderstandingRows((current) => {
           const bySubject = new Map(current.map((row) => [row.subject, row]));
           bySubject.set(subject, nextSummary);

@@ -71,10 +71,23 @@ export const resolveTopicsWithGemini = onCall({ timeoutSeconds: 120, memory: '25
     model: MODEL,
     useGoogleSearch: true,
     responseFormat: { type: 'json_array' },
-    maxTokens: Math.min(1200, 120 + topics.length * 28),
+    maxTokens: 0,
+    thinkingLevel: 'low',
     temperature: 0,
   });
+  if (!generated.text.trim()) {
+    logger.warn('Gemini returned no topic-resolution text', { model: generated.model, topicCount: topics.length });
+    throw new HttpsError('unavailable', 'Gemini returned an empty topic-resolution response. Please retry.');
+  }
   const proposed = parseTopicArray(generated.text);
+  if (proposed.length !== topics.length) {
+    logger.warn('Gemini returned an incomplete topic-resolution list', {
+      model: generated.model,
+      topicCount: topics.length,
+      proposedCount: proposed.length,
+    });
+    throw new HttpsError('unavailable', `Gemini returned ${proposed.length} topic results for ${topics.length} source topics. Please retry.`);
+  }
   const resolved = topics.map((_, index) => {
     const key = normalizeLabel(typeof proposed[index] === 'string' ? proposed[index] : '');
     return allowedByKey.get(key) ?? '';

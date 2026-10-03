@@ -33,6 +33,7 @@ export const callGeminiGenerateContent = async ({
   pdfMimeType = 'application/pdf',
   maxTokens = 2500,
   temperature = 0.1,
+  thinkingLevel,
   responseFormat,
   model: requestedModel,
   useGoogleSearch = false,
@@ -58,7 +59,8 @@ export const callGeminiGenerateContent = async ({
       ...(useGoogleSearch ? { tools: [{ google_search: {} }] } : {}),
       generationConfig: {
         temperature,
-        maxOutputTokens: maxTokens,
+        ...(Number(maxTokens) > 0 ? { maxOutputTokens: Number(maxTokens) } : {}),
+        ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
         ...(['json_object', 'json_array'].includes(responseFormat?.type) ? { responseMimeType: 'application/json' } : {}),
       },
     }),
@@ -75,7 +77,19 @@ export const callGeminiGenerateContent = async ({
   }
 
   const text = extractGeminiText(data);
-  logger.info('Gemini request completed', { model, textLength: text.length });
+  const candidate = data?.candidates?.[0] ?? {};
+  const usage = data?.usageMetadata ?? {};
+  logger.info('Gemini request completed', {
+    model,
+    textLength: text.length,
+    candidateCount: data?.candidates?.length ?? 0,
+    finishReason: candidate.finishReason ?? null,
+    promptBlockReason: data?.promptFeedback?.blockReason ?? null,
+    partCount: candidate.content?.parts?.length ?? 0,
+    thoughtsTokenCount: usage.thoughtsTokenCount ?? null,
+    candidateTokenCount: usage.candidatesTokenCount ?? null,
+    totalTokenCount: usage.totalTokenCount ?? null,
+  });
   return {
     text,
     model,
