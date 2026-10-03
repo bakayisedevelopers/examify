@@ -13,6 +13,7 @@ import {
   deleteLessonSession,
   generateExercisePlanIfEligible,
   getGlobalTopicOptionGroups,
+  getLessonEligibleSubjectGradePairs,
   getLessonsByGroupSessionId,
   getLessonById,
   getQuestionPapers,
@@ -57,6 +58,9 @@ export const TutorLessonDetailsPage = () => {
   const { role, basePath } = useEffectiveRole();
   const [contexts, setContexts] = useState([]);
   const [contextsLoaded, setContextsLoaded] = useState(false);
+  const [eligibleSubjectGrades, setEligibleSubjectGrades] = useState([]);
+  const [eligibilityLoaded, setEligibilityLoaded] = useState(false);
+  const [eligibilityError, setEligibilityError] = useState('');
   const [subject, setSubject] = useState(DEFAULT_SUBJECT);
   const [grade, setGrade] = useState('');
   const [sessionMode, setSessionMode] = useState('one-on-one');
@@ -92,6 +96,34 @@ export const TutorLessonDetailsPage = () => {
       })
       .finally(() => setContextsLoaded(true));
   }, [profile?.uid]);
+
+  useEffect(() => {
+    if (!isNew || !contextsLoaded) return undefined;
+    let cancelled = false;
+    setEligibilityLoaded(false);
+    setEligibilityError('');
+    getLessonEligibleSubjectGradePairs(contexts.filter((context) => context.accessRole === 'co-owner'))
+      .then((pairs) => { if (!cancelled) setEligibleSubjectGrades(pairs); })
+      .catch((error) => {
+        if (!cancelled) {
+          setEligibleSubjectGrades([]);
+          setEligibilityError(error.message || 'Could not check analyzed question papers for your assigned subjects.');
+        }
+      })
+      .finally(() => { if (!cancelled) setEligibilityLoaded(true); });
+    return () => { cancelled = true; };
+  }, [contexts, contextsLoaded, isNew]);
+
+  useEffect(() => {
+    if (!isNew || !eligibilityLoaded || !eligibleSubjectGrades.length) return;
+    const currentPairAvailable = eligibleSubjectGrades.some((pair) => pair.subject === subject && pair.grade === grade);
+    if (currentPairAvailable) return;
+    const firstPair = eligibleSubjectGrades[0];
+    setSubject(firstPair.subject);
+    setGrade(firstPair.grade);
+    setSelectedStudentIds([]);
+    setTopics([]);
+  }, [eligibleSubjectGrades, eligibilityLoaded, grade, isNew, subject]);
 
   useEffect(() => {
     if (isNew || !lessonId || !contextsLoaded || !profile?.uid) return;
@@ -134,18 +166,17 @@ export const TutorLessonDetailsPage = () => {
     return () => { cancelled = true; };
   }, [contexts, contextsLoaded, isNew, lessonId, profile?.uid]);
 
-  const subjectOptions = useMemo(() => [...new Set(contexts
-    .filter((context) => context.accessRole === 'co-owner')
-    .map((context) => context.subject || DEFAULT_SUBJECT))].sort(), [contexts]);
-  const gradeOptions = useMemo(() => [...new Set(contexts
-    .filter((context) => context.accessRole === 'co-owner' && (context.subject || DEFAULT_SUBJECT) === subject)
-    .map((context) => context.grade || '')
-    .filter(Boolean))].sort((left, right) => SOUTH_AFRICAN_GRADES.indexOf(left) - SOUTH_AFRICAN_GRADES.indexOf(right)), [contexts, subject]);
+  const subjectOptions = useMemo(() => [...new Set(eligibleSubjectGrades.map((pair) => pair.subject))].sort(), [eligibleSubjectGrades]);
+  const gradeOptions = useMemo(() => [...new Set(eligibleSubjectGrades
+    .filter((pair) => pair.subject === subject)
+    .map((pair) => pair.grade)
+    .filter(Boolean))].sort((left, right) => SOUTH_AFRICAN_GRADES.indexOf(left) - SOUTH_AFRICAN_GRADES.indexOf(right)), [eligibleSubjectGrades, subject]);
   const availableStudents = useMemo(() => contexts
     .filter((context) => context.accessRole === 'co-owner'
       && (context.subject || DEFAULT_SUBJECT) === subject
-      && (context.grade || '') === grade)
-    .filter((context, index, list) => list.findIndex((row) => row.studentId === context.studentId) === index), [contexts, grade, subject]);
+      && (context.grade || '') === grade
+      && eligibleSubjectGrades.some((pair) => pair.subject === (context.subject || DEFAULT_SUBJECT) && pair.grade === (context.grade || '')))
+    .filter((context, index, list) => list.findIndex((row) => row.studentId === context.studentId) === index), [contexts, eligibleSubjectGrades, grade, subject]);
   const canManageExisting = isNew || (lessonRows.length > 0 && lessonRows.every((row) => contexts.some((context) =>
     context.studentId === row.studentId
     && context.subject === (row.subject || DEFAULT_SUBJECT)
@@ -162,12 +193,15 @@ export const TutorLessonDetailsPage = () => {
     .map((studentId) => availableStudents.find((student) => student.studentId === studentId))
     .filter(Boolean);
   const createBlocker = useMemo(() => {
+    if (!isNew) return '';
     if (!profile?.uid) return 'Your tutor profile is still loading. Wait a moment and try again.';
     if (!contextsLoaded) return 'Loading your assigned students…';
+    if (!eligibilityLoaded) return 'Checking analyzed question papers and the subject topic list…';
+    if (eligibilityError) return `Could not verify lesson subjects: ${eligibilityError}`;
     if (!contexts.some((context) => context.accessRole === 'co-owner')) {
       return 'No active co-owner student assignments were found. Ask an admin to assign you as a co-owner, then reload this page.';
     }
-    if (!subjectOptions.length) return 'No subject is available for your current co-owner assignments.';
+    if (!subjectOptions.length) return 'No assigned subject has an analyzed question paper and a topic list for its grade. Analyze a paper before creating lessons.';
     if (!grade) return 'Choose a grade to load the students assigned to you for that grade.';
     if (!availableStudents.length) return `There are no active co-owner students for ${subject}, ${grade}. Check the student assignment or choose another grade.`;
     if (sessionMode === 'group' && selectedStudents.length < 2) return 'Select at least two assigned students to create a group lesson.';
@@ -175,7 +209,7 @@ export const TutorLessonDetailsPage = () => {
     if (!lessonDate) return 'Choose a lesson date.';
     if (!topics.length) return 'Add at least one planned topic before creating the lesson.';
     return '';
-  }, [availableStudents.length, contexts, contextsLoaded, grade, lessonDate, profile?.uid, selectedStudents.length, sessionMode, subject, subjectOptions.length, topics.length]);
+  }, [availableStudents.length, contexts, contextsLoaded, eligibilityError, eligibilityLoaded, grade, isNew, lessonDate, profile?.uid, selectedStudents.length, sessionMode, subject, subjectOptions.length, topics.length]);
 
   useEffect(() => {
     if (!subject || !grade || !isNew && !lessonRows.length) {
@@ -419,7 +453,8 @@ export const TutorLessonDetailsPage = () => {
 
           <div className="grid gap-3 md:grid-cols-3">
             <label className="grid gap-2 text-sm font-semibold text-slate-700">Subject
-              <select className="input" value={subject} onChange={(event) => handleSubjectChange(event.target.value)}>
+              <select className="input" value={subjectOptions.includes(subject) ? subject : ''} onChange={(event) => handleSubjectChange(event.target.value)} disabled={!eligibilityLoaded || !subjectOptions.length}>
+                <option value="">{eligibilityLoaded ? 'No eligible subjects' : 'Checking analyzed papers…'}</option>
                 {subjectOptions.map((value) => <option key={value} value={value}>{value}</option>)}
               </select>
             </label>

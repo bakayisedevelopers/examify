@@ -2083,6 +2083,40 @@ export const getGlobalTopicOptionGroups = async ({ subject, grade, studentIds = 
   return { extracted, manual, all: [...new Set([...extracted, ...manual])] };
 };
 
+export const getLessonEligibleSubjectGradePairs = async (contexts = []) => {
+  const candidates = new Map();
+  contexts.forEach((context) => {
+    const subject = String(context?.subject || DEFAULT_SUBJECT).trim();
+    const grade = String(context?.grade || '').trim();
+    if (!subject || !grade) return;
+    const key = `${subject}\u0000${grade}`;
+    const candidate = candidates.get(key) || { subject, grade, studentIds: new Set() };
+    if (context?.studentId) candidate.studentIds.add(context.studentId);
+    candidates.set(key, candidate);
+  });
+
+  const eligiblePairs = await Promise.all([...candidates.values()].map(async ({ subject, grade, studentIds }) => {
+    const papers = await getQuestionPapers({ subject, grade });
+    if (!papers.length) return null;
+    const extractedTopics = papers.flatMap((paper) => [
+      ...(paper.topics ?? []),
+      ...(Array.isArray(paper.questions) ? paper.questions.flatMap((question) => [
+        question.topic,
+        ...(Array.isArray(question.topics) ? question.topics : []),
+      ]) : []),
+    ]).filter(Boolean);
+    const topicGroups = await getGlobalTopicOptionGroups({
+      subject,
+      grade,
+      studentIds: [...studentIds],
+      extractedTopics,
+    });
+    return topicGroups.all.length ? { subject, grade } : null;
+  }));
+
+  return eligiblePairs.filter(Boolean);
+};
+
 export const initializeGlobalTopicCatalog = async () => {
   if (!isFirebaseConfigured) throw new Error('Connect to Firebase to initialize the global topic catalog.');
   if (!functions) throw new Error('Firebase Functions are not configured.');

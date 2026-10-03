@@ -8,6 +8,7 @@ import { useAuth } from '../../hooks/useAuth';
 import {
   generateExercisePlanIfEligible,
   getGlobalTopicOptionGroups,
+  getLessonEligibleSubjectGradePairs,
   getQuestionPapers,
   getTutorAssignedStudentContexts,
   getTutorAssignmentHistoryContexts,
@@ -58,6 +59,9 @@ export const TutorStudentDetailsPage = () => {
   const location = useLocation();
   const [student, setStudent] = useState(null);
   const [studentSubjects, setStudentSubjects] = useState([]);
+  const [lessonEligibleSubjects, setLessonEligibleSubjects] = useState([]);
+  const [lessonEligibilityLoading, setLessonEligibilityLoading] = useState(false);
+  const [lessonEligibilityError, setLessonEligibilityError] = useState('');
   const [currentAssignmentSubjects, setCurrentAssignmentSubjects] = useState([]);
   const [assignmentHistory, setAssignmentHistory] = useState([]);
   const [exercises, setExercises] = useState([]);
@@ -84,10 +88,17 @@ export const TutorStudentDetailsPage = () => {
 
   const load = async () => {
     if (!profile?.uid) return;
+    if (!periodId) {
+      setLessonEligibleSubjects([]);
+      setLessonEligibilityLoading(true);
+      setLessonEligibilityError('');
+    }
     const historyRows = await getTutorAssignmentHistoryContexts(profile.uid, studentId);
     setAssignmentHistory(historyRows);
 
     if (periodId) {
+      setLessonEligibleSubjects([]);
+      setLessonEligibilityLoading(false);
       const archivedContext = historyRows.find((item) => item.assignmentPeriodId === periodId);
       if (!archivedContext) {
         setStudent(null);
@@ -127,13 +138,33 @@ export const TutorStudentDetailsPage = () => {
     setCurrentAssignmentSubjects(accessibleSubjects);
     const activeSubject = accessibleSubjects.includes(subject) ? subject : accessibleSubjects[0];
     if (!activeSubject) {
+      setLessonEligibleSubjects([]);
+      setLessonEligibilityLoading(false);
       setStudent(null);
       setStatus(historyRows.length ? 'No current access. Previous assignment records remain available below.' : 'You do not have access to this student.');
       return;
     }
     if (activeSubject !== subject) setSearchParams({ subject: activeSubject }, { replace: true });
     const studentContext = contexts.find((item) => item.studentId === studentId && item.subject === activeSubject) ?? null;
-    const papers = await getQuestionPapers({ subject: activeSubject, grade: studentContext?.grade, region: studentContext?.province });
+    setLessonEligibilityLoading(true);
+    setLessonEligibilityError('');
+    let papers;
+    let eligibilityResult;
+    try {
+      [papers, eligibilityResult] = await Promise.all([
+        getQuestionPapers({ subject: activeSubject, grade: studentContext?.grade, region: studentContext?.province }),
+        getLessonEligibleSubjectGradePairs(contexts.filter((item) => item.studentId === studentId && item.accessRole === 'co-owner'))
+          .then((pairs) => ({ pairs }))
+          .catch((error) => ({ error })),
+      ]);
+    } catch (error) {
+      setLessonEligibilityLoading(false);
+      throw error;
+    }
+    const eligiblePairs = eligibilityResult.pairs || [];
+    setLessonEligibleSubjects([...new Set(eligiblePairs.map((pair) => pair.subject))].sort());
+    setLessonEligibilityError(eligibilityResult.error?.message || '');
+    setLessonEligibilityLoading(false);
     const extractedTopics = papers.flatMap((paper) => [
       ...(paper.topics ?? []),
       ...(Array.isArray(paper.questions) ? paper.questions.flatMap((question) => [
@@ -267,6 +298,12 @@ export const TutorStudentDetailsPage = () => {
   const canDeleteExercise = (exercise) => String(exercise.assignmentDate ?? '').slice(0, 10) > today() && !isExerciseSubmitted(exercise);
 
   const completeLesson = async () => {
+    if (!lessonEligibleSubjects.includes(subject)) {
+      setStatus(lessonEligibilityError
+        ? `Could not verify analyzed question papers: ${lessonEligibilityError}`
+        : 'This subject has no analyzed question paper and topic catalog for the student’s grade. Analyze a paper before completing a lesson.');
+      return;
+    }
     if (!lessonForm.topicUnderstandingScores.length || !lessonForm.topicReport.trim() || !lessonForm.lessonDate || !lessonForm.lessonType || !hasValidScores(lessonForm.topicUnderstandingScores)) {
       setStatus('Choose at least one topic, date, lesson type, score from 0 to 10, and enter the lesson report.');
       return;
@@ -410,6 +447,24 @@ export const TutorStudentDetailsPage = () => {
       {canManage ? (
         <section className="panel space-y-4 p-5">
           <SectionHeader eyebrow="Lesson complete" title="Save completed topics" description="Choose topics from analyzed papers, add scores, and save the lesson for AI generation." />
+          <label className="grid max-w-xl gap-2 text-sm font-semibold text-slate-700">Lesson subject
+            <select
+              className="input"
+              value={lessonEligibleSubjects.includes(subject) ? subject : ''}
+              onChange={(event) => {
+                if (!event.target.value) return;
+                setLessonForm(emptyLessonForm);
+                setStatus('');
+                setSearchParams({ subject: event.target.value });
+              }}
+              disabled={lessonEligibilityLoading || !lessonEligibleSubjects.length}
+            >
+              <option value="">{lessonEligibilityLoading ? 'Checking analyzed papers…' : 'Choose an analyzed subject'}</option>
+              {lessonEligibleSubjects.map((eligibleSubject) => <option key={eligibleSubject} value={eligibleSubject}>{eligibleSubject}</option>)}
+            </select>
+          </label>
+          {lessonEligibilityError ? <p className="text-sm text-rose-700" role="alert">Could not verify lesson subjects: {lessonEligibilityError}</p> : null}
+          {!lessonEligibilityLoading && !lessonEligibilityError && !lessonEligibleSubjects.includes(subject) ? <p className="text-sm text-amber-800" role="status">Lesson completion is available only for assigned subjects with an analyzed question paper and a topic catalog for this student’s grade.</p> : null}
           <div className="grid gap-3 md:grid-cols-2">
             <label className="grid gap-2 text-sm font-semibold text-slate-700">Lesson date<input type="date" className="input" value={lessonForm.lessonDate} onChange={(event) => setLessonForm((current) => ({ ...current, lessonDate: event.target.value }))} /></label>
             <label className="grid gap-2 text-sm font-semibold text-slate-700">Lesson type<select className="input" value={lessonForm.lessonType} onChange={(event) => setLessonForm((current) => ({ ...current, lessonType: event.target.value }))}><option value="online">Online (WhatsApp)</option><option value="inPerson">In-person</option></select></label>
@@ -425,7 +480,7 @@ export const TutorStudentDetailsPage = () => {
             </label>
           )}
           <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
-            <select className="input" value={lessonForm.selectedTopic} onChange={(event) => setLessonForm((current) => ({ ...current, selectedTopic: event.target.value }))} disabled={!topicOptions.all.length}>
+            <select className="input" value={lessonForm.selectedTopic} onChange={(event) => setLessonForm((current) => ({ ...current, selectedTopic: event.target.value }))} disabled={!lessonEligibleSubjects.includes(subject) || !topicOptions.all.length}>
               <option value="">{topicOptions.all.length ? 'Choose topic' : 'No topics available'}</option>
               {topicOptions.extracted.length ? <optgroup label="Past paper extracted topics">{topicOptions.extracted.map((topic) => <option key={`paper-${topic}`}>{topic}</option>)}</optgroup> : null}
               {topicOptions.manual.length ? <optgroup label="Manual topic list">{topicOptions.manual.map((topic) => <option key={`manual-${topic}`}>{topic}</option>)}</optgroup> : null}
@@ -441,7 +496,7 @@ export const TutorStudentDetailsPage = () => {
             </div>
           ))}
           <textarea className="input min-h-32" value={lessonForm.topicReport} onChange={(event) => setLessonForm((current) => ({ ...current, topicReport: event.target.value }))} placeholder="Lesson report" />
-          <button type="button" className="btn-primary" onClick={completeLesson} disabled={!lessonForm.topicUnderstandingScores.length || !lessonForm.topicReport.trim() || !hasValidScores(lessonForm.topicUnderstandingScores)}>Lesson completed</button>
+          <button type="button" className="btn-primary" onClick={completeLesson} disabled={lessonEligibilityLoading || !lessonEligibleSubjects.includes(subject) || !lessonForm.topicUnderstandingScores.length || !lessonForm.topicReport.trim() || !hasValidScores(lessonForm.topicUnderstandingScores)}>Lesson completed</button>
         </section>
       ) : null}
 
