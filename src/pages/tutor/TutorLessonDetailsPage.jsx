@@ -32,6 +32,21 @@ const emptyParticipant = () => ({ attended: true, topicReport: '', scores: {} })
 const createSessionId = () => globalThis.crypto?.randomUUID?.() ?? `lesson-group-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
 const getStudentLabel = (student) => student.displayName || student.name || student.email || student.studentId;
+const lessonRatioToInputScore = (value) => {
+  const score = Number(value);
+  const ratio = score > 1 && score <= 10 ? score / 10 : score;
+  return Number.isFinite(ratio) && ratio >= 0 && ratio <= 1 ? Math.round(ratio * 100) / 10 : '';
+};
+const getLessonErrorMessage = (error, fallback) => {
+  const message = String(error?.message || '').trim();
+  if (error?.code === 'permission-denied' || /missing or insufficient permissions/i.test(message)) {
+    return 'Firestore rejected this lesson. Confirm you have co-owner access to every selected student and that the latest Firestore rules are deployed.';
+  }
+  if (error?.code === 'unavailable' || /network|offline/i.test(message)) {
+    return 'Could not reach Firestore. Check your connection and try creating the lesson again.';
+  }
+  return message || fallback;
+};
 
 export const TutorLessonDetailsPage = () => {
   const { lessonId } = useParams();
@@ -57,6 +72,7 @@ export const TutorLessonDetailsPage = () => {
   const [participants, setParticipants] = useState({});
   const [isSaving, setIsSaving] = useState(false);
   const [status, setStatus] = useState('');
+  const [statusTone, setStatusTone] = useState('info');
 
   useEffect(() => {
     if (!profile?.uid) return;
@@ -69,7 +85,10 @@ export const TutorLessonDetailsPage = () => {
           setGrade(firstOwner.grade || '');
         }
       })
-      .catch((error) => setStatus(error.message || 'Could not load assigned students.'))
+      .catch((error) => {
+        setStatus(getLessonErrorMessage(error, 'Could not load assigned students.'));
+        setStatusTone('error');
+      })
       .finally(() => setContextsLoaded(true));
   }, [profile?.uid]);
 
@@ -102,7 +121,7 @@ export const TutorLessonDetailsPage = () => {
       const allTopics = [...new Set(accessibleRows.flatMap((row) => row.topics?.length ? row.topics : (row.topic ? [row.topic] : [])))];
       setTopics(allTopics);
       setParticipants(Object.fromEntries(accessibleRows.map((row) => {
-        const scores = Object.fromEntries((row.topicUnderstandingScores || []).map((entry) => [entry.topic, entry.understandingLevel]));
+        const scores = Object.fromEntries((row.topicUnderstandingScores || []).map((entry) => [entry.topic, lessonRatioToInputScore(entry.understandingLevel)]));
         return [row.id, {
           attended: row.attendanceStatus === 'missed' || row.attended === false ? false : true,
           topicReport: row.topicReport || row.note || '',
@@ -138,6 +157,24 @@ export const TutorLessonDetailsPage = () => {
     && lessonRows.every((row) => row.status === 'planned');
   const rosterStudentIds = new Set(lessonRows.map((row) => row.studentId));
   const addableStudents = availableStudents.filter((student) => !rosterStudentIds.has(student.studentId));
+  const selectedStudents = selectedStudentIds
+    .map((studentId) => availableStudents.find((student) => student.studentId === studentId))
+    .filter(Boolean);
+  const createBlocker = useMemo(() => {
+    if (!profile?.uid) return 'Your tutor profile is still loading. Wait a moment and try again.';
+    if (!contextsLoaded) return 'Loading your assigned students…';
+    if (!contexts.some((context) => context.accessRole === 'co-owner')) {
+      return 'No active co-owner student assignments were found. Ask an admin to assign you as a co-owner, then reload this page.';
+    }
+    if (!subjectOptions.length) return 'No subject is available for your current co-owner assignments.';
+    if (!grade) return 'Choose a grade to load the students assigned to you for that grade.';
+    if (!availableStudents.length) return `There are no active co-owner students for ${subject}, ${grade}. Check the student assignment or choose another grade.`;
+    if (sessionMode === 'group' && selectedStudents.length < 2) return 'Select at least two assigned students to create a group lesson.';
+    if (sessionMode === 'one-on-one' && selectedStudents.length !== 1) return 'Choose one assigned student for this lesson.';
+    if (!lessonDate) return 'Choose a lesson date.';
+    if (!topics.length) return 'Add at least one planned topic before creating the lesson.';
+    return '';
+  }, [availableStudents.length, contexts, contextsLoaded, grade, lessonDate, profile?.uid, selectedStudents.length, sessionMode, subject, subjectOptions.length, topics.length]);
 
   useEffect(() => {
     if (!subject || !grade || !isNew && !lessonRows.length) {
@@ -203,10 +240,15 @@ export const TutorLessonDetailsPage = () => {
   }));
 
   const createPlannedSession = async () => {
+    if (createBlocker) {
+      setStatus(createBlocker);
+      setStatusTone('error');
+      return;
+    }
     setIsSaving(true);
     setStatus('');
+    setStatusTone('info');
     try {
-      const selectedStudents = selectedStudentIds.map((studentId) => availableStudents.find((student) => student.studentId === studentId)).filter(Boolean);
       const groupSessionId = sessionMode === 'group' ? createSessionId() : '';
       const createdRows = await savePlannedLessonSession({
         tutorId: profile.uid,
@@ -223,7 +265,8 @@ export const TutorLessonDetailsPage = () => {
       if (!createdRows.length) throw new Error('No lesson records were created.');
       navigate(`${basePath}/lessons/${createdRows[0].id}`);
     } catch (error) {
-      setStatus(error.message || 'Could not create the lesson.');
+      setStatus(getLessonErrorMessage(error, 'Could not create the lesson.'));
+      setStatusTone('error');
     } finally {
       setIsSaving(false);
     }
@@ -330,7 +373,7 @@ export const TutorLessonDetailsPage = () => {
   return (
     <AppShell title={isNew ? 'Schedule lesson' : 'Lesson records'} subtitle="Plan lessons by student and log attendance, reports, and topic scores." role={role} user={profile} onLogout={logout}>
       <Link to={`${basePath}/lessons`} className="btn-secondary inline-flex w-fit">Back to lessons</Link>
-      {status ? <div className="panel p-4 text-sm text-slate-700" role="status">{status}</div> : null}
+      {status ? <div className={`panel p-4 text-sm ${statusTone === 'error' ? 'border border-rose-200 bg-rose-50 font-medium text-rose-800' : 'text-slate-700'}`} role={statusTone === 'error' ? 'alert' : 'status'}>{status}</div> : null}
 
       {isNew ? (
         <section className="panel space-y-5 p-5">
@@ -395,9 +438,10 @@ export const TutorLessonDetailsPage = () => {
           </div>
 
           <TopicPicker topicOptions={topicOptions} selectedTopic={selectedTopic} setSelectedTopic={setSelectedTopic} addTopic={addTopic} topics={topics} removeTopic={removeTopic} />
-          <button type="button" className="btn-primary w-full md:w-auto" onClick={createPlannedSession} disabled={isSaving || !contextsLoaded || !lessonDate || !grade || !topics.length || (sessionMode === 'group' ? selectedStudentIds.length < 2 : selectedStudentIds.length !== 1)}>
+          <button type="button" className="btn-primary w-full md:w-auto" onClick={createPlannedSession} disabled={isSaving || Boolean(createBlocker)}>
             {isSaving ? 'Saving…' : 'Create planned lesson'}
           </button>
+          {createBlocker ? <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900" role="status">{createBlocker}</p> : null}
         </section>
       ) : (
         <section className="panel space-y-5 p-5">
@@ -493,7 +537,7 @@ export const TutorLessonDetailsPage = () => {
                           </label>
                         </td>
                         <td className="px-3 py-3"><textarea className="input min-h-24 min-w-60" value={participant.topicReport || ''} onChange={(event) => updateParticipant(row.id, { topicReport: event.target.value })} placeholder={participant.attended === false ? 'Not required when missed' : 'Report for this student'} disabled={!isEditable || isSaving || participant.attended === false} /></td>
-                        {topics.map((topic) => <td key={topic} className="px-3 py-3"><input aria-label={`${topic} score for ${row.studentName || row.studentId}`} type="number" min="0" max="10" step="1" className="input min-w-28" value={participant.scores?.[topic] ?? ''} onChange={(event) => updateParticipant(row.id, { scores: { ...(participant.scores || {}), [topic]: event.target.value } })} placeholder={participant.attended === false ? 'Missed' : '0–10'} disabled={!isEditable || isSaving || participant.attended === false} /></td>)}
+                        {topics.map((topic) => <td key={topic} className="px-3 py-3"><input aria-label={`${topic} understanding score out of 10 for ${row.studentName || row.studentId}`} type="number" min="0" max="10" step="1" className="input min-w-28" value={participant.scores?.[topic] ?? ''} onChange={(event) => updateParticipant(row.id, { scores: { ...(participant.scores || {}), [topic]: event.target.value } })} placeholder={participant.attended === false ? 'Missed' : '0–10'} disabled={!isEditable || isSaving || participant.attended === false} /></td>)}
                       </tr>
                     );
                   })}

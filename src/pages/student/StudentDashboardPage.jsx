@@ -13,6 +13,7 @@ import {
   getPeerMarkingAssignmentsForStudent,
   getStudentAccessState,
   getTodayExercises,
+  subscribeToSubjectUnderstandingSummary,
   subscribeToExerciseGenerationStatus,
 } from '../../services/firestoreService';
 import { loadStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
@@ -45,14 +46,30 @@ const TodayExerciseCard = ({ exercise, onOpen }) => {
   );
 };
 
+const ExerciseGenerationProgressBar = ({ progress = 65, indeterminate = false }) => (
+  <div
+    className="relative h-8 w-full overflow-hidden rounded-full bg-slate-200"
+    role="progressbar"
+    aria-label="Generating exercises"
+    aria-valuemin="0"
+    aria-valuemax="100"
+    {...(!indeterminate ? { 'aria-valuenow': progress } : {})}
+  >
+    <div
+      className={`h-full rounded-full bg-lime-400 transition-all duration-500 ease-out ${indeterminate ? 'animate-pulse' : ''}`}
+      style={{ width: `${indeterminate ? 65 : Math.min(100, Math.max(0, progress))}%` }}
+    />
+    <span className="absolute inset-0 flex items-center justify-center text-sm font-semibold text-slate-900">Generating...</span>
+  </div>
+);
+
 
 const ReadinessChecklist = ({ rows, studentName }) => {
   if (!rows.length) return null;
   const labels = {
     paidSubscriptionActive: 'Paid subscription active',
-    latestTutorReportExists: 'Tutor initial report added',
     minimumQuestionPaperCountMet: 'At least 2 analyzed papers available',
-    lessonCompleted: 'At least 1 completed lesson logged',
+    lessonCompleted: 'At least 1 completed topic lesson logged',
     initialGenerationExists: 'Initial AI plan already generated',
   };
   return (
@@ -84,6 +101,33 @@ const ReadinessChecklist = ({ rows, studentName }) => {
   );
 };
 
+const SubjectUnderstandingSummary = ({ rows, isLoading }) => (
+  <section className="panel space-y-4 p-5">
+    <SectionHeader
+      eyebrow="Progress"
+      title="Subject understanding"
+      description="Each percentage averages the current 28-day understanding score for every topic with a score. Topics count equally."
+    />
+    {isLoading ? <p className="text-sm text-slate-500">Loading subject understanding scores…</p> : rows.length ? <div className="grid gap-3 sm:grid-cols-2">
+      {rows.map((row) => {
+        const percentage = row.understandingLevel === null ? null : Math.round(row.understandingLevel * 100);
+        return (
+          <div key={row.subject} className="rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex items-start justify-between gap-4">
+              <p className="font-semibold text-slate-900">{row.subject}</p>
+              {percentage === null ? <span className="text-sm font-medium text-slate-500">No scores yet</span> : <span className="text-2xl font-bold text-brand-700">{percentage}%</span>}
+            </div>
+            {percentage !== null ? <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100" role="progressbar" aria-label={`${row.subject} average understanding`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={percentage}>
+              <div className="h-full rounded-full bg-lime-500 transition-all" style={{ width: `${percentage}%` }} />
+            </div> : null}
+            <p className="mt-2 text-xs text-slate-500">{row.scoredTopicCount} of {row.completedTopicCount} completed topics have a current score.</p>
+          </div>
+        );
+      })}
+    </div> : <p className="text-sm text-slate-500">No active subjects to show.</p>}
+  </section>
+);
+
 export const StudentDashboardPage = () => {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
@@ -98,11 +142,14 @@ export const StudentDashboardPage = () => {
   const [isLoadingExercises, setIsLoadingExercises] = useState(true);
   const [isLoadingPeerAssignments, setIsLoadingPeerAssignments] = useState(true);
   const [isCheckingAccess, setIsCheckingAccess] = useState(true);
+  const [subjectUnderstandingRows, setSubjectUnderstandingRows] = useState([]);
+  const [isLoadingSubjectUnderstanding, setIsLoadingSubjectUnderstanding] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
-  const [generationMessage, setGenerationMessage] = useState('');
   const [readinessRows, setReadinessRows] = useState([]);
   const [generationStatuses, setGenerationStatuses] = useState({});
+  const [initialRetrySubjects, setInitialRetrySubjects] = useState([]);
+  const [retryingInitialSubject, setRetryingInitialSubject] = useState('');
   const [subscriptionPlanId, setSubscriptionPlanId] = useState('free');
   const [subscriptionPlanName, setSubscriptionPlanName] = useState('Free');
   const [requiresSubscriptionSelection, setRequiresSubscriptionSelection] = useState(true);
@@ -125,6 +172,38 @@ export const StudentDashboardPage = () => {
   }, [profile?.uid, availableSubjects]);
 
   useEffect(() => {
+    if (!profile?.uid || !availableSubjects.length) {
+      setSubjectUnderstandingRows([]);
+      setIsLoadingSubjectUnderstanding(false);
+      return undefined;
+    }
+    let active = true;
+    const loadedSubjects = new Set();
+    setSubjectUnderstandingRows([]);
+    setIsLoadingSubjectUnderstanding(true);
+    const unsubscribes = availableSubjects.map((subject) => subscribeToSubjectUnderstandingSummary(
+      profile.uid,
+      subject,
+      (summary, error) => {
+        if (!active) return;
+        loadedSubjects.add(subject);
+        if (error) setLoadError((current) => current || error.message || `Could not load ${subject} understanding scores.`);
+        const nextSummary = summary || { subject, understandingLevel: null, scoredTopicCount: 0, completedTopicCount: 0 };
+        setSubjectUnderstandingRows((current) => {
+          const bySubject = new Map(current.map((row) => [row.subject, row]));
+          bySubject.set(subject, nextSummary);
+          return availableSubjects.flatMap((item) => bySubject.has(item) ? [bySubject.get(item)] : []);
+        });
+        if (loadedSubjects.size === availableSubjects.length) setIsLoadingSubjectUnderstanding(false);
+      },
+    ));
+    return () => {
+      active = false;
+      unsubscribes.forEach((unsubscribe) => unsubscribe());
+    };
+  }, [availableSubjects, profile?.uid]);
+
+  useEffect(() => {
     setActiveTab(searchParams.get('tab') === 'mark' ? 'mark' : 'exercises');
   }, [searchParams]);
 
@@ -139,21 +218,14 @@ export const StudentDashboardPage = () => {
     const runGeneratePlan = async (subject, mode) => {
       setIsGenerating(true);
       setGenerationProgress(25);
-      setGenerationMessage(`${subject}: ${mode === 'initial' ? 'Initial' : 'Weekly'} AI generation started...`);
 
       const result = await generateExercisePlanIfEligible({
         student: profile,
         mode,
         subject,
-        onProgress: (message) => setGenerationMessage(`${subject}: ${message}`),
       });
 
       setGenerationProgress(75);
-      if (result?.generated) {
-        setGenerationMessage(`${subject}: generated ${result.assignments?.length ?? 0} exercise(s).`);
-      } else {
-        setGenerationMessage(`${subject}: ${result?.reason ?? 'generation criteria not met'}.`);
-      }
       return result;
     };
 
@@ -165,6 +237,7 @@ export const StudentDashboardPage = () => {
         setIsLoadingExercises(true);
         setIsLoadingPeerAssignments(true);
         setIsCheckingAccess(true);
+        setInitialRetrySubjects([]);
         const readiness = [];
         const subjectsToCheck = availableSubjects;
         Promise.all(subjectsToCheck.map((subject) => getTodayExercises(profile.uid, subject)))
@@ -209,6 +282,13 @@ export const StudentDashboardPage = () => {
         const anyPaidSubject = accessStates.some(({ access }) => Boolean(access.paidSubscriptionActive));
         setPaymentLocked(!anyPaidSubject);
         setIsCheckingAccess(false);
+        setInitialRetrySubjects(accessStates
+          .filter(({ access }) => access.paidSubscriptionActive
+            && !access.hasInitialGeneration
+            && access.initialGenerationReady
+            && access.generationRunStatus?.lastTrigger === 'initial'
+            && access.generationRunStatus?.status === 'failed')
+          .map(({ subject }) => subject));
 
         for (const { subject, access } of accessStates) {
 
@@ -244,6 +324,7 @@ export const StudentDashboardPage = () => {
         if (!active) return;
         setTodayExercises([]);
         setReadinessRows([]);
+        setInitialRetrySubjects([]);
         setSubscriptionPlanId('free');
         setSubscriptionPlanName('Free');
         setRequiresSubscriptionSelection(true);
@@ -260,6 +341,31 @@ export const StudentDashboardPage = () => {
     load();
     return () => { active = false; };
   }, [availableSubjects, profile]);
+
+  const retryInitialGeneration = async (subject) => {
+    if (!subject || retryingInitialSubject) return;
+    setRetryingInitialSubject(subject);
+    setIsGenerating(true);
+    setGenerationProgress(25);
+    try {
+      const result = await generateExercisePlanIfEligible({
+        student: profile,
+        mode: 'initial',
+        subject,
+      });
+      setGenerationProgress(100);
+      if (!result.generated) return;
+
+      setInitialRetrySubjects((current) => current.filter((item) => item !== subject));
+      setReadinessRows((current) => current.filter((row) => row.subject !== subject));
+      setTodayExercises((await getTodayExercises(profile.uid, subject)).filter(Boolean));
+    } catch (error) {
+      setLoadError(error.message || 'Initial generation failed.');
+    } finally {
+      setRetryingInitialSubject('');
+      setTimeout(() => setIsGenerating(false), 500);
+    }
+  };
 
   const handleSavePeerMarking = async (files) => {
     if (!reviewingAssignment) return;
@@ -338,26 +444,41 @@ export const StudentDashboardPage = () => {
         </div>
       ) : null}
 
-      {Object.entries(generationStatuses).filter(([, status]) => {
+      <SubjectUnderstandingSummary rows={subjectUnderstandingRows} isLoading={isLoadingSubjectUnderstanding} />
+
+      {Object.entries(generationStatuses).filter(([subject, status]) => {
         if (!status) return false;
-        if (status.status === 'processing') return Date.now() < Number(status.expiresAtMs ?? 0);
+        if (status.status === 'processing') return !isGenerating && Date.now() < Number(status.expiresAtMs ?? 0);
+        if (status.status === 'failed' && status.lastTrigger === 'initial' && initialRetrySubjects.includes(subject)) return true;
         return Date.now() - Number(status.finishedAtMs || 0) < 120000;
       }).map(([subject, status]) => (
-        <div key={subject} role="status" aria-live="polite" className={`panel flex items-start gap-3 p-4 ${status.status === 'failed' ? 'border border-rose-400/30 bg-rose-400/10 text-rose-300' : 'border border-lime-400/30 bg-lime-400/10 text-lime-300'}`}>
-          {status.status === 'processing' ? <span className="mt-0.5 inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-lime-400 border-r-transparent" aria-hidden="true" /> : null}
-          <div>
-            <p className="font-semibold">{status.status === 'processing' ? `${subject}: AI is regenerating your exercises` : `${subject}: ${status.status === 'completed' ? 'Exercise regeneration complete' : 'Exercise regeneration did not complete'}`}</p>
-            <p className="mt-1 text-sm">{status.message}</p>
+        status.status === 'processing' ? (
+          <div key={subject} className="panel p-4" role="status" aria-live="polite">
+            <ExerciseGenerationProgressBar indeterminate />
           </div>
-        </div>
+        ) : (
+          <div key={subject} role="status" aria-live="polite" className={`panel flex items-start gap-3 p-4 ${status.status === 'failed' ? 'border border-rose-400/30 bg-rose-400/10 text-rose-300' : 'border border-lime-400/30 bg-lime-400/10 text-lime-300'}`}>
+            <div>
+              <p className="font-semibold">{status.status === 'completed' ? `${subject}: Exercise generation complete` : `${subject}: Exercise generation did not complete`}</p>
+              <p className="mt-1 text-sm">{status.message}</p>
+              {status.status === 'failed' && status.lastTrigger === 'initial' && initialRetrySubjects.includes(subject) ? (
+                <button
+                  type="button"
+                  className="btn-secondary mt-3"
+                  onClick={() => retryInitialGeneration(subject)}
+                  disabled={Boolean(retryingInitialSubject)}
+                >
+                  {retryingInitialSubject === subject ? 'Retrying initial generation...' : 'Retry initial generation'}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        )
       ))}
 
       {isGenerating ? (
         <div className="panel p-4">
-          <p className="font-medium text-slate-700">{generationMessage}</p>
-          <div className="mt-3 h-2 w-full rounded-full bg-slate-200">
-            <div className="h-full rounded-full bg-lime-400 transition-all duration-300" style={{ width: `${Math.min(100, Math.max(0, generationProgress))}%` }} />
-          </div>
+          <ExerciseGenerationProgressBar progress={generationProgress} />
         </div>
       ) : null}
 
@@ -379,7 +500,7 @@ export const StudentDashboardPage = () => {
                 <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-lime-500 border-r-transparent" aria-hidden="true" />
                 Loading today’s exercises...
               </div>
-            ) : !paymentLocked && todayExercises.length ? todayExercises.map((exercise) => (
+            ) : isGenerating ? null : !paymentLocked && todayExercises.length ? todayExercises.map((exercise) => (
               <TodayExerciseCard
                 key={exercise.id}
                 exercise={exercise}
@@ -387,7 +508,7 @@ export const StudentDashboardPage = () => {
               />
             )) : (
               <div className="panel col-span-full flex min-h-72 items-center justify-center p-6 text-center text-sm text-slate-500">
-                {isGenerating ? 'Your exercises are being prepared. This page will update when generation finishes.' : paymentLocked ? 'Exercises are locked until payment is complete.' : 'No exercises have been assigned for today yet.'}
+                {paymentLocked ? 'Exercises are locked until payment is complete.' : 'No exercises have been assigned for today yet.'}
               </div>
             )}
           </section>

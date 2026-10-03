@@ -5,6 +5,12 @@ import { LessonAccessDetails } from '../../components/lessons/LessonAccessDetail
 import { useAuth } from '../../hooks/useAuth';
 import { getLessonById } from '../../services/firestoreService';
 
+const lessonScorePercent = (value) => {
+  const score = Number(value);
+  const ratio = score > 1 && score <= 10 ? score / 10 : score;
+  return Number.isFinite(ratio) ? Math.round(ratio * 100) : 0;
+};
+
 export const StudentLessonDetailsPage = () => {
   const { lessonId } = useParams();
   const [searchParams] = useSearchParams();
@@ -35,7 +41,7 @@ export const StudentLessonDetailsPage = () => {
             <LessonAccessDetails lessonType={lesson.lessonType} whatsappLessonLink={lesson.whatsappLessonLink} locationDetails={lesson.locationDetails} />
             {missed ? <p className="text-sm text-slate-600">You were marked absent. No report or understanding scores were recorded.</p> : planned ? <p className="text-sm text-slate-600">This lesson is scheduled. Your tutor will add the report and topic scores after the lesson.</p> : (
               <>
-                <div className="space-y-2 text-sm text-slate-600">{(lesson.topicUnderstandingScores ?? []).map((entry) => <p key={entry.topic}>{entry.topic}: {entry.understandingLevel}/10</p>)}</div>
+                <div className="space-y-2 text-sm text-slate-600">{(lesson.topicUnderstandingScores ?? []).map((entry) => <p key={entry.topic}>{entry.topic}: {lessonScorePercent(entry.understandingLevel)}%</p>)}</div>
                 {(lesson.topicReport || lesson.note) ? <p className="whitespace-pre-wrap rounded-lg bg-slate-50 p-4 text-sm text-slate-700">{lesson.topicReport || lesson.note}</p> : null}
               </>
             )}

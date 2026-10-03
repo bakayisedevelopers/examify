@@ -11,7 +11,10 @@ const cohortFor = (exercise = {}) => ({
   assignmentDate: exercise.assignmentDate ?? '', subject: exercise.subject ?? '', grade: exercise.grade ?? '',
 });
 const topicNames = (exercise = {}) => [...new Set([
-  ...(Array.isArray(exercise.topics) ? exercise.topics : []), exercise.topic,
+  ...(Array.isArray(exercise.topics) ? exercise.topics : []),
+  ...(Array.isArray(exercise.topicBreakdown) ? exercise.topicBreakdown.map((entry) => entry?.topic) : []),
+  ...(Array.isArray(exercise.questionLinks) ? exercise.questionLinks.map((entry) => entry?.topic) : []),
+  ...String(exercise.topic || '').split('|'),
 ].filter(Boolean).map((topic) => String(topic).trim()))];
 const sameCohort = (left, right) => left.assignmentDate === right.assignmentDate
   && left.subject === right.subject && String(left.grade) === String(right.grade);
@@ -64,6 +67,12 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
         exerciseId: target.id, assignmentPath: assignmentRef.path, exercisePath: target.ref.path,
         reviewerExercisePath: reviewer.ref.path, assignmentDate: cohort.assignmentDate,
         subject: cohort.subject, grade: cohort.grade, topic: matchedTopics[0] ?? topicNames(target)[0] ?? '', topics: matchedTopics,
+        topicBreakdown: Array.isArray(target.topicBreakdown) ? target.topicBreakdown : [],
+        questionLinks: (Array.isArray(target.questionLinks) ? target.questionLinks : [])
+          .filter((link) => !matchedTopics.length || matchedTopics.some((topic) =>
+            String(link.topic || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+              === String(topic).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim())),
+        paperIds: Array.isArray(target.paperIds) ? target.paperIds : [],
         title: target.title ?? '', submittedImageUrl: target.submittedImageUrl ?? '', submittedImages: target.submittedImages ?? [],
         status: 'assigned', createdAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });

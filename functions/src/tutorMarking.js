@@ -36,10 +36,104 @@ const requireEpisodeAccess = ({ episode, uid, isAdmin, allowedRoles = ['co-owner
   return role;
 };
 
-const averageWithNewScore = ({ topic, score }) => {
-  const count = Number(topic.scoreCount) || 0;
-  const previousAverage = Number(topic.understandingLevel) || 0;
-  return Math.round(((previousAverage * count) + score) / (count + 1));
+const SCORE_WINDOW_DAYS = 28;
+const getScoreWindowStart = (now = admin.firestore.Timestamp.now()) =>
+  admin.firestore.Timestamp.fromMillis(now.toMillis() - (SCORE_WINDOW_DAYS * 24 * 60 * 60 * 1000));
+
+const understandingRatioFromRecord = (record = {}) => {
+  const score = Number(record.score);
+  if (!Number.isFinite(score) || score < 0) return null;
+  if (record.scoreScale === 'ratio-0-to-1') return score <= 1 ? score : null;
+  const hasQuestionMarks = Number.isFinite(Number(record.earnedMarks)) && Number.isFinite(Number(record.totalMarks))
+    && Number(record.totalMarks) > 0;
+  const divisor = record.sourceType === 'Lesson' || !hasQuestionMarks ? 10 : 100;
+  const ratio = score / divisor;
+  return ratio <= 1 ? ratio : null;
+};
+
+const makeTopicRollup = (scoreSnapshots, now, additionalScore = null) => {
+  const cutoff = getScoreWindowStart(now).toMillis();
+  const scores = scoreSnapshots.docs
+    .map((snapshot) => snapshot.data())
+    .filter((item) => item.createdAt?.toMillis?.() >= cutoff)
+    .map((item) => ({ score: understandingRatioFromRecord(item), createdAt: item.createdAt }))
+    .filter((item) => item.score !== null);
+  const additionalScores = Array.isArray(additionalScore) ? additionalScore : additionalScore ? [additionalScore] : [];
+  scores.push(...additionalScores);
+  scores.sort((left, right) => left.createdAt.toMillis() - right.createdAt.toMillis());
+  const count = scores.length;
+  const average = count
+    ? Math.round((scores.reduce((total, item) => total + item.score, 0) / count) * 10000) / 10000
+    : null;
+  return {
+    understandingLevel: average,
+    understandingScale: 'ratio-0-to-1',
+    scoreCount: count,
+    latestScore: count ? scores[count - 1].score : null,
+    scoreWindowDays: SCORE_WINDOW_DAYS,
+    scoreUpdatedAt: now,
+  };
+};
+
+const recentTopicScoresQuery = (topicRef, now) => topicRef.collection('understandingScores')
+  .where('createdAt', '>=', getScoreWindowStart(now));
+
+const normalizeQuestionMarks = (questionMarks, label = 'Question marks') => {
+  if (!Array.isArray(questionMarks) || !questionMarks.length || questionMarks.length > 100) {
+    throw new HttpsError('invalid-argument', `${label} must include one or more questions.`);
+  }
+  const normalized = questionMarks.map((item) => {
+    const earnedMarks = Number(item?.earnedMarks);
+    const totalMarks = Number(item?.totalMarks);
+    const questionReference = String(item?.questionReference || '').trim();
+    const paperId = String(item?.paperId || '').trim();
+    const pageNumber = Number(item?.pageNumber) || 0;
+    if (!questionReference || !Number.isFinite(earnedMarks) || !Number.isFinite(totalMarks) || totalMarks <= 0 || earnedMarks < 0 || earnedMarks > totalMarks) {
+      throw new HttpsError('invalid-argument', `${label} must include a question reference and earned marks from 0 through the available marks for each question.`);
+    }
+    return { questionReference, paperId, pageNumber, earnedMarks, totalMarks };
+  });
+  if (new Set(normalized.map((item) => item.questionReference)).size !== normalized.length) {
+    throw new HttpsError('invalid-argument', `${label} must list each question only once.`);
+  }
+  return normalized;
+};
+
+const scoreForQuestion = ({ earnedMarks, totalMarks }) =>
+  Math.round((earnedMarks / totalMarks) * 10000) / 10000;
+
+const scoreFromQuestionMarks = (questionMarks) => questionMarks.length
+  ? Math.round((questionMarks.reduce((total, item) => total + scoreForQuestion(item), 0) / questionMarks.length) * 10000) / 10000
+  : 0;
+
+const safeDocumentIdPart = (value) => encodeURIComponent(String(value ?? '')).replace(/%/g, '_') || 'unknown';
+
+const questionScoreRef = ({ topicRef, sourceType, sourceId, scoreEventId, questionReference, paperId = '' }) =>
+  topicRef.collection('understandingScores').doc(`${sourceType}-${safeDocumentIdPart(sourceId)}-${scoreEventId}-${safeDocumentIdPart(paperId)}-${safeDocumentIdPart(questionReference)}`);
+
+const ensureQuestionMarksMatchIndexedQuestions = ({ questionMarks, indexedQuestions = [], topic }) => {
+  const topicKey = normalizeTopicKey(topic);
+  const applicable = indexedQuestions.filter((item) => normalizeTopicKey(item.topic) === topicKey);
+  if (!applicable.length) return;
+  const byReference = new Map(applicable.map((item) => [String(item.questionReference || '').trim(), item]));
+  const providedReferences = new Set(questionMarks.map((mark) => mark.questionReference));
+  if (providedReferences.size !== byReference.size || [...byReference.keys()].some((reference) => !providedReferences.has(reference))) {
+    throw new HttpsError('invalid-argument', `Enter marks for every indexed question under ${topic}.`);
+  }
+  for (const mark of questionMarks) {
+    const indexed = byReference.get(mark.questionReference);
+    if (!indexed) throw new HttpsError('failed-precondition', `Question ${mark.questionReference} does not belong to ${topic}.`);
+    if (mark.paperId && String(indexed.paperId || '') !== mark.paperId) {
+      throw new HttpsError('failed-precondition', `Question ${mark.questionReference} is linked to a different paper.`);
+    }
+    if (mark.pageNumber && Number(indexed.pageNumber) !== mark.pageNumber) {
+      throw new HttpsError('failed-precondition', `Question ${mark.questionReference} is linked to a different page.`);
+    }
+    const knownTotal = Number(indexed.marks);
+    if (Number.isFinite(knownTotal) && knownTotal > 0 && mark.totalMarks !== knownTotal) {
+      throw new HttpsError('failed-precondition', `The available marks for question ${mark.questionReference} must be ${knownTotal}.`);
+    }
+  }
 };
 
 const findAssignment = async (db, assignmentId) => {
@@ -68,10 +162,10 @@ export const getCompletedPeerMarkingWorkForTutor = onCall({ cpu: 'gcf_gen1' }, a
 
 export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, async (request) => {
   const uid = request.auth?.uid;
-  const { peerAssignmentId, studentId, understandingLevel } = request.data ?? {};
-  const score = Number(understandingLevel);
-  if (!peerAssignmentId || !studentId || !Number.isFinite(score) || score < 0 || score > 10) {
-    throw new HttpsError('invalid-argument', 'A peer assignment, student, and score from 0 to 10 are required.');
+  const { peerAssignmentId, studentId, topicMarks, scoreEventId } = request.data ?? {};
+  if (!peerAssignmentId || !studentId || !Array.isArray(topicMarks) || !topicMarks.length
+    || !/^[a-zA-Z0-9_-]{1,100}$/.test(String(scoreEventId ?? ''))) {
+    throw new HttpsError('invalid-argument', 'A peer assignment, student, per-topic question marks, and score event ID are required.');
   }
   const db = getDb();
   const actor = await requireActor(db, uid);
@@ -90,59 +184,105 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
     throw new HttpsError('failed-precondition', 'The peer assignment does not match the student subject.');
   }
 
-  const topicName = String(assignment.topic || assignment.topics?.[0] || '').trim();
-  const canonicalTopicKey = normalizeTopicKey(topicName);
-  if (!canonicalTopicKey) throw new HttpsError('failed-precondition', 'The peer assignment has no topic to review.');
-  const topicRef = episodeRef.collection('topics').doc(canonicalTopicKey);
-  const scoreRef = topicRef.collection('understandingScores').doc(`markingReview-${peerAssignmentId}`);
-  const now = admin.firestore.FieldValue.serverTimestamp();
-  let average = score;
+  const assignmentTopics = [...new Set((Array.isArray(assignment.topics) && assignment.topics.length ? assignment.topics : [assignment.topic])
+    .map((topic) => String(topic || '').trim()).filter(Boolean))];
+  const scoreEntries = [...new Map(topicMarks.map((item) => {
+    const topicName = String(item?.topic || '').trim();
+    const canonicalTopicKey = normalizeTopicKey(topicName);
+    if (!canonicalTopicKey || !assignmentTopics.some((topic) => normalizeTopicKey(topic) === canonicalTopicKey)) {
+      throw new HttpsError('invalid-argument', `Topic ${topicName || '(empty)'} is not part of this marking assignment.`);
+    }
+    const questionMarks = normalizeQuestionMarks(item.questionMarks, `${topicName} question marks`);
+    ensureQuestionMarksMatchIndexedQuestions({ questionMarks, indexedQuestions: assignment.questionLinks ?? [], topic: topicName });
+    const topicRef = episodeRef.collection('topics').doc(canonicalTopicKey);
+    return [canonicalTopicKey, {
+      topicName,
+      canonicalTopicKey,
+      questionMarks,
+      score: scoreFromQuestionMarks(questionMarks),
+      topicRef,
+      scoreRefs: questionMarks.map((mark) => questionScoreRef({
+        topicRef, sourceType: 'Marking', sourceId: peerAssignmentId, scoreEventId, questionReference: mark.questionReference, paperId: mark.paperId,
+      })),
+    }];
+  })).values()];
+  if (scoreEntries.length !== assignmentTopics.length) {
+    throw new HttpsError('invalid-argument', 'Enter marks for every topic in the peer-marked work.');
+  }
+  const now = admin.firestore.Timestamp.now();
+  const averages = [];
   await db.runTransaction(async (transaction) => {
-    const [currentAssignment, currentEpisode, topicSnapshot, existingScore] = await Promise.all([
-      transaction.get(assignmentSnapshot.ref), transaction.get(episodeRef), transaction.get(topicRef), transaction.get(scoreRef),
+    averages.length = 0;
+    const entryReads = scoreEntries.map((entry) => Promise.all([
+      transaction.get(entry.topicRef),
+      transaction.get(recentTopicScoresQuery(entry.topicRef, now)),
+      ...entry.scoreRefs.map((scoreRef) => transaction.get(scoreRef)),
+    ]));
+    const [currentAssignment, currentEpisode, ...topicReads] = await Promise.all([
+      transaction.get(assignmentSnapshot.ref), transaction.get(episodeRef),
+      ...entryReads,
     ]);
     const current = currentAssignment.data();
     if (current.status !== 'completed' || current.reviewerId !== studentId) {
       throw new HttpsError('failed-precondition', 'The peer-marking assignment is no longer available.');
     }
     requireEpisodeAccess({ episode: currentEpisode.data(), uid, isAdmin: actor.role === 'admin' });
-    if (!topicSnapshot.exists()) throw new HttpsError('failed-precondition', 'Complete a lesson on this topic before recording a review score.');
-    if (existingScore.exists()) {
-      if (Number(existingScore.data().score) !== score) {
-        throw new HttpsError('already-exists', 'This peer-marking review already has an immutable score.');
-      }
-      average = Number(topicSnapshot.data().understandingLevel) || score;
-      return;
-    }
-    const topic = topicSnapshot.data();
-    average = averageWithNewScore({ topic, score });
-    transaction.set(scoreRef, {
-      sourceType: 'markingReview', sourceId: peerAssignmentId, score, tutorId: uid,
-      notes: 'Tutor evaluation of peer marking', createdAt: now,
-    });
-    transaction.update(topicRef, {
-      latestScore: score, understandingLevel: average,
-      scoreCount: (Number(topic.scoreCount) || 0) + 1,
-      tutorReport: 'Tutor evaluation of peer marking', updatedAt: now,
+    const scoreResults = [];
+    scoreEntries.forEach((entry, index) => {
+      const [topicSnapshot, recentScores, ...existingScores] = topicReads[index];
+      if (!topicSnapshot.exists()) throw new HttpsError('failed-precondition', `Complete a lesson on ${entry.topicName} before recording a review score.`);
+      const additionalScores = [];
+      const questionScores = entry.questionMarks.map((mark, questionIndex) => {
+        const score = scoreForQuestion(mark);
+        const existingScore = existingScores[questionIndex];
+        if (existingScore.exists()) {
+          const existing = existingScore.data();
+          if (Number(existing.score) !== score || Number(existing.earnedMarks) !== mark.earnedMarks || Number(existing.totalMarks) !== mark.totalMarks) {
+            throw new HttpsError('already-exists', 'This marking question score event already exists with different marks.');
+          }
+        } else {
+          additionalScores.push({ score, createdAt: now });
+          transaction.set(entry.scoreRefs[questionIndex], {
+            sourceType: 'Marking', sourceId: peerAssignmentId, peerAssignmentId,
+            exerciseId: assignment.exerciseId ?? assignment.markedExerciseId ?? null,
+            scoreEventId,
+            questionReference: mark.questionReference, paperId: mark.paperId, pageNumber: mark.pageNumber,
+            earnedMarks: mark.earnedMarks, totalMarks: mark.totalMarks,
+            score, scoreScale: 'ratio-0-to-1', tutorId: uid,
+            notes: `Tutor evaluation of peer marking ${peerAssignmentId} for exercise ${assignment.exerciseId ?? 'unknown'}; question ${mark.questionReference}`, createdAt: now,
+          });
+        }
+        return { questionReference: mark.questionReference, paperId: mark.paperId, pageNumber: mark.pageNumber, score, earnedMarks: mark.earnedMarks, totalMarks: mark.totalMarks };
+      });
+      const rollup = makeTopicRollup(recentScores, now, additionalScores);
+      transaction.update(entry.topicRef, {
+        ...rollup,
+        tutorReport: 'Tutor evaluation of peer marking', updatedAt: now,
+      });
+      scoreResults.push({ topic: entry.topicName, understandingLevel: entry.score, averageUnderstandingLevel: rollup.understandingLevel, questionScores });
     });
     transaction.update(assignmentSnapshot.ref, {
       tutorReviewStatus: 'reviewed', tutorReviewed: true, tutorReviewedBy: uid,
-      tutorReviewedAt: now, tutorUnderstandingLevel: score, tutorReviewTopic: topicName, updatedAt: now,
+      tutorReviewedAt: now,
+      tutorTopicScores: scoreResults,
+      tutorUnderstandingLevel: scoreResults.length ? scoreResults.reduce((total, item) => total + item.understandingLevel, 0) / scoreResults.length : null,
+      tutorReviewTopic: assignmentTopics.join(' | '), updatedAt: now,
     });
+    averages.push(...scoreResults);
   });
-  return { peerAssignmentId, topic: topicName, understandingLevel: score, averageUnderstandingLevel: average, reviewed: true };
+  return { peerAssignmentId, topicScores: averages, reviewed: true };
 });
 
 export const saveTutorExerciseScore = onCall({ cpu: 'gcf_gen1' }, async (request) => {
   const uid = request.auth?.uid;
-  const { studentId, subjectInstanceId, exerciseId, subject, topic, scoreEventId, understandingLevel } = request.data ?? {};
-  const score = Number(understandingLevel);
+  const { studentId, subjectInstanceId, exerciseId, subject, topic, scoreEventId, questionMarks } = request.data ?? {};
   const canonicalTopicKey = normalizeTopicKey(topic);
   if (!studentId || !subjectInstanceId || !exerciseId || !subject || !canonicalTopicKey
-    || !/^[a-zA-Z0-9_-]{1,100}$/.test(String(scoreEventId ?? ''))
-    || !Number.isFinite(score) || score < 0 || score > 10) {
-    throw new HttpsError('invalid-argument', 'Student, subject episode, exercise, topic, score event, and a score from 0 to 10 are required.');
+    || !/^[a-zA-Z0-9_-]{1,100}$/.test(String(scoreEventId ?? ''))) {
+    throw new HttpsError('invalid-argument', 'Student, subject episode, exercise, topic, question marks, and score event are required.');
   }
+  const normalizedQuestionMarks = normalizeQuestionMarks(questionMarks);
+  const score = scoreFromQuestionMarks(normalizedQuestionMarks);
   const db = getDb();
   const actor = await requireActor(db, uid);
   const episodeRef = db.collection('users').doc(studentId).collection('subjects').doc(subjectInstanceId);
@@ -155,12 +295,15 @@ export const saveTutorExerciseScore = onCall({ cpu: 'gcf_gen1' }, async (request
   }
 
   const topicRef = episodeRef.collection('topics').doc(canonicalTopicKey);
-  const scoreRef = topicRef.collection('understandingScores').doc(`Exercise-${scoreEventId}`);
-  const now = admin.firestore.FieldValue.serverTimestamp();
+  const scoreRefs = normalizedQuestionMarks.map((mark) => questionScoreRef({
+    topicRef, sourceType: 'Exercise', sourceId: exerciseId, scoreEventId, questionReference: mark.questionReference, paperId: mark.paperId,
+  }));
+  const now = admin.firestore.Timestamp.now();
   let average = score;
   await db.runTransaction(async (transaction) => {
-    const [currentEpisode, exerciseSnapshot, topicSnapshot, existingScore] = await Promise.all([
-      transaction.get(episodeRef), transaction.get(exerciseRef), transaction.get(topicRef), transaction.get(scoreRef),
+    const [currentEpisode, exerciseSnapshot, topicSnapshot, recentScores, ...existingScores] = await Promise.all([
+      transaction.get(episodeRef), transaction.get(exerciseRef), transaction.get(topicRef), transaction.get(recentTopicScoresQuery(topicRef, now)),
+      ...scoreRefs.map((scoreRef) => transaction.get(scoreRef)),
     ]);
     requireEpisodeAccess({ episode: currentEpisode.data(), uid, isAdmin: actor.role === 'admin' });
     if (!exerciseSnapshot.exists()) throw new HttpsError('not-found', 'Exercise not found.');
@@ -172,31 +315,100 @@ export const saveTutorExerciseScore = onCall({ cpu: 'gcf_gen1' }, async (request
       || exercise.submitted === 'Yes'
       || (Array.isArray(exercise.submittedImages) && exercise.submittedImages.length));
     if (!submitted) throw new HttpsError('failed-precondition', 'A tutor can score an exercise only after the student submits handwritten work.');
-    const exerciseTopics = [...new Set([...(Array.isArray(exercise.topics) ? exercise.topics : []), exercise.topic]
-      .filter(Boolean).map(normalizeTopicKey))];
+    const exerciseTopics = [...new Set([
+      ...(Array.isArray(exercise.topics) ? exercise.topics : []),
+      ...(Array.isArray(exercise.topicBreakdown) ? exercise.topicBreakdown.map((entry) => entry?.topic) : []),
+      ...(Array.isArray(exercise.questionLinks) ? exercise.questionLinks.map((entry) => entry?.topic) : []),
+      ...String(exercise.topic || '').split('|'),
+    ].filter(Boolean).map(normalizeTopicKey))];
     if (exerciseTopics.length && !exerciseTopics.includes(canonicalTopicKey)) {
       throw new HttpsError('failed-precondition', 'The selected topic is not part of this exercise.');
     }
+    ensureQuestionMarksMatchIndexedQuestions({ questionMarks: normalizedQuestionMarks, indexedQuestions: exercise.questionLinks ?? [], topic });
     if (!topicSnapshot.exists()) throw new HttpsError('failed-precondition', 'Complete a lesson on this topic before recording an exercise score.');
-    if (existingScore.exists()) {
-      if (Number(existingScore.data().score) !== score) throw new HttpsError('already-exists', 'This score event is immutable.');
-      average = Number(topicSnapshot.data().understandingLevel) || score;
-      return;
-    }
-    const topicData = topicSnapshot.data();
-    average = averageWithNewScore({ topic: topicData, score });
-    transaction.set(scoreRef, {
-      sourceType: 'Exercise', sourceId: exerciseId, score, tutorId: uid,
-      notes: `Tutor mark for exercise: ${exercise.title || 'Exercise'}`, createdAt: now,
+    const additionalScores = [];
+    normalizedQuestionMarks.forEach((mark, index) => {
+      const questionScore = scoreForQuestion(mark);
+      const existingScore = existingScores[index];
+      if (existingScore.exists()) {
+        const existing = existingScore.data();
+        if (Number(existing.score) !== questionScore || Number(existing.earnedMarks) !== mark.earnedMarks || Number(existing.totalMarks) !== mark.totalMarks) {
+          throw new HttpsError('already-exists', 'This exercise question score event is immutable.');
+        }
+        return;
+      }
+      additionalScores.push({ score: questionScore, createdAt: now });
+      transaction.set(scoreRefs[index], {
+        sourceType: 'Exercise', sourceId: exerciseId, exerciseId, scoreEventId,
+        questionReference: mark.questionReference, paperId: mark.paperId, pageNumber: mark.pageNumber,
+        earnedMarks: mark.earnedMarks, totalMarks: mark.totalMarks,
+        score: questionScore, scoreScale: 'ratio-0-to-1', tutorId: uid,
+        notes: `Tutor mark for exercise ${exerciseId} (${exercise.title || 'Exercise'}); question ${mark.questionReference}`,
+        createdAt: now,
+      });
     });
+    const rollup = makeTopicRollup(recentScores, now, additionalScores);
+    average = rollup.understandingLevel;
     transaction.update(topicRef, {
-      latestScore: score, understandingLevel: average,
-      scoreCount: (Number(topicData.scoreCount) || 0) + 1,
+      ...rollup,
       tutorReport: `Tutor mark for exercise: ${exercise.title || 'Exercise'}`, updatedAt: now,
     });
     transaction.update(exerciseRef, {
       updatedAt: now,
     });
   });
-  return { topic: String(topic).trim(), understandingLevel: average, exerciseId };
+  return { topic: String(topic).trim(), understandingLevel: average, exerciseId, score };
+});
+
+export const refreshTopicUnderstandingAverages = onCall({ timeoutSeconds: 540, memory: '1GiB', cpu: 1 }, async (request) => {
+  const uid = request.auth?.uid;
+  const episodes = request.data?.episodes;
+  if (!Array.isArray(episodes) || !episodes.length || episodes.length > 500) {
+    throw new HttpsError('invalid-argument', 'One or more student subject episodes are required.');
+  }
+  const db = getDb();
+  const actor = await requireActor(db, uid);
+  const isAdmin = actor.role === 'admin';
+  const now = admin.firestore.Timestamp.now();
+  const cutoff = getScoreWindowStart(now);
+  const normalizedEpisodes = episodes.map((item) => {
+    const studentId = String(item?.studentId || '');
+    const subjectInstanceId = String(item?.subjectInstanceId || '');
+    const requestedTopicIds = (Array.isArray(item?.topicIds) ? item.topicIds : []).map((topicId) => String(topicId || ''));
+    const topicIds = [...new Set(requestedTopicIds)];
+    if (!studentId || !subjectInstanceId || topicIds.length > 30) {
+      throw new HttpsError('invalid-argument', 'Each episode needs a student, subject episode, and up to 30 topic IDs.');
+    }
+    if (topicIds.some((topicId) => !/^[a-z0-9 ]{1,120}$/.test(topicId))) {
+      throw new HttpsError('invalid-argument', 'Topic IDs must be canonical topic keys.');
+    }
+    return { studentId, subjectInstanceId, topicIds };
+  });
+  const verifiedEpisodes = await Promise.all(normalizedEpisodes.map(async (item) => {
+    if (!item.topicIds.length) return { ...item, episodeRef: null };
+    const episodeRef = db.collection('users').doc(item.studentId).collection('subjects').doc(item.subjectInstanceId);
+    const episodeSnapshot = await episodeRef.get();
+    requireEpisodeAccess({ episode: episodeSnapshot.exists ? episodeSnapshot.data() : null, uid, isAdmin });
+    return { ...item, episodeRef };
+  }));
+  const topicJobs = verifiedEpisodes.flatMap((item) => item.episodeRef
+    ? item.topicIds.map((topicId) => ({ topicRef: item.episodeRef.collection('topics').doc(topicId) }))
+    : []);
+  let updatedCount = 0;
+  for (let index = 0; index < topicJobs.length; index += 50) {
+    const computedRollups = await Promise.all(topicJobs.slice(index, index + 50).map(async ({ topicRef }) => {
+      const topicSnapshot = await topicRef.get();
+      if (!topicSnapshot.exists) return null;
+      const scoreSnapshot = await topicRef.collection('understandingScores').where('createdAt', '>=', cutoff).get();
+      return { topicRef, rollup: makeTopicRollup(scoreSnapshot, now) };
+    }));
+    const batch = db.batch();
+    computedRollups.filter(Boolean).forEach(({ topicRef, rollup }) => {
+      batch.update(topicRef, { ...rollup, updatedAt: now });
+      updatedCount += 1;
+    });
+    const updates = computedRollups.filter(Boolean).length;
+    if (updates) await batch.commit();
+  }
+  return { updatedCount, scoreWindowDays: SCORE_WINDOW_DAYS };
 });

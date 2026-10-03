@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
-import { getQuestionPapers, getStudentSubscriptionState, getTutorAssignedStudentContexts, getTutorLessonsForAssignedStudents, getTutorReportsForAssignedStudents } from '../../services/firestoreService';
+import { getQuestionPapers, getStudentSubscriptionState, getTutorAssignedStudentContexts, getTutorLessonsForAssignedStudents } from '../../services/firestoreService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 import { getApprovedTutorSubjects, normalizeEligibleSubject } from '../../utils/tutorSubjects';
 import { useEffectiveRole } from '../../utils/effectiveRole';
@@ -14,7 +14,6 @@ const TutorReadinessPanel = ({ rows }) => {
   if (!rows.length) return null;
   const labels = {
     paidSubscriptionActive: 'Paid subscription active',
-    reportReady: 'Initial tutor report added',
     lessonReady: 'At least 1 completed lesson logged',
     papersReady: 'At least 2 analyzed papers available',
   };
@@ -37,7 +36,6 @@ const TutorReadinessPanel = ({ rows }) => {
                   <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${passed ? 'bg-lime-400/15 text-lime-300 border border-lime-400/30' : 'bg-amber-400/15 text-amber-300 border border-amber-400/30'}`}>{passed ? 'Done' : 'Missing'}</span>
                 </div>
               ))}
-              <p className="text-xs text-slate-500">Analyzed papers available: {row.paperCount}.</p>
             </div>
           </details>
         ))}
@@ -52,7 +50,6 @@ export const TutorDashboardPage = () => {
   const { role, RoleName, basePath } = useEffectiveRole();
   const approvedSubjects = useMemo(() => getApprovedTutorSubjects(profile), [profile]);
   const [students, setStudents] = useState([]);
-  const [reports, setReports] = useState([]);
   const [lessons, setLessons] = useState([]);
   const [paperCounts, setPaperCounts] = useState({});
   const [paidSubjectAccess, setPaidSubjectAccess] = useState({});
@@ -60,20 +57,20 @@ export const TutorDashboardPage = () => {
 
   const load = async () => {
     if (!profile?.uid) return;
-    const [studentRows, reportRows, lessonRows] = await Promise.all([
+    const [studentRows, lessonRows] = await Promise.all([
       getTutorAssignedStudentContexts(profile.uid),
-      getTutorReportsForAssignedStudents(profile.uid),
       getTutorLessonsForAssignedStudents(profile.uid),
     ]);
     const uniqueContexts = [...new Map(studentRows.map((student) => [`${student.subject ?? DEFAULT_SUBJECT}-${student.grade ?? ''}-${student.province ?? ''}`, student])).values()];
     const studentsById = new Map(studentRows.map((student) => [student.studentId, student]));
     const [paperPairs, subscriptionPairs] = await Promise.all([
       Promise.all(uniqueContexts.map(async (student) => {
-      const subject = student.subject ?? DEFAULT_SUBJECT;
-      const papers = await getQuestionPapers({ grade: student.grade, region: student.province, subject });
-      return [`${subject}-${student.grade ?? ''}-${student.province ?? ''}`, papers.length];
+        const subject = student.subject ?? DEFAULT_SUBJECT;
+        const papers = await getQuestionPapers({ grade: student.grade, region: student.province, subject });
+        return [`${subject}-${student.grade ?? ''}-${student.province ?? ''}`, papers.length];
       })),
-      Promise.all([...studentsById.entries()].map(async ([studentId, student]) => [studentId, await getStudentSubscriptionState({ ...student, uid: studentId })])),
+      Promise.all([...studentsById.entries()]
+        .map(async ([studentId, student]) => [studentId, await getStudentSubscriptionState({ ...student, uid: studentId })])),
     ]);
     const subscriptionsByStudent = Object.fromEntries(subscriptionPairs);
     const accessBySubject = Object.fromEntries(studentRows.map((student) => {
@@ -83,7 +80,6 @@ export const TutorDashboardPage = () => {
       return [`${student.studentId}:${normalizedSubject}`, Boolean(subscription?.paidSubscriptionActive && student.subjectInstanceId)];
     }));
     setStudents(studentRows);
-    setReports(reportRows);
     setLessons(lessonRows);
     setPaperCounts(Object.fromEntries(paperPairs));
     setPaidSubjectAccess(accessBySubject);
@@ -93,18 +89,10 @@ export const TutorDashboardPage = () => {
     load().catch((error) => setStatus(error.message || 'Could not load assigned students.'));
   }, [profile?.uid]);
 
-  const hasReportFor = (student) => {
-    const subject = student.subject ?? DEFAULT_SUBJECT;
-    return Boolean(
-      reports.some((report) => report.studentId === student.studentId && report.subject === subject && report.reportType === 'initial')
-    );
-  };
-
-
   const readinessRows = useMemo(() => students.map((student) => {
     const subject = student.subject ?? DEFAULT_SUBJECT;
-    const reportReady = hasReportFor(student);
-    const lessonReady = lessons.some((lesson) => lesson.studentId === student.studentId && (lesson.subject ?? DEFAULT_SUBJECT) === subject);
+    const lessonReady = lessons.some((lesson) => lesson.studentId === student.studentId
+      && (lesson.subject ?? DEFAULT_SUBJECT) === subject);
     const papersReady = (paperCounts[`${subject}-${student.grade ?? ''}-${student.province ?? ''}`] ?? 0) >= 2;
     const normalizedSubject = normalizeEligibleSubject(subject) ?? subject;
     const paymentReady = Boolean(paidSubjectAccess[`${student.studentId}:${normalizedSubject}`]);
@@ -112,10 +100,9 @@ export const TutorDashboardPage = () => {
       id: `${student.studentId}-${subject}`,
       studentName: student.displayName || student.name || student.email || 'Student',
       subject,
-      checks: { paidSubscriptionActive: paymentReady, reportReady, lessonReady, papersReady },
-      paperCount: paperCounts[`${subject}-${student.grade ?? ''}-${student.province ?? ''}`] ?? 0,
+      checks: { paidSubscriptionActive: paymentReady, lessonReady, papersReady },
     };
-  }).filter((row) => !Object.values(row.checks).every(Boolean)), [students, lessons, paperCounts, reports, paidSubjectAccess]);
+  }).filter((row) => !Object.values(row.checks).every(Boolean)), [students, lessons, paperCounts, paidSubjectAccess]);
   const studentList = useMemo(() => {
     const grouped = new Map();
     students.forEach((context) => {

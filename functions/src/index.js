@@ -47,6 +47,7 @@ export {
   getCompletedPeerMarkingWorkForTutor,
   reviewTutorPeerMarkingAssignment,
   saveTutorExerciseScore,
+  refreshTopicUnderstandingAverages,
 } from './tutorMarking.js';
 
 

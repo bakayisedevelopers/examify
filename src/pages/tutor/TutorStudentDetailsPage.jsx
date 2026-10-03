@@ -13,14 +13,12 @@ import {
   getTutorAssignmentHistoryData,
   getTutorExercisesForAssignedStudents,
   getTutorLessonsForAssignedStudents,
-  getTutorReportsForAssignedStudents,
   getCompletedPeerMarkingWorkForTutor,
   deleteExerciseAssignmentForTutor,
   regenerateFutureUnsubmittedExercisesForTutor,
   saveCompletedLesson,
   updateCompletedLesson,
   saveTutorReport,
-  saveTutorPeerMarkingReview,
   subscribeToExerciseGenerationStatus,
   getStaffMembersForAccess,
   getStaffStudentAccess,
@@ -32,6 +30,7 @@ import { getTopicOptionGroups } from '../../data/topicCatalog';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
 import { getSevenDayWindow, isExerciseSubmitted } from '../../services/exerciseGenerationPlan';
 import { ImagePageViewer } from '../../components/common/ImagePageViewer';
+import { TutorPeerMarkingScoreEditor } from '../../components/tutor/TutorPeerMarkingScoreEditor';
 
 const today = () => {
   const date = new Date();
@@ -44,7 +43,10 @@ const hasValidScores = (entries = []) =>
     const score = Number(entry.understandingLevel);
     return Number.isFinite(score) && score >= 0 && score <= 10;
   });
-
+const understandingScorePercent = (value) => {
+  const score = Number(value);
+  return Number.isFinite(score) ? Math.round(score > 1 ? score : score * 100) : 0;
+};
 export const TutorStudentDetailsPage = () => {
   const { studentId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -57,12 +59,10 @@ export const TutorStudentDetailsPage = () => {
   const [studentSubjects, setStudentSubjects] = useState([]);
   const [currentAssignmentSubjects, setCurrentAssignmentSubjects] = useState([]);
   const [assignmentHistory, setAssignmentHistory] = useState([]);
-  const [reports, setReports] = useState([]);
   const [exercises, setExercises] = useState([]);
   const [peerMarkedWork, setPeerMarkedWork] = useState([]);
   const [lessons, setLessons] = useState([]);
   const [topicOptions, setTopicOptions] = useState(emptyTopicGroups);
-  const [reportNote, setReportNote] = useState('');
   const [lessonForm, setLessonForm] = useState(emptyLessonForm);
   const [status, setStatus] = useState('');
   const [isRegenerating, setIsRegenerating] = useState(false);
@@ -74,8 +74,6 @@ export const TutorStudentDetailsPage = () => {
   const [selectedAccessRole, setSelectedAccessRole] = useState('marker');
   const [savingStaffAccess, setSavingStaffAccess] = useState(false);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
-  const [peerReviewScores, setPeerReviewScores] = useState({});
-  const [savingPeerReviewId, setSavingPeerReviewId] = useState('');
 
   useEffect(() => {
     if (!studentId || !profile?.uid || periodId) return undefined;
@@ -93,7 +91,6 @@ export const TutorStudentDetailsPage = () => {
         setStudent(null);
         setStudentSubjects([]);
         setExercises([]);
-        setReports([]);
         setLessons([]);
         setPeerMarkedWork([]);
         setStatus('This assignment history is not available to your account.');
@@ -105,7 +102,6 @@ export const TutorStudentDetailsPage = () => {
       const archivedSubject = archivedContext.subject;
       setStudent({ ...archivedContext, accessRole: 'viewer', historicalAccessRole: archivedContext.accessRole });
       setStudentSubjects([archivedSubject]);
-      setReports(archivedData.reports);
       setExercises(archivedData.exercises);
       setLessons(archivedData.lessons);
       setPeerMarkedWork(archivedData.peerMarkedWork);
@@ -116,9 +112,8 @@ export const TutorStudentDetailsPage = () => {
       return;
     }
 
-    const [contexts, reportRows, exerciseRows, lessonRows] = await Promise.all([
+    const [contexts, exerciseRows, lessonRows] = await Promise.all([
       getTutorAssignedStudentContexts(profile.uid),
-      getTutorReportsForAssignedStudents(profile.uid),
       getTutorExercisesForAssignedStudents(profile.uid),
       getTutorLessonsForAssignedStudents(profile.uid),
     ]);
@@ -142,7 +137,6 @@ export const TutorStudentDetailsPage = () => {
     setStaffAccess(await getStaffStudentAccess({ studentId, subject: activeSubject, tutorId: profile.uid, subjectInstanceId: studentContext?.subjectInstanceId }));
     if (studentContext?.accessRole === 'co-owner') setStaffMembers(await getStaffMembersForAccess({ tutorId: profile.uid, subject: activeSubject }));
     else setStaffMembers([]);
-    setReports(reportRows.filter((item) => item.studentId === studentId && item.subject === activeSubject));
     setExercises(exerciseRows.filter((item) => item.studentId === studentId && item.subject === activeSubject));
     const subjectLessons = lessonRows.filter((item) => item.studentId === studentId && item.subject === activeSubject);
     setLessons(subjectLessons);
@@ -163,10 +157,8 @@ export const TutorStudentDetailsPage = () => {
     load().catch((error) => setStatus(error.message || 'Could not load student details.'));
   }, [profile?.uid, studentId, subject, periodId]);
 
-  const latestReport = reports[0]?.note || '';
   const canManage = student?.accessRole === 'co-owner';
   const canMark = canManage || student?.accessRole === 'marker';
-  const hasInitialReport = Boolean(latestReport.trim());
   const todayLocal = today();
   const regenerationEndDate = getSevenDayWindow(todayLocal).at(-1);
   const regenerableExercises = exercises.filter((exercise) =>
@@ -190,14 +182,6 @@ export const TutorStudentDetailsPage = () => {
   const updateScore = (topic, value) => setLessonForm((current) => ({ ...current, topicUnderstandingScores: current.topicUnderstandingScores.map((entry) => entry.topic === topic ? { ...entry, understandingLevel: Number(value) } : entry) }));
   const removeTopic = (topic) => setLessonForm((current) => ({ ...current, topicUnderstandingScores: current.topicUnderstandingScores.filter((entry) => entry.topic !== topic) }));
 
-  const saveInitialReport = async () => {
-    if (!reportNote.trim()) return;
-    await saveTutorReport({ tutorId: profile.uid, studentId, subject, reportType: 'initial', note: reportNote, studentName: student?.displayName || student?.name || 'Student' });
-    setReportNote('');
-    setStatus('Initial report saved.');
-    await load();
-  };
-
   const grantStaffAccess = async () => {
     if (!selectedStaffId || !canManage) return;
     setSavingStaffAccess(true);
@@ -220,25 +204,6 @@ export const TutorStudentDetailsPage = () => {
       setStatus('Staff access removed.');
     } catch (error) {
       setStatus(error.message || 'Could not remove staff access.');
-    }
-  };
-
-  const savePeerReview = async (assignment) => {
-    const score = peerReviewScores[assignment.id] ?? assignment.tutorUnderstandingLevel;
-    setSavingPeerReviewId(assignment.id);
-    try {
-      const result = await saveTutorPeerMarkingReview({
-        tutorId: profile.uid,
-        studentId,
-        peerAssignmentId: assignment.id,
-        understandingLevel: score,
-      });
-      setStatus(`Peer marking reviewed. ${result.topic}: ${result.averageUnderstandingLevel}/10 rolling average.`);
-      await load();
-    } catch (error) {
-      setStatus(error.message || 'Could not save peer-marking review.');
-    } finally {
-      setSavingPeerReviewId('');
     }
   };
 
@@ -290,7 +255,7 @@ export const TutorStudentDetailsPage = () => {
     }
     const topics = lessonForm.topicUnderstandingScores.map((entry) => entry.topic);
     const understandingLevel = Math.round(lessonForm.topicUnderstandingScores.reduce((sum, entry) => sum + Number(entry.understandingLevel ?? 5), 0) / topics.length);
-    const topicScoresText = lessonForm.topicUnderstandingScores.map((entry) => `${entry.topic}: ${entry.understandingLevel}/10`).join('\n');
+    const topicScoresText = lessonForm.topicUnderstandingScores.map((entry) => `${entry.topic}: ${Math.round(Number(entry.understandingLevel) * 10)}%`).join('\n');
     const report = [`--- ${topics.join(' | ')} ---`, 'Topics completed:', topicScoresText, 'Tutor report:', lessonForm.topicReport, `Date: ${new Date().toLocaleString()}`].join('\n');
 
     await saveTutorReport({ tutorId: profile.uid, studentId, subject, reportType: 'lesson', note: report, studentName: student?.displayName || student?.name || 'Student' });
@@ -399,7 +364,6 @@ export const TutorStudentDetailsPage = () => {
       <section className="panel p-5">
         <h2 className="text-xl font-semibold text-slate-950">Student details</h2>
         <p className="mt-2 text-sm text-slate-500">{student?.grade || '?'} • {student?.province || '?'} • {subject} • {student?.paymentCompleted ? 'Paid' : 'Unpaid'}</p>
-        <p className="mt-4 whitespace-pre-wrap rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">{latestReport || 'No initial report for this subject yet.'}</p>
       </section>
 
       {canManage ? <section className="panel space-y-4 p-5">
@@ -425,13 +389,7 @@ export const TutorStudentDetailsPage = () => {
         </div>
       </section> : null}
 
-      {canManage && !hasInitialReport ? (
-        <section className="panel space-y-4 p-5">
-          <SectionHeader eyebrow="Initial report" title="Create subject report" description="This unlocks subject-specific lesson completion and AI context." />
-          <textarea className="input min-h-36" value={reportNote} onChange={(event) => setReportNote(event.target.value)} placeholder="Initial report for this student and subject" />
-          <button type="button" className="btn-primary" onClick={saveInitialReport} disabled={!reportNote.trim()}>Save initial report</button>
-        </section>
-      ) : canManage ? (
+      {canManage ? (
         <section className="panel space-y-4 p-5">
           <SectionHeader eyebrow="Lesson complete" title="Save completed topics" description="Choose topics from analyzed papers, add scores, and save the lesson for AI generation." />
           <div className="grid gap-3 md:grid-cols-2">
@@ -456,10 +414,11 @@ export const TutorStudentDetailsPage = () => {
             </select>
             <button type="button" className="btn-secondary" onClick={addTopic} disabled={!lessonForm.selectedTopic}>Add topic</button>
           </div>
+          <p className="text-sm text-slate-600">Enter an understanding score from 0 to 10 for every topic covered in this lesson.</p>
           {lessonForm.topicUnderstandingScores.map((entry) => (
             <div key={entry.topic} className="grid gap-3 rounded-2xl bg-slate-50 p-3 md:grid-cols-[1fr_160px_auto] md:items-center">
               <p className="font-semibold text-slate-900">{entry.topic}</p>
-              <input type="number" min="0" max="10" className="input" value={entry.understandingLevel} onChange={(event) => updateScore(entry.topic, event.target.value)} />
+              <input type="number" min="0" max="10" step="1" className="input" aria-label={`${entry.topic} understanding score out of 10`} placeholder="0–10" value={entry.understandingLevel} onChange={(event) => updateScore(entry.topic, event.target.value)} />
               <button type="button" className="btn-secondary" onClick={() => removeTopic(entry.topic)}>Remove</button>
             </div>
           ))}
@@ -520,21 +479,23 @@ export const TutorStudentDetailsPage = () => {
                 {assignment.questionLinks.map((link, index) => (
                   <Link key={`${link.paperId}-${link.questionReference}-${index}`} className="btn-secondary inline-flex items-center gap-2" to={`/tutor/papers/${link.paperId}?page=${Math.max(1, Number(link.pageNumber) || 1)}&question=${encodeURIComponent(link.questionReference || '')}`}>
                     <FileText className="h-4 w-4" aria-hidden="true" />
-                    {link.questionReference ? `Q${link.questionReference}` : 'Question'} · page {link.pageNumber || 1}
+                    {link.questionReference ? `Q${link.questionReference}` : 'Question'} · page {link.pageNumber || 1}{Number(link.marks) > 0 ? ` · ${link.marks} marks` : ''}
                   </Link>
                 ))}
               </div>
             ) : assignment.paperIds?.[0] ? (
               <Link className="btn-secondary inline-flex items-center gap-2" to={`/tutor/papers/${assignment.paperIds[0]}?page=1`}><FileText className="h-4 w-4" aria-hidden="true" />Open question paper</Link>
             ) : null}
-            {canMark ? <div className="flex flex-wrap items-end gap-3 rounded-lg bg-slate-50 p-3">
-              <label className="grid min-w-40 flex-1 gap-1 text-xs font-semibold text-slate-600">{assignment.topic || 'Topic'} understanding (0-10)
-                <input type="number" min="0" max="10" step="1" className="input py-2" value={peerReviewScores[assignment.id] ?? assignment.tutorUnderstandingLevel ?? ''} onChange={(event) => setPeerReviewScores((current) => ({ ...current, [assignment.id]: event.target.value }))} />
-              </label>
-              <button type="button" className="btn-primary" onClick={() => savePeerReview(assignment)} disabled={savingPeerReviewId === assignment.id || (peerReviewScores[assignment.id] ?? assignment.tutorUnderstandingLevel ?? '') === ''}>
-                {savingPeerReviewId === assignment.id ? 'Saving...' : assignment.tutorReviewStatus === 'reviewed' ? 'Update review score' : 'Mark reviewed and save score'}
-              </button>
-            </div> : null}
+            {canMark ? <TutorPeerMarkingScoreEditor
+              tutorId={profile.uid}
+              studentId={studentId}
+              assignment={assignment}
+              onSaved={async (result) => {
+                const summary = (result.topicScores ?? []).map((entry) => `${entry.topic}: ${understandingScorePercent(entry.averageUnderstandingLevel ?? entry.understandingLevel)}%`).join(' · ');
+                setStatus(`Peer marking reviewed. ${summary}`);
+                await load();
+              }}
+            /> : null}
             <div className="grid gap-5 lg:grid-cols-2">
               <ImagePageViewer images={assignment.submittedImages?.length ? assignment.submittedImages : [assignment.submittedImageUrl].filter(Boolean)} title="Other student's original work" alt="Unmarked work the student reviewed" />
               <ImagePageViewer images={assignment.reviewImages?.length ? assignment.reviewImages : [assignment.reviewImageUrl].filter(Boolean)} title="Student's peer marking" alt="Student's marked version of another learner's work" />

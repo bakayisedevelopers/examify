@@ -26,7 +26,7 @@ This document outlines the student-centered Firestore layout where each subject 
 9. **Handwritten Answers Uploaded as Images:** Answer submissions, peer-marked annotations, and tutor-marked work are stored in Firebase Storage and referenced under the exercise.
 10. **Re-addition & Topic Restoration (3-Month Window):**
     - Cancelling a subject sets `status: 'cancelled'` and records `cancelledAt`. The episode remains archived in history.
-    - If re-added within **3 calendar months** for the **same grade**, learning history (topics, understanding scores, topic reports, initial report) is restored into the new episode.
+    - If re-added within **3 calendar months** for the **same grade**, learning history (topics, understanding scores, and topic reports) is restored into the new episode.
     - **Tutors and staff roles are NOT carried over on re-add:** Staff access is kept unassigned on re-add so that tutor assignments and roles can be configured fresh.
     - **Grade changes** always start completely fresh with zero topics and no topic carry-over.
 
@@ -48,7 +48,7 @@ users/{uid}
     // completedTopicCount, dailyExerciseTarget (1 to 5)
     // primaryTutorId, staffByUid, activeStaffIds, historicalStaffIds,
     // staffMemberships (embedded audit: uid, role, grantedAt, endedAt),
-    // initialReport, studentName, createdAt, updatedAt
+    // studentName, createdAt, updatedAt
 
     topics/{canonicalTopicKey}
       // UNIQUE per canonical topic in this episode (NO DUPLICATES)
@@ -173,7 +173,7 @@ Understanding scores are kept in the subcollection `topics/{canonicalTopicKey}/u
 
 ### 2. Re-addition Within 3 Months (Same Grade)
 - If a student re-adds a subject within **3 calendar months** of cancellation at the **same grade**:
-  - The new active episode copies all `topics` documents, their nested `understandingScores` entries, and the subject `initialReport`.
+  - The new active episode copies all `topics` documents and their nested `understandingScores` entries.
   - Provenance is recorded via `previousSubjectInstanceId` and `restoredAt`.
   - **Staff roles are intentionally reset:** `primaryTutorId` and staff memberships are **not carried over**. The student/parent/admin can assign a tutor fresh.
 - If re-added **after 3 calendar months**:

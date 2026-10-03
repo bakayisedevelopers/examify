@@ -97,7 +97,18 @@ const copyTopicHistory = async ({ db, previousRef, nextRef }) => {
     await commitIfFull();
     const scores = await topic.ref.collection('understandingScores').get();
     for (const score of scores.docs) {
-      batch.set(targetTopic.collection('understandingScores').doc(score.id), score.data());
+      const scoreData = score.data();
+      if (scoreData.scoreScale !== 'ratio-0-to-1') {
+        const rawScore = Number(scoreData.score);
+        const hasQuestionMarks = Number.isFinite(Number(scoreData.earnedMarks))
+          && Number.isFinite(Number(scoreData.totalMarks)) && Number(scoreData.totalMarks) > 0;
+        const divisor = scoreData.sourceType === 'Lesson' || !hasQuestionMarks ? 10 : 100;
+        if (Number.isFinite(rawScore) && rawScore >= 0 && rawScore <= divisor) {
+          scoreData.score = Math.round((rawScore / divisor) * 10000) / 10000;
+          scoreData.scoreScale = 'ratio-0-to-1';
+        }
+      }
+      batch.set(targetTopic.collection('understandingScores').doc(score.id), scoreData);
       writes += 1;
       await commitIfFull();
     }
@@ -185,7 +196,6 @@ export const updateStudentSubjects = onCall({ cpu: 'gcf_gen1', timeoutSeconds: 3
         completedTopicCount: restore ? Number(previous.data().completedTopicCount) || 0 : 0,
         dailyExerciseTarget: restore ? Math.min(5, Math.max(1, Number(previous.data().completedTopicCount) || 1)) : 1,
         primaryTutorId: '', staffByUid: {}, activeStaffIds: [], historicalStaffIds: [], staffMemberships: [],
-        initialReport: restore ? previous.data().initialReport ?? '' : '',
         studentName: current.displayName || current.email || 'Student', createdAt: timestamp, updatedAt: timestamp,
       });
       if (restore) restoreTasks.push({ subject, episodeRef, previousEpisodeId: previous.id });
@@ -329,7 +339,7 @@ export const changeStudentGrade = onCall({ cpu: 'gcf_gen1' }, async (request) =>
       studentId, subjectKey: subject, subjectName: subject, grade: newGrade, curriculum: 'CAPS', status: 'active',
       startedAt: now, cancelledAt: null, completedTopicCount: 0, dailyExerciseTarget: 1,
       primaryTutorId: '', staffByUid: {}, activeStaffIds: [], historicalStaffIds: [], staffMemberships: [],
-      initialReport: '', studentName: student.displayName || student.email || 'Student', createdAt: now, updatedAt: now,
+      studentName: student.displayName || student.email || 'Student', createdAt: now, updatedAt: now,
     });
   });
   batch.update(studentRef, { grade: newGrade, updatedAt: now });

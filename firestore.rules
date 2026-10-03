@@ -32,16 +32,22 @@ service cloud.firestore {
     function isEpisodeStaff(studentId, subjectInstanceId) {
       return signedIn() && request.auth.uid in episode(studentId, subjectInstanceId).activeStaffIds;
     }
+    function isPrimaryTutor(studentId, subjectInstanceId) {
+      return signedIn() && episode(studentId, subjectInstanceId).status == 'active'
+        && episode(studentId, subjectInstanceId).primaryTutorId == request.auth.uid;
+    }
     function isHistoricalEpisodeStaff(studentId, subjectInstanceId) {
       return signedIn() && request.auth.uid in episode(studentId, subjectInstanceId).historicalStaffIds;
     }
     function canTeach(studentId, subjectInstanceId) {
-      return isEpisodeStaff(studentId, subjectInstanceId)
-        && episode(studentId, subjectInstanceId).staffByUid[request.auth.uid] == 'co-owner';
+      return isPrimaryTutor(studentId, subjectInstanceId)
+        || (isEpisodeStaff(studentId, subjectInstanceId)
+          && episode(studentId, subjectInstanceId).staffByUid[request.auth.uid] == 'co-owner');
     }
     function canMark(studentId, subjectInstanceId) {
-      return isEpisodeStaff(studentId, subjectInstanceId)
-        && episode(studentId, subjectInstanceId).staffByUid[request.auth.uid] in ['co-owner', 'marker'];
+      return canTeach(studentId, subjectInstanceId)
+        || (isEpisodeStaff(studentId, subjectInstanceId)
+          && episode(studentId, subjectInstanceId).staffByUid[request.auth.uid] == 'marker');
     }
     function validStudentGenerationRun(studentId, subjectInstanceId) {
       return signedIn() && request.auth.uid == studentId
@@ -52,7 +58,8 @@ service cloud.firestore {
     }
     function canReadEpisode(studentId, subjectInstanceId) {
       return signedIn() && (request.auth.uid == studentId || isParentOf(studentId) || isAdmin()
-        || isEpisodeStaff(studentId, subjectInstanceId) || isHistoricalEpisodeStaff(studentId, subjectInstanceId));
+        || isPrimaryTutor(studentId, subjectInstanceId) || isEpisodeStaff(studentId, subjectInstanceId)
+        || isHistoricalEpisodeStaff(studentId, subjectInstanceId));
     }
     function exerciseIsOpen() {
       return resource.data.assignmentOpensAt <= request.time && request.time < resource.data.locksAt;
@@ -75,18 +82,36 @@ service cloud.firestore {
 
       match /subjects/{subjectInstanceId} {
         allow read: if canReadEpisode(userId, subjectInstanceId);
-        allow update: if canTeach(userId, subjectInstanceId)
+        allow update: if isAdmin() || (canTeach(userId, subjectInstanceId)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'completedTopicCount', 'dailyExerciseTarget', 'updatedAt'
-          ]);
+          ]));
         allow create, delete: if false;
 
         match /topics/{topicKey} {
           allow read: if canReadEpisode(userId, subjectInstanceId);
-          allow write: if isAdmin() || canMark(userId, subjectInstanceId);
+          allow create: if isAdmin() || (canMark(userId, subjectInstanceId)
+            && request.resource.data.canonicalTopicKey == topicKey
+            && request.resource.data.topicName is string
+            && request.resource.data.topicName.size() > 0
+            && request.resource.data.understandingLevel is number
+            && request.resource.data.understandingLevel >= 0
+            && request.resource.data.understandingLevel <= 1
+            && request.resource.data.understandingScale == 'ratio-0-to-1');
+          allow update: if isAdmin() || (canMark(userId, subjectInstanceId)
+            && request.resource.data.canonicalTopicKey == topicKey
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastCoveredAt', 'tutorReport', 'updatedAt']));
+          allow delete: if isAdmin();
           match /understandingScores/{scoreId} {
             allow read: if canReadEpisode(userId, subjectInstanceId);
-            allow write: if isAdmin() || canMark(userId, subjectInstanceId);
+            allow create: if isAdmin() || (canMark(userId, subjectInstanceId)
+              && request.resource.data.sourceType == 'Lesson'
+              && request.resource.data.score is number
+              && request.resource.data.score >= 0 && request.resource.data.score <= 1
+              && request.resource.data.scoreScale == 'ratio-0-to-1'
+              && request.resource.data.sourceId is string
+              && request.resource.data.tutorId == request.auth.uid);
+            allow update, delete: if false;
           }
         }
         match /lessons/{lessonId} {
@@ -164,6 +189,7 @@ service cloud.firestore {
     match /{path=**}/subjects/{subjectInstanceId} {
       allow read: if signedIn() && (resource.data.studentId == request.auth.uid
         || request.auth.uid in resource.data.activeStaffIds
+        || resource.data.primaryTutorId == request.auth.uid
         || request.auth.uid in resource.data.historicalStaffIds || isAdmin());
     }
     match /{path=**}/peerMarkingAssignments/{assignmentId} {

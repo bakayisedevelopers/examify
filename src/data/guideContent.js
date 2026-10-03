@@ -129,12 +129,11 @@ export const guideContentByRole = {
   tutor: {
     heroTitle: 'Learn the Examifying tutor workflow',
     heroDescription:
-      'Tutors manage the student learning path by assigning learners, creating reports, recording completed topics, and keeping the weekly exercise pipeline moving.',
+      'Tutors manage the student learning path by assigning learners, recording completed topics, and keeping the exercise pipeline moving.',
     quickTips: [
       'Assign a student before trying to manage their lesson journey.',
-      'Create the first report so the learner has proper learning context.',
       'Record completed topics with an understanding level after each lesson.',
-      'Keep notes clear because they shape future exercise planning.',
+      'Keep lesson topic notes clear because they shape future exercise planning.',
     ],
     sections: [
       {
@@ -146,19 +145,7 @@ export const guideContentByRole = {
         steps: [
           'Open the Students area or tutor overview to see available learners.',
           'Assign a student so they are linked to you as their Maths tutor.',
-          'Open the learner card to continue with reports and topic tracking.',
-        ],
-      },
-      {
-        id: 'report',
-        title: 'Write the initial learner report',
-        description: 'The initial report gives context on the learner’s current ability and becomes part of the planning history.',
-        icon: FileText,
-        routeLabel: 'Overview',
-        steps: [
-          'Select the learner from your assigned list.',
-          'Write the first report clearly with strengths, concerns, and next focus areas.',
-          'Save the report before moving into later lesson updates.',
+          'Open the learner card to record completed topics and understanding scores.',
         ],
       },
       {
@@ -188,12 +175,12 @@ export const guideContentByRole = {
       {
         id: 'generation',
         title: 'Support the weekly learning cycle',
-        description: 'When payment and paper requirements are in place, completed topics help the app prepare ongoing exercise work for the learner.',
+        description: 'When payment, completed lessons, and matching analyzed question papers are in place, the app can prepare exercise work.',
         icon: Sparkles,
         routeLabel: 'Overview',
         steps: [
           'After saving the completed lesson, review the status message on the dashboard.',
-          'If weekly work does not generate yet, check learner payment and matching papers.',
+          'If work does not generate yet, check payment, completed topic lessons, and matching analyzed papers.',
           'Continue updating lessons so the learner stays on a structured Maths path.',
         ],
       },
@@ -206,7 +193,7 @@ export const guideContentByRole = {
         steps: [
           'Remind the learner that only today\'s exercise can be completed.',
           'Check that they upload a readable image of written Maths working.',
-          'Use reports and topic notes to coach them toward the next step.',
+          'Use lesson topic notes to coach them toward the next step.',
         ],
       },
     ],
@@ -215,7 +202,7 @@ export const guideContentByRole = {
     questions: [
       {
         id: 'tutor-q1',
-        prompt: 'What should a tutor do before managing reports and lessons for a learner?',
+        prompt: 'What should a tutor do before managing lessons for a learner?',
         options: [
           { id: 'a', text: 'Assign the student to themselves first.', correct: true },
           { id: 'b', text: 'Wait for the student to submit three exercises.', correct: false },
@@ -233,9 +220,9 @@ export const guideContentByRole = {
       },
       {
         id: 'tutor-q3',
-        prompt: 'Why should tutors keep reports and topic notes clear?',
+        prompt: 'Why should tutors keep lesson topic notes clear?',
         options: [
-          { id: 'a', text: 'Because they help shape future exercise planning and support.', correct: true },
+          { id: 'a', text: 'Because they help shape future exercise planning.', correct: true },
           { id: 'b', text: 'Because they replace the need for a student profile.', correct: false },
           { id: 'c', text: 'Because they automatically mark peer reviews.', correct: false },
         ],
@@ -244,7 +231,7 @@ export const guideContentByRole = {
         id: 'tutor-q4',
         prompt: 'What should a tutor check if weekly work does not generate after a lesson is saved?',
         options: [
-          { id: 'a', text: 'The learner payment status and matching past papers.', correct: true },
+          { id: 'a', text: 'The learner payment status and a completed topic lesson.', correct: true },
           { id: 'b', text: 'Whether the admin has deleted the dashboard title.', correct: false },
           { id: 'c', text: 'Whether the student changed their password.', correct: false },
         ],
@@ -254,12 +241,11 @@ export const guideContentByRole = {
   teacher: {
     heroTitle: 'Learn the Examifying teacher workflow',
     heroDescription:
-      'Teachers manage the student learning path by assigning learners, creating reports, recording completed topics, and keeping the weekly exercise pipeline moving.',
+      'Teachers manage the student learning path by assigning learners, recording completed topics, and keeping the exercise pipeline moving.',
     quickTips: [
       'Assign a student before trying to manage their lesson journey.',
-      'Create the first report so the learner has proper learning context.',
       'Record completed topics with an understanding level after each lesson.',
-      'Keep notes clear because they shape future exercise planning.',
+      'Keep lesson topic notes clear because they shape future exercise planning.',
     ],
     sections: [
       {
@@ -271,19 +257,7 @@ export const guideContentByRole = {
         steps: [
           'Open the Students area or teacher overview to see available learners.',
           'Assign a student so they are linked to you as their Maths teacher.',
-          'Open the learner card to continue with reports and topic tracking.',
-        ],
-      },
-      {
-        id: 'report',
-        title: 'Write the initial learner report',
-        description: 'The initial report gives context on the learner’s current ability and becomes part of the planning history.',
-        icon: FileText,
-        routeLabel: 'Overview',
-        steps: [
-          'Select the learner from your assigned list.',
-          'Write the first report clearly with strengths, concerns, and next focus areas.',
-          'Save the report before moving into later lesson updates.',
+          'Open the learner card to record completed topics and understanding scores.',
         ],
       },
       {
@@ -313,12 +287,12 @@ export const guideContentByRole = {
       {
         id: 'generation',
         title: 'Support the weekly learning cycle',
-        description: 'When payment and paper requirements are in place, completed topics help the app prepare ongoing exercise work for the learner.',
+        description: 'When payment, completed lessons, and matching analyzed question papers are in place, the app can prepare exercise work.',
         icon: Sparkles,
         routeLabel: 'Overview',
         steps: [
           'After saving the completed lesson, review the status message on the dashboard.',
-          'If weekly work does not generate yet, check learner payment and matching papers.',
+          'If work does not generate yet, check payment, completed topic lessons, and matching analyzed papers.',
           'Continue updating lessons so the learner stays on a structured Maths path.',
         ],
       },
@@ -331,7 +305,7 @@ export const guideContentByRole = {
         steps: [
           'Remind the learner that only today\'s exercise can be completed.',
           'Check that they upload a readable image of written Maths working.',
-          'Use reports and topic notes to coach them toward the next step.',
+          'Use lesson topic notes to coach them toward the next step.',
         ],
       },
     ],
@@ -340,7 +314,7 @@ export const guideContentByRole = {
     questions: [
       {
         id: 'teacher-q1',
-        prompt: 'What should a teacher do before managing reports and lessons for a learner?',
+        prompt: 'What should a teacher do before managing lessons for a learner?',
         options: [
           { id: 'a', text: 'Assign the student to themselves first.', correct: true },
           { id: 'b', text: 'Wait for the student to submit three exercises.', correct: false },
@@ -358,9 +332,9 @@ export const guideContentByRole = {
       },
       {
         id: 'teacher-q3',
-        prompt: 'Why should teachers keep reports and topic notes clear?',
+        prompt: 'Why should teachers keep lesson topic notes clear?',
         options: [
-          { id: 'a', text: 'Because they help shape future exercise planning and support.', correct: true },
+          { id: 'a', text: 'Because they help shape future exercise planning.', correct: true },
           { id: 'b', text: 'Because they replace the need for a student profile.', correct: false },
           { id: 'c', text: 'Because they automatically mark peer reviews.', correct: false },
         ],
@@ -369,7 +343,7 @@ export const guideContentByRole = {
         id: 'teacher-q4',
         prompt: 'What should a teacher check if weekly work does not generate after a lesson is saved?',
         options: [
-          { id: 'a', text: 'The learner payment status and matching past papers.', correct: true },
+          { id: 'a', text: 'The learner payment status and a completed topic lesson.', correct: true },
           { id: 'b', text: 'Whether the admin has deleted the dashboard title.', correct: false },
           { id: 'c', text: 'Whether the student changed their password.', correct: false },
         ],

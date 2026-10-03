@@ -188,7 +188,9 @@ const validateJsonArrayKey = (requiredJsonKey) => (text) => {
     }
     const entries = parsed?.[requiredJsonKey];
     return Array.isArray(entries) && entries.length > 0 && entries.every((entry) =>
-      Array.isArray(entry?.questionReferences) && entry.questionReferences.length > 0
+      Array.isArray(entry?.questions) && entry.questions.length > 0 && entry.questions.every((question) =>
+        Boolean(question?.topic && question?.questionReference && question?.paperId && Number(question?.pageNumber) > 0))
+      || Array.isArray(entry?.questionReferences) && entry.questionReferences.length > 0
       || Array.isArray(entry?.topicBreakdown) && entry.topicBreakdown.some((topic) => topic?.questionReference || topic?.reference)
       || Boolean(entry?.questionReference && entry?.topic && entry?.paperId)
       || Boolean(entry?.title)

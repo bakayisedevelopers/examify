@@ -31,9 +31,10 @@ service firebase.storage {
     }
     match /users/{studentId}/subjects/{subjectInstanceId}/exercises/{exerciseId}/{folder}/{fileName} {
       allow read: if signedIn() && (request.auth.uid == studentId || isStaff(studentId, subjectInstanceId) || isAdmin());
-      allow create: if validImage() && (canMark(studentId, subjectInstanceId) || isAdmin()
+      allow create: if validImage() && ((folder == 'tutor-marking' && (canMark(studentId, subjectInstanceId) || isAdmin()))
         || (folder == 'peer-reviews' && signedIn() && request.auth.uid == studentId));
-      allow update, delete: if canMark(studentId, subjectInstanceId) || isAdmin();
+      allow update, delete: if folder in ['tutor-marking', 'peer-reviews']
+        && (canMark(studentId, subjectInstanceId) || isAdmin() || (folder == 'peer-reviews' && request.auth.uid == studentId));
     }
     match /users/{userId}/tutorMarksDocuments/{allPaths=**} {
       allow read, write: if signedIn() && (request.auth.uid == userId || isAdmin());

@@ -14,6 +14,11 @@ const imagePages = (images, fallbackUrl, fallbackName) => Array.isArray(images) 
 
 export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId, tutorId, topicScores = {}, onTopicScoreSaved, showQuestionLinks = false, viewerRole = 'student', accessRole = 'co-owner' }) => {
   const navigate = useNavigate();
+  const exerciseQuestionCount = Array.isArray(exercise?.questions) && exercise.questions.length
+    ? exercise.questions.length
+    : Array.isArray(exercise?.questionLinks) && exercise.questionLinks.length
+      ? exercise.questionLinks.length
+      : Array.isArray(exercise?.questionReferences) ? exercise.questionReferences.length : 0;
   const [openingPapers, setOpeningPapers] = useState(false);
   const [markedImages, setMarkedImages] = useState(() => imagePages(exercise.tutorMarkedImages, exercise.tutorMarkedImageUrl, exercise.tutorMarkedFileName));
   const peerMarkedImages = imagePages(exercise.peerMarkedImages, exercise.peerMarkedImageUrl ?? exercise.submittedReviewImageUrl ?? exercise.reviewImageUrl, exercise.peerMarkedFileName ?? exercise.submittedReviewFileName);
@@ -99,7 +104,10 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
         </span>
         <span className="rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">{availability.label}</span>
       </div>
-      <h3 className="mt-4 text-2xl font-bold text-slate-950">{exercise.title}</h3>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <h3 className="text-2xl font-bold text-slate-950">{exercise.title}</h3>
+        {exerciseQuestionCount > 0 ? <span className="rounded-full bg-lime-100 px-3 py-1 text-sm font-semibold text-lime-800">{exerciseQuestionCount} {exerciseQuestionCount === 1 ? 'question' : 'questions'}</span> : null}
+      </div>
       <p className="mt-2 text-sm font-semibold text-accent">{exercise.topic}</p>
       <p className="mt-3 text-sm text-slate-500">{exercise.sourceLabel}</p>
       <p className="mt-4 text-sm leading-7 text-slate-600">{exercise.instruction}</p>
@@ -118,7 +126,7 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
                   onClick={() => navigate(`/${viewerRole}/papers/${link.paperId}?${params.toString()}`)}
                   className="btn-secondary px-3 py-2 text-sm"
                 >
-                  {link.questionReference || `Question ${index + 1}`} • page {page}
+                  {link.questionReference || `Question ${index + 1}`} • page {page}{Number(link.marks) > 0 ? ` • ${link.marks} marks` : ''}
                 </button>
               );
             })}
@@ -153,6 +161,7 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
                 subject={exercise.subject}
                 topic={topic}
                 exerciseId={exercise.id}
+                questions={(exercise.questionLinks ?? []).filter((link) => String(link.topic || '').trim().toLowerCase() === topic.toLowerCase())}
                 value={topicScores[topic]}
                 onSaved={onTopicScoreSaved}
               />

@@ -19,7 +19,12 @@ const ageInDays = (today, value) => {
 };
 
 export const getExerciseTopicKeys = (exercise = {}) => {
-  const values = [exercise.topic, ...(Array.isArray(exercise.topics) ? exercise.topics : [])];
+  const values = [
+    ...(Array.isArray(exercise.topics) ? exercise.topics : []),
+    ...(Array.isArray(exercise.topicBreakdown) ? exercise.topicBreakdown.map((entry) => entry?.topic) : []),
+    ...(Array.isArray(exercise.questionLinks) ? exercise.questionLinks.map((entry) => entry?.topic) : []),
+    ...String(exercise.topic || '').split('|'),
+  ];
   return new Set(values.map(normalise).filter(Boolean));
 };
 
