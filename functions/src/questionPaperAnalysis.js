@@ -152,6 +152,13 @@ const normalizeTopicOption = (value) => String(value ?? '')
   .replace(/\s+/g, ' ')
   .trim();
 
+const normalizeSuggestedTopic = (value) => {
+  const raw = String(value ?? '').trim();
+  const parts = raw.split('|').map((part) => part.trim());
+  if (raw.length > 180 || parts.length !== 2 || parts.some((part) => !part)) return '';
+  return `${parts[0]} | ${parts[1]}`;
+};
+
 const sanitizeAnalysisTopicOptions = (value) => (Array.isArray(value) ? value : [])
   .map((topic) => String(topic ?? '').trim().slice(0, 180))
   .filter((topic, index, topics) => topic.includes('|') && topics.indexOf(topic) === index)
@@ -159,10 +166,10 @@ const sanitizeAnalysisTopicOptions = (value) => (Array.isArray(value) ? value : 
 
 const constrainTopicList = (values, allowedTopics) => {
   const topics = Array.isArray(values) ? values : [];
-  if (!allowedTopics?.length) return topics.map((topic) => String(topic ?? '').trim()).filter(Boolean);
+  if (!allowedTopics?.length) return [...new Set(topics.map(normalizeSuggestedTopic).filter(Boolean))];
   const allowedByKey = new Map(allowedTopics.map((topic) => [normalizeTopicOption(topic), topic]));
   return [...new Set(topics
-    .map((topic) => allowedByKey.get(normalizeTopicOption(topic)))
+    .map((topic) => allowedByKey.get(normalizeTopicOption(topic)) ?? normalizeSuggestedTopic(topic))
     .filter(Boolean))];
 };
 
@@ -562,10 +569,11 @@ const buildMinimalBatchPrompt = ({ paperId, paper, pages, topicOptions = [] }) =
     'For each visible exam question or sub-question, return only these keys in this order: questionReference, parentQuestion, topics, marks, pageNumber, section.',
     'Do not return id, paperId, subject, batchId, instruction, memoSummary, solution, or full question text.',
     ...(topicOptions.length ? [
-      'Choose topic labels exclusively and exactly from the approved frontend topic list below. Do not create aliases or labels.',
-      'If no approved label fits a question, return an empty topics array for that question. If no approved label appears on the page, return an empty top-level topics array.',
+      'Use the approved local topic list as the source of truth and choose an exact listed label whenever it accurately covers the question.',
+      'Do not invent a new label when an approved topic fits. Only if none of the approved topics accurately covers the specific question, suggest a new topic using exactly the Child topic | Parent topic structure.',
+      'Keep any new suggestion concise and specific to the question. Return an empty topics array only when the question topic cannot be determined.',
       `Approved topic labels for ${paper.subject}, ${paper.grade}: ${JSON.stringify(topicOptions)}`,
-    ] : [`Use concise ${paper.subject || 'subject'} topic names in Child | Parent format. If a question covers multiple topics, include up to three topics.`]),
+    ] : [`Use concise ${paper.subject || 'subject'} topic names in Child topic | Parent topic format. If a question covers multiple topics, include up to three topics.`]),
     'For pages with no visible questions, return {"topics":[],"questions":[],"summary":"No visible questions"}.',
     'If embedded PDF text is provided, use it as a helper but trust the page visual for scanned pages.',
     ...pages.map((page) => page.text ? `${page.label} page ${page.pageNumber} embedded text: ${page.text.slice(0, 1800)}` : `${page.label} page ${page.pageNumber}: no embedded text found.`),

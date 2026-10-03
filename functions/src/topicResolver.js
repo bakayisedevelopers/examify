@@ -17,6 +17,13 @@ const normalizeLabel = (value) => String(value ?? '')
   .replace(/\s+/g, ' ')
   .trim();
 
+const normalizeSuggestedTopic = (value) => {
+  const raw = String(value ?? '').trim();
+  const parts = raw.split('|').map((part) => part.trim());
+  if (raw.length > 180 || parts.length !== 2 || parts.some((part) => !part)) return '';
+  return `${parts[0]} | ${parts[1]}`;
+};
+
 const parseTopicArray = (value = '') => {
   const text = String(value).replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   const first = text.indexOf('[');
@@ -57,10 +64,11 @@ export const resolveTopicsWithGemini = onCall({ timeoutSeconds: 240, memory: '25
 
   const allowedByKey = new Map(allowedTopics.map((topic) => [normalizeLabel(topic), topic]));
   const prompt = [
-    'Map each source topic label to the best matching existing canonical topic from the supplied list.',
+    'Resolve each source topic label against the supplied canonical topic list first.',
     `Subject: ${subject}. Grade: ${grade}.`,
-    'Choose only from the supplied list. Never invent, add, combine, or rewrite topic labels.',
-    'Return the exact canonical label. If no supplied label matches, return an empty string.',
+    'If a supplied topic fits, return that exact label.',
+    'Only when none of the supplied topics fits, suggest a new concise topic in exactly this structure: Child topic | Parent topic. Base it on the source label and subject; do not search for topics.',
+    'Do not invent a replacement when a supplied topic fits. Return an empty string only when the source label is too unclear to resolve or suggest.',
     'Return only a JSON array with one string per source topic in the same order. No explanation or object wrapper.',
     `Allowed topics:\n${JSON.stringify(allowedTopics)}`,
     `Source topics to resolve:\n${JSON.stringify(topics)}`,
@@ -104,18 +112,25 @@ export const resolveTopicsWithGemini = onCall({ timeoutSeconds: 240, memory: '25
     });
     throw new HttpsError('unavailable', `Gemini returned ${proposed.length} topic results for ${topics.length} source topics. Please retry.`);
   }
-  const resolved = topics.map((_, index) => {
-    const key = normalizeLabel(typeof proposed[index] === 'string' ? proposed[index] : '');
-    return allowedByKey.get(key) ?? '';
+  const normalized = topics.map((_, index) => {
+    const candidate = typeof proposed[index] === 'string' ? proposed[index].trim() : '';
+    const canonicalTopic = allowedByKey.get(normalizeLabel(candidate));
+    if (canonicalTopic) return { topic: canonicalTopic, type: 'canonical' };
+    const suggestedTopic = normalizeSuggestedTopic(candidate);
+    return suggestedTopic ? { topic: suggestedTopic, type: 'suggested' } : { topic: '', type: 'unresolved' };
   });
+  const resolved = normalized.map(({ topic }) => topic);
+  const resolutionTypes = normalized.map(({ type }) => type);
 
   logger.info('Admin topic resolution completed', {
     uid,
     subject,
     grade,
     topicCount: topics.length,
-    resolvedCount: resolved.filter(Boolean).length,
+    resolvedCount: resolutionTypes.filter((type) => type === 'canonical').length,
+    suggestedCount: resolutionTypes.filter((type) => type === 'suggested').length,
+    unresolvedCount: resolutionTypes.filter((type) => type === 'unresolved').length,
     model: generated.model,
   });
-  return { topics: resolved, model: MODEL };
+  return { topics: resolved, resolutionTypes, model: MODEL };
 });

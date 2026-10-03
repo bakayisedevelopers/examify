@@ -310,6 +310,10 @@ export const PastExamPapersPage = () => {
   const currentResolverValue = (row) => topicResolverCorrections[row.id] ?? row.suggestedTopic;
   const unresolvedTopicRows = topicResolverRows.filter((row) => !currentResolverValue(row));
   const resolvedTopicRows = topicResolverRows.filter((row) => Boolean(currentResolverValue(row)));
+  const suggestedTopicRows = topicResolverRows.filter((row) => {
+    const method = topicResolverMethods[row.id] ?? row.matchType;
+    return method === 'gemini-suggested' || method === 'saved-suggestion';
+  });
 
   const resolveUnmappedTopicsWithGemini = async () => {
     const unresolved = topicResolverRows.filter((row) => !currentResolverValue(row));
@@ -318,8 +322,9 @@ export const PastExamPapersPage = () => {
       return;
     }
     setTopicResolverGeminiLoading(true);
-    setTopicResolverStatus(`Checking ${unresolved.length} needs-review topic${unresolved.length === 1 ? '' : 's'} against CAPS and the local list...`);
+      setTopicResolverStatus(`Matching ${unresolved.length} unresolved topic${unresolved.length === 1 ? '' : 's'} to the local list and preparing Google Gemini suggestions where needed...`);
     let resolvedCount = 0;
+    let suggestedCount = 0;
     try {
       const allowedTopics = getHardcodedTopics({ subject: topicResolverSubject, grade: topicResolverGrade });
       for (let index = 0; index < unresolved.length; index += 25) {
@@ -331,6 +336,7 @@ export const PastExamPapersPage = () => {
           allowedTopics,
         });
         const resolved = Array.isArray(result?.topics) ? result.topics : [];
+        const resolutionTypes = Array.isArray(result?.resolutionTypes) ? result.resolutionTypes : [];
         setTopicResolverCorrections((current) => {
           const next = { ...current };
           rows.forEach((row, rowIndex) => {
@@ -341,14 +347,15 @@ export const PastExamPapersPage = () => {
         setTopicResolverMethods((current) => {
           const next = { ...current };
           rows.forEach((row, rowIndex) => {
-            if (resolved[rowIndex]) next[row.id] = 'gemini';
+            if (resolved[rowIndex]) next[row.id] = resolutionTypes[rowIndex] === 'suggested' ? 'gemini-suggested' : 'gemini';
           });
           return next;
         });
         setTopicResolverReviewed(false);
-        resolvedCount += resolved.filter(Boolean).length;
+        resolvedCount += resolved.filter((topic, rowIndex) => Boolean(topic) && resolutionTypes[rowIndex] !== 'suggested').length;
+        suggestedCount += resolved.filter((topic, rowIndex) => Boolean(topic) && resolutionTypes[rowIndex] === 'suggested').length;
       }
-      setTopicResolverStatus(`Gemini mapped ${resolvedCount} of ${unresolved.length} topics. Review every suggestion before saving.`);
+      setTopicResolverStatus(`Gemini matched ${resolvedCount} topics and suggested ${suggestedCount} new labels. Review every mapping before saving.`);
     } catch (error) {
       setTopicResolverStatus(error.message || 'Gemini could not resolve the topics. Any completed suggestions are still available to review.');
     } finally {
@@ -364,6 +371,7 @@ export const PastExamPapersPage = () => {
       const mappings = topicResolverRows.map((row) => ({
         sourceTopic: row.sourceTopic,
         canonicalTopic: currentResolverValue(row),
+        resolutionType: ['gemini-suggested', 'saved-suggestion'].includes(topicResolverMethods[row.id] ?? row.matchType) ? 'suggested' : 'canonical',
       }));
       const result = await saveTopicResolverMappings({
         subject: topicResolverSubject,
@@ -371,10 +379,23 @@ export const PastExamPapersPage = () => {
         rows: mappings,
         adminId: user?.uid,
       });
-      setTopicResolverRows((current) => current.map((row) => ({ ...row, isSaved: true, matchType: 'saved' })));
+      const savedBySource = new Map(mappings.map((mapping) => [mapping.sourceTopic, mapping]));
+      setTopicResolverRows((current) => current.map((row) => {
+        const saved = savedBySource.get(row.sourceTopic);
+        return {
+          ...row,
+          suggestedTopic: saved?.canonicalTopic ?? currentResolverValue(row),
+          isSaved: true,
+          matchType: saved?.resolutionType === 'suggested' ? 'saved-suggestion' : 'saved',
+        };
+      }));
+      setTopicResolverCorrections({});
       setTopicResolverMethods({});
       setTopicResolverReviewed(true);
-      setTopicResolverStatus(`Saved ${result.savedCount} reviewed topic mapping${result.savedCount === 1 ? '' : 's'} for ${topicResolverSubject}, ${topicResolverGrade}.`);
+      const savedSuggestionCount = mappings.filter((mapping) => mapping.resolutionType === 'suggested').length;
+      setTopicResolverStatus(savedSuggestionCount
+        ? `Saved ${result.savedCount} reviewed mapping${result.savedCount === 1 ? '' : 's'} for ${topicResolverSubject}, ${topicResolverGrade}, including ${savedSuggestionCount} accepted Google Gemini suggestion${savedSuggestionCount === 1 ? '' : 's'}.`
+        : `Saved ${result.savedCount} reviewed topic mapping${result.savedCount === 1 ? '' : 's'} for ${topicResolverSubject}, ${topicResolverGrade}.`);
     } catch (error) {
       setTopicResolverStatus(error.message || 'Could not save the topic mappings.');
     } finally {
@@ -851,7 +872,7 @@ export const PastExamPapersPage = () => {
               <div className="min-w-0">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-lime-400">Admin review</p>
                 <h2 id="topic-resolver-title" className="mt-2 text-xl font-bold text-white md:text-2xl">Topic resolver preview</h2>
-                <p className="mt-2 max-w-3xl text-sm text-slate-300">Review local rules, aliases, and Gemini suggestions for one subject and grade. Save only after every source topic has a confirmed mapping.</p>
+                <p className="mt-2 max-w-3xl text-sm text-slate-300">Review local matches and Google Gemini suggestions for one subject and grade. When the local list has no fit, Gemini may suggest a new Child | Parent label. Suggestions stay in this review until you save the mappings.</p>
               </div>
               <button type="button" className="btn-secondary h-10 w-10 flex-none p-0" aria-label="Close topic resolver" title="Close" onClick={() => setTopicResolverOpen(false)} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading}><X className="mx-auto h-4 w-4" /></button>
             </div>
@@ -883,7 +904,7 @@ export const PastExamPapersPage = () => {
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
                   <input type="search" className="input pl-10" value={topicResolverSearch} onChange={(event) => setTopicResolverSearch(event.target.value)} placeholder="Search extracted topic names" />
                 </label>
-                <p className="text-sm text-slate-300">{resolvedTopicRows.length} mapped • {unresolvedTopicRows.length} need review</p>
+                <p className="text-sm text-slate-300">{resolvedTopicRows.length - suggestedTopicRows.length} mapped • {suggestedTopicRows.length} Google Gemini suggestions • {unresolvedTopicRows.length} unresolved</p>
                 <button type="button" className="btn-secondary inline-flex items-center justify-center gap-2" onClick={resolveUnmappedTopicsWithGemini} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || !unresolvedTopicRows.length}>
                   {topicResolverGeminiLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
                   Resolve with Gemini
@@ -912,16 +933,36 @@ export const PastExamPapersPage = () => {
                         const currentValue = currentResolverValue(row);
                         const wasCorrected = Object.hasOwn(topicResolverCorrections, row.id);
                         const matchMethod = topicResolverMethods[row.id] ?? (wasCorrected ? 'manual' : row.matchType);
+                        const isGeminiSuggestion = matchMethod === 'gemini-suggested' || matchMethod === 'saved-suggestion';
+                        const matchClass = isGeminiSuggestion
+                          ? 'bg-amber-400/15 text-amber-200'
+                          : matchMethod === 'gemini'
+                            ? 'bg-sky-400/15 text-sky-200'
+                            : currentValue
+                              ? 'bg-lime-400/15 text-lime-200'
+                              : 'bg-amber-400/15 text-amber-200';
+                        const matchLabel = matchMethod === 'gemini-suggested'
+                          ? 'Google Gemini suggestion — review'
+                          : matchMethod === 'saved-suggestion'
+                            ? 'Saved Google Gemini suggestion'
+                            : matchMethod === 'gemini'
+                              ? 'Gemini match'
+                              : matchMethod === 'manual'
+                                ? 'Admin edit'
+                                : currentValue
+                                  ? matchMethod
+                                  : 'Needs review';
                         return (
                           <tr key={row.id} className="align-top">
                             <td className="max-w-64 px-3 py-3 font-medium">{row.sourceTopic}</td>
                             <td className="px-3 py-3">
-                              <select className="input min-w-80" value={currentValue} onChange={(event) => { setTopicResolverCorrections((current) => ({ ...current, [row.id]: event.target.value })); setTopicResolverMethods((current) => ({ ...current, [row.id]: 'manual' })); setTopicResolverReviewed(false); }} disabled={topicResolverGeminiLoading || topicResolverSaveLoading}>
+                              <select className="input min-w-80" value={currentValue} onChange={(event) => { const isSuggestedValue = event.target.value === currentValue && !catalog.some((topic) => topic.canonicalLabel === event.target.value); setTopicResolverCorrections((current) => ({ ...current, [row.id]: event.target.value })); setTopicResolverMethods((current) => ({ ...current, [row.id]: isSuggestedValue ? 'gemini-suggested' : 'manual' })); setTopicResolverReviewed(false); }} disabled={topicResolverGeminiLoading || topicResolverSaveLoading}>
                                 <option value="">Needs manual mapping</option>
+                                {currentValue && !catalog.some((topic) => topic.canonicalLabel === currentValue) ? <option value={currentValue}>{currentValue} · Google Gemini suggestion</option> : null}
                                 {catalog.map((topic) => <option key={topic.canonicalLabel} value={topic.canonicalLabel}>{topic.canonicalLabel}</option>)}
                               </select>
                             </td>
-                            <td className="px-3 py-3"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${matchMethod === 'gemini' ? 'bg-sky-400/15 text-sky-200' : currentValue ? 'bg-lime-400/15 text-lime-200' : 'bg-amber-400/15 text-amber-200'}`}>{matchMethod === 'gemini' ? 'Gemini' : matchMethod === 'manual' ? 'Admin edit' : currentValue ? matchMethod : 'Needs review'}</span></td>
+                            <td className="px-3 py-3"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${matchClass}`}>{matchLabel}</span></td>
                             <td className="px-3 py-3 tabular-nums">{row.occurrenceCount}</td>
                             <td className="px-3 py-3">{row.sources.map((source) => <span key={source} className="mr-1 inline-block rounded bg-slate-800 px-2 py-1 text-xs">{source === 'paper' ? 'Papers' : 'Lessons'}</span>)}</td>
                             <td className="px-3 py-3 text-xs text-slate-300">{row.sourceExamples.join(' • ') || '—'}</td>
@@ -937,13 +978,13 @@ export const PastExamPapersPage = () => {
             <div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-700 pt-4">
               <label className="flex items-start gap-2 text-xs text-slate-300">
                 <input type="checkbox" checked={topicResolverReviewed} onChange={(event) => setTopicResolverReviewed(event.target.checked)} disabled={Boolean(unresolvedTopicRows.length) || topicResolverGeminiLoading || topicResolverSaveLoading} />
-                <span>{unresolvedTopicRows.length ? `${unresolvedTopicRows.length} topics still need mappings.` : 'I reviewed and confirmed every topic mapping.'}</span>
+                <span>{unresolvedTopicRows.length ? `${unresolvedTopicRows.length} topics still need mappings.` : `I reviewed and confirmed every topic mapping${suggestedTopicRows.length ? `, including ${suggestedTopicRows.length} Google Gemini suggestion${suggestedTopicRows.length === 1 ? '' : 's'}` : ''}.`}</span>
               </label>
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="btn-secondary" onClick={() => { setTopicResolverRows([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); setTopicResolverSearch(''); setTopicResolverStatus('Select a subject and grade to search.'); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading}>Clear results</button>
                 <button type="button" className="btn-primary inline-flex items-center justify-center gap-2" onClick={saveReviewedTopicMappings} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || !topicResolverRows.length || unresolvedTopicRows.length > 0 || !topicResolverReviewed}>
                   {topicResolverSaveLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                  Save topics
+                  Save mappings
                 </button>
               </div>
             </div>

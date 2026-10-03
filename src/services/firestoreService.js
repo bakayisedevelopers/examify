@@ -2023,6 +2023,11 @@ const topicResolverMappingId = ({ subject, grade, sourceTopic }) => [subject, gr
   .map((part) => String(part).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''))
   .join('__');
 
+const isStructuredSuggestedTopic = (value) => {
+  const parts = String(value ?? '').split('|').map((part) => part.trim());
+  return parts.length === 2 && parts.every(Boolean) && String(value).length <= 180;
+};
+
 export const getTopicResolverMappings = async ({ subject, grade } = {}) => {
   if (!subject || !grade) throw new Error('Choose a subject and grade before loading saved mappings.');
   if (!isFirebaseConfigured) return [];
@@ -2043,10 +2048,17 @@ export const saveTopicResolverMappings = async ({ subject, grade, rows = [], adm
   rows.forEach((row) => {
     const sourceTopic = String(row?.sourceTopic ?? '').trim();
     const canonicalTopic = String(row?.canonicalTopic ?? '').trim();
-    if (!sourceTopic || !allowedTopics.has(canonicalTopic)) {
-      throw new Error(`Choose a valid ${subject}, ${grade} topic for every source topic before saving.`);
+    const resolutionType = row?.resolutionType === 'suggested' ? 'suggested' : 'canonical';
+    const isAllowedTopic = allowedTopics.has(canonicalTopic);
+    const isAllowedSuggestion = resolutionType === 'suggested' && isStructuredSuggestedTopic(canonicalTopic);
+    if (!sourceTopic || (!isAllowedTopic && !isAllowedSuggestion)) {
+      throw new Error(`Choose a valid ${subject}, ${grade} topic or reviewable Child | Parent suggestion for every source topic before saving.`);
     }
-    uniqueRows.set(normalizeCatalogTopicKey(sourceTopic), { sourceTopic, canonicalTopic });
+    uniqueRows.set(normalizeCatalogTopicKey(sourceTopic), {
+      sourceTopic,
+      canonicalTopic,
+      resolutionType: isAllowedTopic ? 'canonical' : resolutionType,
+    });
   });
   if (!isFirebaseConfigured) return { savedCount: uniqueRows.size };
 
@@ -2055,13 +2067,15 @@ export const saveTopicResolverMappings = async ({ subject, grade, rows = [], adm
   let savedCount = 0;
   for (let offset = 0; offset < entries.length; offset += 400) {
     const batch = writeBatch(db);
-    entries.slice(offset, offset + 400).forEach(({ sourceTopic, canonicalTopic }) => {
+    entries.slice(offset, offset + 400).forEach(({ sourceTopic, canonicalTopic, resolutionType }) => {
       const id = topicResolverMappingId({ subject, grade, sourceTopic });
       batch.set(doc(db, collections.topicResolverMappings, id), {
         subject,
         grade,
         sourceTopic,
         canonicalTopic,
+        resolutionType,
+        suggestedBy: resolutionType === 'suggested' ? 'Google Gemini' : '',
         savedBy: adminId,
         savedAt: serverTimestamp(),
       }, { merge: true });
