@@ -3,7 +3,8 @@ import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { getDb } from './admin.js';
 import { callGeminiGenerateContent } from './gemini.js';
 
-const MODEL = 'gemini-3.5-flash-lite';
+// Flash Lite returns successful responses without candidates when Search grounding is enabled.
+const MODEL = 'gemini-3.5-flash';
 const MAX_SOURCE_TOPICS = 25;
 const MAX_ALLOWED_TOPICS = 300;
 const MAX_GEMINI_ATTEMPTS = 2;
