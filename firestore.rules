@@ -192,6 +192,9 @@ service cloud.firestore {
         || resource.data.primaryTutorId == request.auth.uid
         || request.auth.uid in resource.data.historicalStaffIds || isAdmin());
     }
+    match /{path=**}/lessons/{lessonId} {
+      allow read: if isAdmin();
+    }
     match /{path=**}/peerMarkingAssignments/{assignmentId} {
       allow read: if signedIn() && resource.data.reviewerId == request.auth.uid;
     }
