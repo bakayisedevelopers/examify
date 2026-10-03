@@ -157,9 +157,18 @@ const normalizeSuggestedTopic = (value) => {
   return normalizeGeneratedTopicLabel(value);
 };
 
-const sanitizeAnalysisTopicOptions = (value) => (Array.isArray(value) ? value : [])
-  .map(normalizeStoredTopicLabel)
-  .filter((topic, index, topics) => topic && topics.indexOf(topic) === index);
+const sanitizeAnalysisTopicOptions = (value) => {
+  const seen = new Set();
+  return (Array.isArray(value) ? value : []).reduce((topics, value) => {
+    const topic = normalizeStoredTopicLabel(value);
+    const key = normalizeTopicOption(topic);
+    if (topic && key && !seen.has(key)) {
+      seen.add(key);
+      topics.push(topic);
+    }
+    return topics;
+  }, []);
+};
 
 const constrainTopicList = (values, allowedTopics) => {
   const topics = Array.isArray(values) ? values : [];
@@ -572,7 +581,7 @@ const buildMinimalBatchPrompt = ({ paperId, paper, pages, topicOptions = [] }) =
       'Return an empty topics array only when the question topic cannot be determined.',
       `Approved topic labels for ${paper.subject}, ${paper.grade}: ${JSON.stringify(topicOptions)}`,
     ] : [
-      `Use concise ${paper.subject || 'subject'} topic names in Child | Parent format.`,
+      `The Firestore topic list for ${paper.subject || 'this subject'}, ${paper.grade || 'this grade'} is currently empty. Suggest concise new topics in Child | Parent format for the questions, then those suggestions will be added to this subject and grade's global topic list.`,
       'Both Child and Parent must be specific topic names of no more than three words each, never sentences. Split combined areas into multiple topics and use the narrowest useful parent categories instead of one broad catch-all parent.',
       'If a question covers multiple topics, include up to three separate labels.',
     ]),
@@ -632,16 +641,6 @@ export const analyzeQuestionPaper = onDocumentWritten(
       const gradeTopicsSnapshot = await gradeTopicsRef.get();
       topicOptions = sanitizeAnalysisTopicOptions(gradeTopicsSnapshot.data()?.topics);
     }
-    if (!topicOptions.length) {
-      const uploadedSeedTopics = sanitizeAnalysisTopicOptions(paper.analysisTopicOptions);
-      if (uploadedSeedTopics.length && subject && grade) {
-        const merged = await mergeGlobalTopicLabels(db, subject, grade, uploadedSeedTopics);
-        topicOptions = sanitizeAnalysisTopicOptions(merged.topics);
-      } else {
-        topicOptions = uploadedSeedTopics;
-      }
-    }
-
     await runRef.set({
       paperId,
       runId,

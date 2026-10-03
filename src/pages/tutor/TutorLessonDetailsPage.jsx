@@ -6,7 +6,6 @@ import { useAuth } from '../../hooks/useAuth';
 import { DEFAULT_SUBJECT, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
 import { LessonAccessDetails } from '../../components/lessons/LessonAccessDetails';
 import { CopyTextButton } from '../../components/common/CopyTextButton';
-import { getTopicOptionGroups } from '../../data/topicCatalog';
 import { getWhatsAppChatUrl } from '../../utils/whatsapp';
 import {
   completeLessonSession,
@@ -227,7 +226,6 @@ export const TutorLessonDetailsPage = () => {
             ...(Array.isArray(question.topics) ? question.topics : []),
           ]) : []),
         ]).filter(Boolean);
-        const additionalTopics = lessonRows.flatMap((lesson) => lesson.topics?.length ? lesson.topics : (lesson.topic ? [lesson.topic] : []));
         const studentIds = contexts
           .filter((context) => context.accessRole === 'co-owner' && context.subject === subject && context.grade === grade)
           .map((context) => context.studentId);
@@ -236,14 +234,18 @@ export const TutorLessonDetailsPage = () => {
           grade,
           studentIds,
           extractedTopics,
-          additionalTopics,
         });
       })
       .then((groups) => {
         if (cancelled) return;
         setTopicOptions(groups);
       })
-      .catch(() => setTopicOptions(getTopicOptionGroups({ subject, grade })));
+      .catch((error) => {
+        if (cancelled) return;
+        setTopicOptions(emptyTopicGroups);
+        setStatus(error.message || 'Could not load topics from the global subject-grade list.');
+        setStatusTone('error');
+      });
     return () => { cancelled = true; };
   }, [contexts, grade, isNew, lessonRows, subject]);
 

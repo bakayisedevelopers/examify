@@ -24,7 +24,7 @@ import { db, functions, isFirebaseConfigured } from '../firebase/config';
 import { collections, paths, subcollections } from '../firebase/schema';
 
 export { paths, subcollections };
-import { getGlobalTopicCatalogSeed, getHardcodedTopics, getTopicOptionGroups, normalizeTopicKey as normalizeCatalogTopicKey } from '../data/topicCatalog';
+import { getGlobalTopicCatalogSeed, getHardcodedTopics, normalizeTopicKey as normalizeCatalogTopicKey } from '../data/topicCatalog';
 import { recommendExercises } from './aiService';
 import {
   getCurrentGenerationNumber,
@@ -2043,13 +2043,10 @@ export const getGlobalTopicList = async ({ subject, grade } = {}) => {
   return [...new Set(values.map((value) => String(value ?? '').trim()).filter((value) => value.split('|').length === 2))];
 };
 
-export const getGlobalTopicOptionGroups = async ({ subject, grade, studentIds = [], extractedTopics = [], additionalTopics = [] } = {}) => {
+export const getGlobalTopicOptionGroups = async ({ subject, grade, studentIds = [], extractedTopics = [] } = {}) => {
   if (!subject || !grade) throw new Error('Choose a subject and grade before loading topics.');
   if (!isFirebaseConfigured) {
-    const groups = getTopicOptionGroups({ extractedTopics, subject, grade });
-    const extra = [...new Set(additionalTopics.map((topic) => String(topic ?? '').trim()).filter((topic) => topic.split('|').length === 2))]
-      .filter((topic) => !groups.all.includes(topic));
-    return { ...groups, manual: [...groups.manual, ...extra], all: [...groups.all, ...extra] };
+    return { extracted: [], manual: [], all: [] };
   }
 
   ensureDb();
@@ -2061,11 +2058,9 @@ export const getGlobalTopicOptionGroups = async ({ subject, grade, studentIds = 
       subject,
       grade,
       studentIds,
-      seedTopics: [...new Set([
-        ...getHardcodedTopics({ subject, grade }),
-        ...extractedTopics,
-        ...additionalTopics,
-      ].map((topic) => String(topic ?? '').trim()).filter((topic) => topic.split('|').length === 2))],
+      seedTopics: [...new Set(extractedTopics
+        .map((topic) => String(topic ?? '').trim())
+        .filter((topic) => topic.split('|').length === 2))],
     });
     topics = Array.isArray(response.data?.topics) ? response.data.topics : [];
   }
@@ -2075,10 +2070,7 @@ export const getGlobalTopicOptionGroups = async ({ subject, grade, studentIds = 
     .map((topic) => byKey.get(normalizeCatalogTopicKey(topic)))
     .filter(Boolean))].sort((left, right) => left.localeCompare(right));
   const extractedKeys = new Set(extracted.map(normalizeCatalogTopicKey));
-  const extraTopics = [...new Set(additionalTopics
-    .map((topic) => String(topic ?? '').trim().replace(/\s*\|\s*/g, ' | '))
-    .filter((topic) => topic.split('|').length === 2 && !byKey.has(normalizeCatalogTopicKey(topic))))];
-  const manual = [...topics.filter((topic) => !extractedKeys.has(normalizeCatalogTopicKey(topic))), ...extraTopics]
+  const manual = topics.filter((topic) => !extractedKeys.has(normalizeCatalogTopicKey(topic)))
     .sort((left, right) => left.localeCompare(right));
   return { extracted, manual, all: [...new Set([...extracted, ...manual])] };
 };
@@ -2487,7 +2479,6 @@ export const saveQuestionPaper = async (paper) => {
     createdAt: serverTimestamp(),
     ...(paper.analysisStatus === 'Analyzing' ? {
       analysisRequestedAt: serverTimestamp(),
-      analysisTopicOptions: getHardcodedTopics({ subject: duplicateFields.subject, grade: duplicateFields.grade }),
     } : {}),
   };
 
@@ -2502,15 +2493,10 @@ export const updateQuestionPaper = async (paperId, patch) => {
   if (!isFirebaseConfigured) return { id: paperId, ...patch };
   ensureDb();
   const paperRef = doc(db, collections.questionPapers, paperId);
-  const currentPaper = patch.analysisStatus === 'Analyzing' ? await getDoc(paperRef) : null;
-  const currentData = currentPaper?.exists() ? currentPaper.data() : {};
-  const subject = patch.subject ?? currentData.subject;
-  const grade = patch.grade ?? currentData.grade;
   const payload = {
     ...patch,
     ...(patch.analysisStatus === 'Analyzing' ? {
       analysisRequestedAt: serverTimestamp(),
-      analysisTopicOptions: getHardcodedTopics({ subject, grade }),
     } : {}),
     updatedAt: serverTimestamp(),
   };

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, ChevronDown, ListTree, LoaderCircle, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
+import { CheckCircle2, ChevronDown, LoaderCircle, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { AppShell } from '../components/common/AppShell';
 import { SectionHeader } from '../components/common/SectionHeader';
@@ -649,14 +649,6 @@ export const PastExamPapersPage = () => {
             : 'Showing recent papers for your grade and subjects. Search or filter to explore the full Examifying collection.'
           : 'The list is scoped to your subjects. Use filters to narrow by subject or year.'}
       />
-      {role === ROLES.ADMIN ? (
-        <div className="flex justify-end">
-          <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => { setTopicResolverOpen(true); setTopicResolverStatus('Select a subject and grade to search.'); }}>
-            <ListTree className="h-4 w-4" aria-hidden="true" />
-            Review extracted topics
-          </button>
-        </div>
-      ) : null}
       {role === ROLES.STUDENT ? (
         <div className="panel grid gap-3 p-4">
           <label className="relative block">

@@ -28,7 +28,6 @@ import {
   revokeStaffStudentAccess,
 } from '../../services/firestoreService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
-import { getTopicOptionGroups } from '../../data/topicCatalog';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
 import { getSevenDayWindow, isExerciseSubmitted } from '../../services/exerciseGenerationPlan';
 import { ImagePageViewer } from '../../components/common/ImagePageViewer';
@@ -180,25 +179,16 @@ export const TutorStudentDetailsPage = () => {
     const subjectLessons = lessonRows.filter((item) => item.studentId === studentId && item.subject === activeSubject);
     setLessons(subjectLessons);
     setPeerMarkedWork(await getCompletedPeerMarkingWorkForTutor({ tutorId: profile.uid, studentId, subject: activeSubject }));
-    const plannedTopics = subjectLessons
-      .filter((lesson) => lesson.status === 'planned' || lesson.status === 'incomplete')
-      .flatMap((lesson) => lesson.topics?.length ? lesson.topics : [lesson.topic])
-      .map((topic) => String(topic || '').trim())
-      .filter(Boolean);
     try {
       setTopicOptions(await getGlobalTopicOptionGroups({
         subject: activeSubject,
         grade: studentContext?.grade,
         studentIds: [studentId],
         extractedTopics,
-        additionalTopics: plannedTopics,
       }));
-    } catch {
-      const groups = getTopicOptionGroups({ extractedTopics, subject: activeSubject, grade: studentContext?.grade });
-      const extractedKeys = new Set(groups.extracted.map((topic) => topic.toLocaleLowerCase()));
-      const manual = [...new Set([...groups.manual, ...plannedTopics.filter((topic) => !extractedKeys.has(topic.toLocaleLowerCase()))])]
-        .sort((left, right) => left.localeCompare(right));
-      setTopicOptions({ ...groups, manual, all: [...new Set([...groups.extracted, ...manual])] });
+    } catch (error) {
+      setTopicOptions(emptyTopicGroups);
+      setStatus(error.message || 'Could not load topics from the global subject-grade list.');
     }
   };
 
