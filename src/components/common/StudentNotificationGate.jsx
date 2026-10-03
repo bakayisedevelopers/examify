@@ -178,7 +178,7 @@ export const StudentNotificationGate = ({ profile, children, required = true }) 
   if (aiStudio) return children;
 
   if (permission === 'checking') {
-    return <div className="flex min-h-screen items-center justify-center text-slate-700">Loading Examifying…</div>;
+    return <div className="flex min-h-screen items-center justify-center text-slate-700"><span className="bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 bg-clip-text font-semibold text-transparent">Loading Examifying…</span></div>;
   }
 
   // Browser permission is the access decision. Device token registration continues in the

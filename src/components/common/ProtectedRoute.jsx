@@ -7,7 +7,7 @@ export const ProtectedRoute = ({ allowedRoles }) => {
   const { loading, profile } = useAuth();
 
   if (loading) {
-    return <div className="flex min-h-screen items-center justify-center text-slate-700">Loading Examifying…</div>;
+    return <div className="flex min-h-screen items-center justify-center text-slate-700"><span className="bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 bg-clip-text font-semibold text-transparent">Loading Examifying…</span></div>;
   }
 
   if (!profile) {
