@@ -3,8 +3,7 @@ import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { getDb } from './admin.js';
 import { callGeminiGenerateContent } from './gemini.js';
 
-// Flash Lite returns successful responses without candidates when Search grounding is enabled.
-const MODEL = 'gemini-3.5-flash';
+const MODEL = 'gemini-3.5-flash-lite';
 const MAX_SOURCE_TOPICS = 25;
 const MAX_ALLOWED_TOPICS = 300;
 const MAX_GEMINI_ATTEMPTS = 2;
@@ -58,13 +57,12 @@ export const resolveTopicsWithGemini = onCall({ timeoutSeconds: 240, memory: '25
 
   const allowedByKey = new Map(allowedTopics.map((topic) => [normalizeLabel(topic), topic]));
   const prompt = [
-    'You are resolving extracted topic labels from South African school question papers.',
+    'Map each source topic label to the best matching existing canonical topic from the supplied list.',
     `Subject: ${subject}. Grade: ${grade}.`,
-    'Use official South African DBE CAPS/ATP sources and Google Search grounding to verify the curriculum meaning where possible.',
-    'For every source label, select the single best exact canonical label from the supplied allowed list. Never invent, rewrite, or combine labels.',
-    'If the evidence is insufficient or no allowed label fits, return an empty string for that item.',
-    'Return only a JSON array of strings, in the same order and with exactly the same number of items as the source list. No explanation or object wrapper.',
-    `Allowed canonical topics:\n${JSON.stringify(allowedTopics)}`,
+    'Choose only from the supplied list. Never invent, add, combine, or rewrite topic labels.',
+    'Return the exact canonical label. If no supplied label matches, return an empty string.',
+    'Return only a JSON array with one string per source topic in the same order. No explanation or object wrapper.',
+    `Allowed topics:\n${JSON.stringify(allowedTopics)}`,
     `Source topics to resolve:\n${JSON.stringify(topics)}`,
   ].join('\n\n');
 
@@ -74,10 +72,8 @@ export const resolveTopicsWithGemini = onCall({ timeoutSeconds: 240, memory: '25
     generated = await callGeminiGenerateContent({
       prompt,
       model: MODEL,
-      useGoogleSearch: true,
       responseFormat: { type: 'json_array' },
       maxTokens: 0,
-      thinkingLevel: 'low',
       temperature: 0,
     });
     proposed = generated.text.trim() ? parseTopicArray(generated.text) : [];
