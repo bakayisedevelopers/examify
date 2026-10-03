@@ -24,7 +24,7 @@ import { db, functions, isFirebaseConfigured } from '../firebase/config';
 import { collections, paths, subcollections } from '../firebase/schema';
 
 export { paths, subcollections };
-import { getHardcodedTopics, normalizeTopicKey as normalizeCatalogTopicKey } from '../data/topicCatalog';
+import { getGlobalTopicCatalogSeed, getHardcodedTopics, getTopicOptionGroups, normalizeTopicKey as normalizeCatalogTopicKey } from '../data/topicCatalog';
 import { recommendExercises } from './aiService';
 import {
   getCurrentGenerationNumber,
@@ -1998,7 +1998,13 @@ export const getTopicResolverSourceRecords = async ({ subject, grade } = {}) => 
     .map((item) => ({ id: item.id, ...item.data() }))
     .filter((paper) => paper.grade === grade)
     .forEach((paper) => addTopics({
-      rawTopics: paper.topics,
+      rawTopics: [
+        ...(paper.topics ?? []),
+        ...(Array.isArray(paper.questions) ? paper.questions.flatMap((question) => [
+          question.topic,
+          ...(Array.isArray(question.topics) ? question.topics : []),
+        ]) : []),
+      ],
       subject: paper.subject,
       grade: paper.grade,
       sourceType: 'paper',
@@ -2025,7 +2031,64 @@ const topicResolverMappingId = ({ subject, grade, sourceTopic }) => [subject, gr
 
 const isStructuredSuggestedTopic = (value) => {
   const parts = String(value ?? '').split('|').map((part) => part.trim());
-  return parts.length === 2 && parts.every(Boolean) && String(value).length <= 180;
+  return parts.length === 2 && parts.every((part) => part && part.split(/\s+/).length <= 3 && !/[.!?;,:]/.test(part)) && String(value).length <= 180;
+};
+
+export const getGlobalTopicList = async ({ subject, grade } = {}) => {
+  if (!subject || !grade) throw new Error('Choose a subject and grade before loading global topics.');
+  if (!isFirebaseConfigured) return getHardcodedTopics({ subject, grade });
+  ensureDb();
+  const topicSnapshot = await getDoc(doc(db, paths.globalGrade(subject, grade)));
+  const values = topicSnapshot.exists() && Array.isArray(topicSnapshot.data()?.topics) ? topicSnapshot.data().topics : [];
+  return [...new Set(values.map((value) => String(value ?? '').trim()).filter((value) => value.split('|').length === 2))];
+};
+
+export const getGlobalTopicOptionGroups = async ({ subject, grade, studentIds = [], extractedTopics = [], additionalTopics = [] } = {}) => {
+  if (!subject || !grade) throw new Error('Choose a subject and grade before loading topics.');
+  if (!isFirebaseConfigured) {
+    const groups = getTopicOptionGroups({ extractedTopics, subject, grade });
+    const extra = [...new Set(additionalTopics.map((topic) => String(topic ?? '').trim()).filter((topic) => topic.split('|').length === 2))]
+      .filter((topic) => !groups.all.includes(topic));
+    return { ...groups, manual: [...groups.manual, ...extra], all: [...groups.all, ...extra] };
+  }
+
+  ensureDb();
+  let topics = await getGlobalTopicList({ subject, grade });
+  if (!topics.length) {
+    if (!functions) throw new Error('Firebase Functions are not configured to initialize global topics.');
+    const callable = httpsCallable(functions, 'ensureGlobalTopicGrade');
+    const response = await callable({
+      subject,
+      grade,
+      studentIds,
+      seedTopics: [...new Set([
+        ...getHardcodedTopics({ subject, grade }),
+        ...extractedTopics,
+        ...additionalTopics,
+      ].map((topic) => String(topic ?? '').trim()).filter((topic) => topic.split('|').length === 2))],
+    });
+    topics = Array.isArray(response.data?.topics) ? response.data.topics : [];
+  }
+
+  const byKey = new Map(topics.map((topic) => [normalizeCatalogTopicKey(topic), topic]));
+  const extracted = [...new Set(extractedTopics
+    .map((topic) => byKey.get(normalizeCatalogTopicKey(topic)))
+    .filter(Boolean))].sort((left, right) => left.localeCompare(right));
+  const extractedKeys = new Set(extracted.map(normalizeCatalogTopicKey));
+  const extraTopics = [...new Set(additionalTopics
+    .map((topic) => String(topic ?? '').trim().replace(/\s*\|\s*/g, ' | '))
+    .filter((topic) => topic.split('|').length === 2 && !byKey.has(normalizeCatalogTopicKey(topic))))];
+  const manual = [...topics.filter((topic) => !extractedKeys.has(normalizeCatalogTopicKey(topic))), ...extraTopics]
+    .sort((left, right) => left.localeCompare(right));
+  return { extracted, manual, all: [...new Set([...extracted, ...manual])] };
+};
+
+export const initializeGlobalTopicCatalog = async () => {
+  if (!isFirebaseConfigured) throw new Error('Connect to Firebase to initialize the global topic catalog.');
+  if (!functions) throw new Error('Firebase Functions are not configured.');
+  const callable = httpsCallable(functions, 'migrateGlobalTopicCatalog', { timeout: 540000 });
+  const response = await callable({ catalog: getGlobalTopicCatalogSeed() });
+  return response.data;
 };
 
 export const getTopicResolverMappings = async ({ subject, grade } = {}) => {
@@ -2043,7 +2106,7 @@ export const getTopicResolverMappings = async ({ subject, grade } = {}) => {
 export const saveTopicResolverMappings = async ({ subject, grade, rows = [], adminId } = {}) => {
   if (!subject || !grade || !Array.isArray(rows) || !rows.length) throw new Error('There are no topic mappings to save.');
   if (!adminId) throw new Error('The signed-in admin could not be verified.');
-  const allowedTopics = new Set(getHardcodedTopics({ subject, grade }));
+  const allowedTopics = new Set(await getGlobalTopicList({ subject, grade }));
   const uniqueRows = new Map();
   rows.forEach((row) => {
     const sourceTopic = String(row?.sourceTopic ?? '').trim();
@@ -2064,6 +2127,31 @@ export const saveTopicResolverMappings = async ({ subject, grade, rows = [], adm
 
   ensureDb();
   const entries = [...uniqueRows.values()];
+  const acceptedSuggestions = [...new Set(entries
+    .filter((entry) => entry.resolutionType === 'suggested' && !allowedTopics.has(entry.canonicalTopic))
+    .map((entry) => entry.canonicalTopic))];
+  if (acceptedSuggestions.length) {
+    const subjectRef = doc(db, paths.globalSubject(subject));
+    const gradeRef = doc(db, paths.globalGrade(subject, grade));
+    await setDoc(subjectRef, { subjectName: subject, updatedAt: serverTimestamp() }, { merge: true });
+    await runTransaction(db, async (transaction) => {
+      const gradeSnapshot = await transaction.get(gradeRef);
+      const existingTopics = Array.isArray(gradeSnapshot.data()?.topics) ? gradeSnapshot.data().topics : [];
+      const combined = [...existingTopics, ...acceptedSuggestions];
+      const byKey = new Map();
+      combined.forEach((topic) => {
+        const label = String(topic ?? '').trim().replace(/\s*\|\s*/g, ' | ');
+        const key = normalizeCatalogTopicKey(label);
+        if (label.split('|').length === 2 && key && !byKey.has(key)) byKey.set(key, label);
+      });
+      transaction.set(gradeRef, {
+        subjectName: subject,
+        gradeName: grade,
+        topics: [...byKey.values()],
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+    });
+  }
   let savedCount = 0;
   for (let offset = 0; offset < entries.length; offset += 400) {
     const batch = writeBatch(db);
@@ -2086,13 +2174,13 @@ export const saveTopicResolverMappings = async ({ subject, grade, rows = [], adm
   return { savedCount };
 };
 
-export const resolveTopicsWithGemini = async ({ subject, grade, topics = [], allowedTopics = [] } = {}) => {
+export const resolveTopicsWithGemini = async ({ subject, grade, topics = [] } = {}) => {
   if (!isFirebaseConfigured) throw new Error('Connect to Firebase to resolve topics with Gemini.');
-  if (!Array.isArray(topics) || !topics.length || !Array.isArray(allowedTopics) || !allowedTopics.length) {
-    throw new Error('Provide unresolved topics and the local topic catalog.');
+  if (!Array.isArray(topics) || !topics.length) {
+    throw new Error('Provide unresolved topics.');
   }
   const callable = httpsCallable(functions, 'resolveTopicsWithGemini');
-  const response = await callable({ subject, grade, topics, allowedTopics });
+  const response = await callable({ subject, grade, topics });
   return response.data;
 };
 

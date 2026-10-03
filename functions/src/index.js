@@ -28,6 +28,7 @@ export {
 } from './gemini.js';
 
 export { resolveTopicsWithGemini } from './topicResolver.js';
+export { ensureGlobalTopicGrade, migrateGlobalTopicCatalog } from './globalTopicCatalog.js';
 
 export {
   analyzeQuestionPaper,

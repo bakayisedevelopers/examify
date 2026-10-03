@@ -12,6 +12,7 @@ import {
   completeLessonSession,
   deleteLessonSession,
   generateExercisePlanIfEligible,
+  getGlobalTopicOptionGroups,
   getLessonsByGroupSessionId,
   getLessonById,
   getQuestionPapers,
@@ -185,15 +186,32 @@ export const TutorLessonDetailsPage = () => {
     getQuestionPapers({ subject, grade })
       .then((papers) => {
         if (cancelled) return;
-        setTopicOptions(getTopicOptionGroups({
-          extractedTopics: papers.flatMap((paper) => paper.topics ?? []).filter(Boolean),
+        const extractedTopics = papers.flatMap((paper) => [
+          ...(paper.topics ?? []),
+          ...(Array.isArray(paper.questions) ? paper.questions.flatMap((question) => [
+            question.topic,
+            ...(Array.isArray(question.topics) ? question.topics : []),
+          ]) : []),
+        ]).filter(Boolean);
+        const additionalTopics = lessonRows.flatMap((lesson) => lesson.topics?.length ? lesson.topics : (lesson.topic ? [lesson.topic] : []));
+        const studentIds = contexts
+          .filter((context) => context.accessRole === 'co-owner' && context.subject === subject && context.grade === grade)
+          .map((context) => context.studentId);
+        return getGlobalTopicOptionGroups({
           subject,
           grade,
-        }));
+          studentIds,
+          extractedTopics,
+          additionalTopics,
+        });
+      })
+      .then((groups) => {
+        if (cancelled) return;
+        setTopicOptions(groups);
       })
       .catch(() => setTopicOptions(getTopicOptionGroups({ subject, grade })));
     return () => { cancelled = true; };
-  }, [grade, isNew, lessonRows.length, subject]);
+  }, [contexts, grade, isNew, lessonRows, subject]);
 
   const handleSubjectChange = (value) => {
     setSubject(value);
@@ -565,7 +583,7 @@ const TopicPicker = ({ topicOptions, selectedTopic, setSelectedTopic, addTopic, 
         <select className="input" value={selectedTopic} onChange={(event) => setSelectedTopic(event.target.value)} disabled={disabled || !topicOptions.all.length}>
           <option value="">{topicOptions.all.length ? 'Choose a canonical topic' : 'No topics available for this grade and subject'}</option>
           {topicOptions.extracted.length ? <optgroup label="Matched past-paper topics">{topicOptions.extracted.map((topic) => <option key={`paper-${topic}`} value={topic}>{topic}</option>)}</optgroup> : null}
-          {topicOptions.manual.length ? <optgroup label="Hardcoded topic list">{topicOptions.manual.map((topic) => <option key={`manual-${topic}`} value={topic}>{topic}</option>)}</optgroup> : null}
+          {topicOptions.manual.length ? <optgroup label="Global subject topics">{topicOptions.manual.map((topic) => <option key={`manual-${topic}`} value={topic}>{topic}</option>)}</optgroup> : null}
         </select>
       </label>
       <button type="button" className="btn-secondary self-end" onClick={addTopic} disabled={disabled || !selectedTopic}>Add topic</button>

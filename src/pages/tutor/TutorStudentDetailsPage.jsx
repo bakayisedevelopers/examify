@@ -7,6 +7,7 @@ import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
 import {
   generateExercisePlanIfEligible,
+  getGlobalTopicOptionGroups,
   getQuestionPapers,
   getTutorAssignedStudentContexts,
   getTutorAssignmentHistoryContexts,
@@ -133,7 +134,13 @@ export const TutorStudentDetailsPage = () => {
     if (activeSubject !== subject) setSearchParams({ subject: activeSubject }, { replace: true });
     const studentContext = contexts.find((item) => item.studentId === studentId && item.subject === activeSubject) ?? null;
     const papers = await getQuestionPapers({ subject: activeSubject, grade: studentContext?.grade, region: studentContext?.province });
-    const extractedTopics = papers.flatMap((paper) => paper.topics ?? []).filter(Boolean);
+    const extractedTopics = papers.flatMap((paper) => [
+      ...(paper.topics ?? []),
+      ...(Array.isArray(paper.questions) ? paper.questions.flatMap((question) => [
+        question.topic,
+        ...(Array.isArray(question.topics) ? question.topics : []),
+      ]) : []),
+    ]).filter(Boolean);
     setStudent(studentContext);
     setStaffAccess(await getStaffStudentAccess({ studentId, subject: activeSubject, tutorId: profile.uid, subjectInstanceId: studentContext?.subjectInstanceId }));
     if (studentContext?.accessRole === 'co-owner') setStaffMembers(await getStaffMembersForAccess({ tutorId: profile.uid, subject: activeSubject }));
@@ -142,16 +149,26 @@ export const TutorStudentDetailsPage = () => {
     const subjectLessons = lessonRows.filter((item) => item.studentId === studentId && item.subject === activeSubject);
     setLessons(subjectLessons);
     setPeerMarkedWork(await getCompletedPeerMarkingWorkForTutor({ tutorId: profile.uid, studentId, subject: activeSubject }));
-    const groups = getTopicOptionGroups({ extractedTopics, subject: activeSubject, grade: studentContext?.grade });
     const plannedTopics = subjectLessons
       .filter((lesson) => lesson.status === 'planned' || lesson.status === 'incomplete')
       .flatMap((lesson) => lesson.topics?.length ? lesson.topics : [lesson.topic])
       .map((topic) => String(topic || '').trim())
       .filter(Boolean);
-    const extractedKeys = new Set(groups.extracted.map((topic) => topic.toLocaleLowerCase()));
-    const manual = [...new Set([...groups.manual, ...plannedTopics.filter((topic) => !extractedKeys.has(topic.toLocaleLowerCase()))])]
-      .sort((left, right) => left.localeCompare(right));
-    setTopicOptions({ ...groups, manual, all: [...new Set([...groups.extracted, ...manual])] });
+    try {
+      setTopicOptions(await getGlobalTopicOptionGroups({
+        subject: activeSubject,
+        grade: studentContext?.grade,
+        studentIds: [studentId],
+        extractedTopics,
+        additionalTopics: plannedTopics,
+      }));
+    } catch {
+      const groups = getTopicOptionGroups({ extractedTopics, subject: activeSubject, grade: studentContext?.grade });
+      const extractedKeys = new Set(groups.extracted.map((topic) => topic.toLocaleLowerCase()));
+      const manual = [...new Set([...groups.manual, ...plannedTopics.filter((topic) => !extractedKeys.has(topic.toLocaleLowerCase()))])]
+        .sort((left, right) => left.localeCompare(right));
+      setTopicOptions({ ...groups, manual, all: [...new Set([...groups.extracted, ...manual])] });
+    }
   };
 
   useEffect(() => {

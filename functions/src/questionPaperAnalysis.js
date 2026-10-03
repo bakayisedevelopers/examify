@@ -8,6 +8,7 @@ import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { createCanvas } from '@napi-rs/canvas';
 import { PDFDocument } from 'pdf-lib';
 import { getDb, storage, taskQueue } from './admin.js';
+import { mergeGlobalTopicLabels, normalizeGeneratedTopicLabel, normalizeStoredTopicLabel } from './globalTopicCatalog.js';
 import { callKiloVisionWithFallback } from './kilo.js';
 import { callGeminiGenerateContent } from './gemini.js';
 
@@ -153,16 +154,12 @@ const normalizeTopicOption = (value) => String(value ?? '')
   .trim();
 
 const normalizeSuggestedTopic = (value) => {
-  const raw = String(value ?? '').trim();
-  const parts = raw.split('|').map((part) => part.trim());
-  if (raw.length > 180 || parts.length !== 2 || parts.some((part) => !part)) return '';
-  return `${parts[0]} | ${parts[1]}`;
+  return normalizeGeneratedTopicLabel(value);
 };
 
 const sanitizeAnalysisTopicOptions = (value) => (Array.isArray(value) ? value : [])
-  .map((topic) => String(topic ?? '').trim().slice(0, 180))
-  .filter((topic, index, topics) => topic.includes('|') && topics.indexOf(topic) === index)
-  .slice(0, 300);
+  .map(normalizeStoredTopicLabel)
+  .filter((topic, index, topics) => topic && topics.indexOf(topic) === index);
 
 const constrainTopicList = (values, allowedTopics) => {
   const topics = Array.isArray(values) ? values : [];
@@ -569,11 +566,16 @@ const buildMinimalBatchPrompt = ({ paperId, paper, pages, topicOptions = [] }) =
     'For each visible exam question or sub-question, return only these keys in this order: questionReference, parentQuestion, topics, marks, pageNumber, section.',
     'Do not return id, paperId, subject, batchId, instruction, memoSummary, solution, or full question text.',
     ...(topicOptions.length ? [
-      'Use the approved local topic list as the source of truth and choose an exact listed label whenever it accurately covers the question.',
-      'Do not invent a new label when an approved topic fits. Only if none of the approved topics accurately covers the specific question, suggest a new topic using exactly the Child topic | Parent topic structure.',
-      'Keep any new suggestion concise and specific to the question. Return an empty topics array only when the question topic cannot be determined.',
+      'Use the approved Firestore topic list as the source of truth and choose an exact listed label whenever it accurately covers the question.',
+      'Do not invent a new label when an approved topic fits. Only if none of the approved topics accurately covers the specific question, suggest a new topic using exactly the Child | Parent structure.',
+      'Keep both Child and Parent concise and specific: each side must be a topic name of no more than three words, never a sentence. Split compound concepts into separate labels instead of combining them, for example Fractions | Fraction Concepts, Decimals | Decimal Concepts, and Percentages | Percentage Concepts. Use the narrowest useful parent category; split broad parent areas into distinct, precise parent names instead of reusing one catch-all parent.',
+      'Return an empty topics array only when the question topic cannot be determined.',
       `Approved topic labels for ${paper.subject}, ${paper.grade}: ${JSON.stringify(topicOptions)}`,
-    ] : [`Use concise ${paper.subject || 'subject'} topic names in Child topic | Parent topic format. If a question covers multiple topics, include up to three topics.`]),
+    ] : [
+      `Use concise ${paper.subject || 'subject'} topic names in Child | Parent format.`,
+      'Both Child and Parent must be specific topic names of no more than three words each, never sentences. Split combined areas into multiple topics and use the narrowest useful parent categories instead of one broad catch-all parent.',
+      'If a question covers multiple topics, include up to three separate labels.',
+    ]),
     'For pages with no visible questions, return {"topics":[],"questions":[],"summary":"No visible questions"}.',
     'If embedded PDF text is provided, use it as a helper but trust the page visual for scanned pages.',
     ...pages.map((page) => page.text ? `${page.label} page ${page.pageNumber} embedded text: ${page.text.slice(0, 1800)}` : `${page.label} page ${page.pageNumber}: no embedded text found.`),
@@ -619,13 +621,34 @@ export const analyzeQuestionPaper = onDocumentWritten(
       return;
     }
 
+    const db = getDb();
+    const subject = String(paper.subject ?? '').trim();
+    const grade = String(paper.grade ?? '').trim();
+    const gradeTopicsRef = subject && grade && !subject.includes('/') && !grade.includes('/')
+      ? db.collection('subjects').doc(subject).collection('grades').doc(grade)
+      : null;
+    let topicOptions = [];
+    if (gradeTopicsRef) {
+      const gradeTopicsSnapshot = await gradeTopicsRef.get();
+      topicOptions = sanitizeAnalysisTopicOptions(gradeTopicsSnapshot.data()?.topics);
+    }
+    if (!topicOptions.length) {
+      const uploadedSeedTopics = sanitizeAnalysisTopicOptions(paper.analysisTopicOptions);
+      if (uploadedSeedTopics.length && subject && grade) {
+        const merged = await mergeGlobalTopicLabels(db, subject, grade, uploadedSeedTopics);
+        topicOptions = sanitizeAnalysisTopicOptions(merged.topics);
+      } else {
+        topicOptions = uploadedSeedTopics;
+      }
+    }
+
     await runRef.set({
       paperId,
       runId,
       status: 'Queued',
       sourcePaperUrl: paper.paperUrl,
       sourceMemoUrl: paper.memoUrl ?? '',
-      topicOptions: sanitizeAnalysisTopicOptions(paper.analysisTopicOptions),
+      topicOptions,
       requestedRevision: paper.analysisRevision ?? null,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -958,6 +981,13 @@ export const finalizeQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, asyn
       topicOptions: sanitizeAnalysisTopicOptions(active.run.topicOptions),
     });
     if (!await ensureActiveRun({ paperId, runId })) return;
+    const analyzedTopicLabels = [
+      ...analysis.topics,
+      ...analysis.questions.flatMap((question) => question.topics ?? []),
+    ];
+    if (active.paper.subject && active.paper.grade && analyzedTopicLabels.length) {
+      await mergeGlobalTopicLabels(getDb(), active.paper.subject, active.paper.grade, analyzedTopicLabels);
+    }
     const completedAt = new Date();
     await active.runRef.set({
       status: ANALYZED,

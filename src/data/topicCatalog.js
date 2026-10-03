@@ -5,10 +5,14 @@ const makeTopic = (childTopic, aliases = []) => ({ childTopic, aliases: [childTo
 const group = (parentTopic, children) => ({ parentTopic, children: children.map((item) => Array.isArray(item) ? makeTopic(item[0], item[1]) : makeTopic(item)) });
 
 const PRIMARY_MATHS = [
-  group('Numbers', [
+  group('Whole Number Concepts', [
     ['Place value and ordering', ['Whole numbers']], ['Whole-number operations', ['Addition', 'Subtraction', 'Multiplication', 'Division']],
-    'Factors and multiples', 'Common fractions', 'Decimal fractions', 'Percentages', 'Ratio and rate',
+    'Factors and multiples',
   ]),
+  group('Fraction Concepts', ['Common fractions']),
+  group('Decimal Concepts', ['Decimal fractions']),
+  group('Percentage Concepts', ['Percentages']),
+  group('Ratio Concepts', ['Ratio and rate']),
   group('Patterns and Relationships', [['Numeric patterns', ['Number patterns']], 'Geometric patterns', 'Flow diagrams and rules']),
   group('Space and Shape', ['2D shapes', '3D objects', 'Symmetry', 'Position and movement']),
   group('Measurement', ['Length, mass and capacity', 'Time', 'Perimeter and area', 'Volume']),
@@ -16,7 +20,13 @@ const PRIMARY_MATHS = [
 ];
 
 const SENIOR_MATHS = [
-  group('Numbers, Operations and Relationships', ['Integers', 'Fractions, decimals and percentages', 'Ratio and rate', 'Exponents and roots', 'Scientific notation']),
+  group('Integer Concepts', ['Integers']),
+  group('Fraction Concepts', ['Fractions']),
+  group('Decimal Concepts', ['Decimals']),
+  group('Percentage Concepts', ['Percentages']),
+  group('Ratio Concepts', ['Ratio and rate']),
+  group('Exponents and Roots', ['Exponents and roots']),
+  group('Scientific Notation', ['Scientific notation']),
   group('Patterns and Relationships', [
     ['Numeric patterns', ['Numeric and geometric patterns', 'Number patterns']], 'Geometric patterns', 'Input-output rules',
   ]),
@@ -31,6 +41,12 @@ const SENIOR_MATHS = [
 
 const FET_MATHS = [
   group('Algebra', ['Algebraic expressions', 'Equations and inequalities', ['Surds and exponents', ['Exponents']], 'Algebraic fractions']),
+  group('Integer Concepts', ['Integers']),
+  group('Fraction Concepts', ['Fractions']),
+  group('Decimal Concepts', ['Decimals']),
+  group('Percentage Concepts', ['Percentages']),
+  group('Ratio Concepts', ['Ratio and rate']),
+  group('Scientific Notation', ['Scientific notation']),
   group('Number Patterns', [
     ['Arithmetic sequences', ['Number patterns and sequences', 'Sequence', 'Sequences', 'Sequence and series', 'Arithmetic sequence', 'Linear sequence']],
     ['Geometric sequences', ['Geometric sequence']], ['Quadratic sequences', ['Quadratic sequence']],
@@ -573,7 +589,21 @@ export const TOPIC_CATALOG_BY_SUBJECT_GRADE = Object.fromEntries(SUBJECTS.map((s
 ]));
 
 const MATH_ALIAS_TARGETS = [
-  { aliases: ['whole numbers'], childTopic: 'Whole-number operations', parentTopic: 'Numbers', band: 'primary' },
+  { aliases: ['whole numbers'], childTopic: 'Whole-number operations', parentTopic: 'Whole Number Concepts', band: 'primary' },
+  { aliases: ['fractions', 'fraction', 'common fractions'], childTopic: 'Common fractions', parentTopic: 'Fraction Concepts', band: 'primary' },
+  { aliases: ['decimals', 'decimal', 'decimal fractions'], childTopic: 'Decimal fractions', parentTopic: 'Decimal Concepts', band: 'primary' },
+  { aliases: ['percentages', 'percentage'], childTopic: 'Percentages', parentTopic: 'Percentage Concepts', band: 'primary' },
+  { aliases: ['ratio', 'rate', 'ratio and rate'], childTopic: 'Ratio and rate', parentTopic: 'Ratio Concepts', band: 'primary' },
+  { aliases: ['integers', 'integer'], childTopic: 'Integers', parentTopic: 'Integer Concepts', band: 'senior' },
+  { aliases: ['fractions', 'fraction', 'common fractions'], childTopic: 'Fractions', parentTopic: 'Fraction Concepts', band: 'senior' },
+  { aliases: ['decimals', 'decimal', 'decimal fractions'], childTopic: 'Decimals', parentTopic: 'Decimal Concepts', band: 'senior' },
+  { aliases: ['percentages', 'percentage'], childTopic: 'Percentages', parentTopic: 'Percentage Concepts', band: 'senior' },
+  { aliases: ['ratio', 'rate', 'ratio and rate'], childTopic: 'Ratio and rate', parentTopic: 'Ratio Concepts', band: 'senior' },
+  { aliases: ['integers', 'integer'], childTopic: 'Integers', parentTopic: 'Integer Concepts', band: 'fet' },
+  { aliases: ['fractions', 'fraction', 'common fractions'], childTopic: 'Fractions', parentTopic: 'Fraction Concepts', band: 'fet' },
+  { aliases: ['decimals', 'decimal', 'decimal fractions'], childTopic: 'Decimals', parentTopic: 'Decimal Concepts', band: 'fet' },
+  { aliases: ['percentages', 'percentage'], childTopic: 'Percentages', parentTopic: 'Percentage Concepts', band: 'fet' },
+  { aliases: ['ratio', 'rate', 'ratio and rate'], childTopic: 'Ratio and rate', parentTopic: 'Ratio Concepts', band: 'fet' },
   { aliases: ['number patterns', 'numeric and geometric patterns'], childTopic: 'Numeric patterns', parentTopic: 'Patterns and Relationships', band: 'senior' },
   { aliases: ['number patterns', 'number patterns and sequences', 'sequence', 'sequences', 'sequence and series', 'linear sequence', 'arithmetic sequence'], childTopic: 'Arithmetic sequences', parentTopic: 'Number Patterns', band: 'fet' },
   { aliases: ['geometric sequence', 'geometric sequences'], childTopic: 'Geometric sequences', parentTopic: 'Number Patterns', band: 'fet' },
@@ -668,6 +698,13 @@ export const getTopicCatalog = ({ subject, grade } = {}) => {
 
 export const getHardcodedTopics = ({ subject, grade } = {}) =>
   getTopicCatalog({ subject, grade }).map((entry) => entry.canonicalLabel);
+
+export const getGlobalTopicCatalogSeed = () => Object.entries(TOPIC_CATALOG_BY_SUBJECT_GRADE)
+  .flatMap(([subject, grades]) => Object.entries(grades).map(([grade, entries]) => ({
+    subject,
+    grade,
+    topics: entries.map((entry) => entry.canonicalLabel),
+  })));
 
 const resolvePhysicalSciencesTextRule = ({ rawKey, grade, catalog }) => {
   const rules = grade === 'Grade 10' ? PHYSICAL_SCIENCES_GRADE_10_TEXT_RULES : PHYSICAL_SCIENCES_GRADE_11_TEXT_RULES;

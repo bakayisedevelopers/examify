@@ -1,11 +1,12 @@
-import { getTopicCatalog, normalizeTopicKey, resolveTopic } from '../data/topicCatalog.js';
+import { normalizeTopicKey } from '../data/topicCatalog.js';
 
 const isStructuredTopicLabel = (value) => {
   const parts = String(value ?? '').split('|').map((part) => part.trim());
-  return parts.length === 2 && parts.every(Boolean) && String(value).length <= 180;
+  return parts.length === 2 && parts.every((part) => part && part.split(/\s+/).length <= 3 && !/[.!?;,:]/.test(part)) && String(value).length <= 180;
 };
 
-export const buildTopicResolverRows = (records = [], savedMappings = []) => {
+export const buildTopicResolverRows = (records = [], savedMappings = [], catalogTopics = []) => {
+  const canonicalByKey = new Map(catalogTopics.map((topic) => [normalizeTopicKey(topic), topic]));
   const grouped = new Map();
   const savedBySource = new Map(savedMappings.map((mapping) => [
     [mapping.subject, mapping.grade, normalizeTopicKey(mapping.sourceTopic)].join('::'),
@@ -36,18 +37,17 @@ export const buildTopicResolverRows = (records = [], savedMappings = []) => {
 
   return [...grouped.values()]
     .map((row) => {
-      const suggestion = resolveTopic({ topic: row.sourceTopic, subject: row.subject, grade: row.grade });
+      const catalogMatch = canonicalByKey.get(normalizeTopicKey(row.sourceTopic));
       const savedMapping = savedBySource.get(row.id);
       const savedTopic = savedMapping?.canonicalTopic;
-      const savedIsCurrent = savedTopic && getTopicCatalog({ subject: row.subject, grade: row.grade })
-        .some((topic) => topic.canonicalLabel === savedTopic);
+      const savedIsCurrent = savedTopic && canonicalByKey.has(normalizeTopicKey(savedTopic));
       const savedIsSuggestion = !savedIsCurrent && savedMapping?.resolutionType === 'suggested' && isStructuredTopicLabel(savedTopic);
       return {
         ...row,
         sources: [...row.sources].sort(),
-        suggestedTopic: savedIsCurrent ? savedTopic : suggestion?.canonicalLabel ?? (savedIsSuggestion ? savedTopic : ''),
-        matchType: savedIsCurrent ? 'saved' : suggestion?.matchType ?? (savedIsSuggestion ? 'saved-suggestion' : 'unmapped'),
-        isSaved: Boolean(savedIsCurrent || (!suggestion && savedIsSuggestion)),
+        suggestedTopic: savedIsCurrent ? canonicalByKey.get(normalizeTopicKey(savedTopic)) : catalogMatch ?? (savedIsSuggestion ? savedTopic : ''),
+        matchType: savedIsCurrent ? 'saved' : catalogMatch ? 'catalog' : (savedIsSuggestion ? 'saved-suggestion' : 'unmapped'),
+        isSaved: Boolean(savedIsCurrent || (!catalogMatch && savedIsSuggestion)),
       };
     })
     .sort((left, right) => left.subject.localeCompare(right.subject)

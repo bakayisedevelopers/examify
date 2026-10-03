@@ -208,6 +208,14 @@ service cloud.firestore {
       allow write: if isAdmin() || (signedIn() && profile(request.auth.uid).role in ['tutor', 'teacher']);
       match /{document=**} { allow read: if signedIn(); allow write: if false; }
     }
+    match /subjects/{subjectName} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+      match /grades/{gradeName} {
+        allow read: if signedIn();
+        allow write: if isAdmin();
+      }
+    }
     match /topicResolverMappings/{mappingId} { allow read, write: if isAdmin(); }
     match /settings/{settingId} { allow read: if signedIn(); allow write: if isAdmin(); }
     match /{document=**} { allow read, write: if false; }

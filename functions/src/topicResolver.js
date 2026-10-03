@@ -1,11 +1,11 @@
 import { logger } from 'firebase-functions';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { getDb } from './admin.js';
+import { normalizeGeneratedTopicLabel, normalizeStoredTopicLabel } from './globalTopicCatalog.js';
 import { callGeminiGenerateContent } from './gemini.js';
 
 const MODEL = 'gemini-3.5-flash-lite';
 const MAX_SOURCE_TOPICS = 25;
-const MAX_ALLOWED_TOPICS = 300;
 const MAX_GEMINI_ATTEMPTS = 2;
 
 const normalizeLabel = (value) => String(value ?? '')
@@ -18,10 +18,7 @@ const normalizeLabel = (value) => String(value ?? '')
   .trim();
 
 const normalizeSuggestedTopic = (value) => {
-  const raw = String(value ?? '').trim();
-  const parts = raw.split('|').map((part) => part.trim());
-  if (raw.length > 180 || parts.length !== 2 || parts.some((part) => !part)) return '';
-  return `${parts[0]} | ${parts[1]}`;
+  return normalizeGeneratedTopicLabel(value);
 };
 
 const parseTopicArray = (value = '') => {
@@ -51,23 +48,24 @@ export const resolveTopicsWithGemini = onCall({ timeoutSeconds: 240, memory: '25
   const topics = Array.isArray(request.data?.topics)
     ? request.data.topics.map((topic) => String(topic ?? '').trim().slice(0, 160))
     : [];
-  const allowedTopics = Array.isArray(request.data?.allowedTopics)
-    ? [...new Set(request.data.allowedTopics.map((topic) => String(topic ?? '').trim().slice(0, 180)).filter(Boolean))]
-    : [];
-
   if (!subject || !grade || !topics.length || topics.length > MAX_SOURCE_TOPICS || topics.some((topic) => !topic)) {
     throw new HttpsError('invalid-argument', `Provide a subject, grade, and 1-${MAX_SOURCE_TOPICS} source topics.`);
   }
-  if (!allowedTopics.length || allowedTopics.length > MAX_ALLOWED_TOPICS || allowedTopics.some((topic) => !topic.includes('|'))) {
-    throw new HttpsError('invalid-argument', 'The frontend topic catalog is missing or invalid.');
+  if (subject.includes('/') || grade.includes('/')) {
+    throw new HttpsError('invalid-argument', 'Subject and grade must be valid topic catalog IDs.');
   }
 
+  const topicSnapshot = await getDb().collection('subjects').doc(subject).collection('grades').doc(grade).get();
+  const allowedTopics = [...new Set((Array.isArray(topicSnapshot.data()?.topics) ? topicSnapshot.data().topics : [])
+    .map(normalizeStoredTopicLabel)
+    .filter(Boolean))];
   const allowedByKey = new Map(allowedTopics.map((topic) => [normalizeLabel(topic), topic]));
   const prompt = [
-    'Resolve each source topic label against the supplied canonical topic list first.',
+    'Resolve each source topic label against the supplied Firestore topic list first. If the list is empty or has no accurate match, suggest a new topic.',
     `Subject: ${subject}. Grade: ${grade}.`,
     'If a supplied topic fits, return that exact label.',
-    'Only when none of the supplied topics fits, suggest a new concise topic in exactly this structure: Child topic | Parent topic. Base it on the source label and subject; do not search for topics.',
+    'Only when none of the supplied topics fits, suggest a new concise label exactly in this structure: Child | Parent. Base it on the source label and subject; do not search for topics.',
+    'Child and Parent must each be a specific topic name of no more than three words, never a sentence. Split compound concepts into separate labels. Use the narrowest useful parent category and create distinct precise parent names instead of using one broad catch-all parent. For example, use Fractions | Fraction Concepts, Decimals | Decimal Concepts, or Percentages | Percentage Concepts when those concepts are separate.',
     'Do not invent a replacement when a supplied topic fits. Return an empty string only when the source label is too unclear to resolve or suggest.',
     'Return only a JSON array with one string per source topic in the same order. No explanation or object wrapper.',
     `Allowed topics:\n${JSON.stringify(allowedTopics)}`,

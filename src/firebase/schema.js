@@ -1,5 +1,6 @@
 export const collections = {
   users: 'users',
+  globalSubjects: 'subjects',
   questionPapers: 'questionPapers',
   topicResolverMappings: 'topicResolverMappings',
   settings: 'settings',
@@ -28,6 +29,9 @@ export const subcollections = {
 
 export const paths = {
   user: (uid) => `users/${uid}`,
+  globalSubject: (subjectName) => `subjects/${subjectName}`,
+  globalSubjectGrades: (subjectName) => `subjects/${subjectName}/grades`,
+  globalGrade: (subjectName, gradeName) => `subjects/${subjectName}/grades/${gradeName}`,
   studentSubjects: (studentId) => `users/${studentId}/subjects`,
   studentSubject: (studentId, subjectInstanceId) => `users/${studentId}/subjects/${subjectInstanceId}`,
   subjectTopics: (studentId, subjectInstanceId) => `users/${studentId}/subjects/${subjectInstanceId}/topics`,
