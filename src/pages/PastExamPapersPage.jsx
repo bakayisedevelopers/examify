@@ -845,8 +845,8 @@ export const PastExamPapersPage = () => {
         </div>
       ) : null}
       {role === ROLES.ADMIN && topicResolverOpen ? (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-hidden bg-slate-950/70 p-3 md:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !topicResolverLoading && !topicResolverGeminiLoading && !topicResolverSaveLoading) setTopicResolverOpen(false); }}>
-          <section className="panel flex h-full max-h-[calc(100dvh-1.5rem)] min-h-0 w-full max-w-7xl flex-col overflow-hidden border-slate-700 bg-slate-900 p-4 md:max-h-[calc(100dvh-3rem)] md:p-6" role="dialog" aria-modal="true" aria-labelledby="topic-resolver-title">
+        <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-y-auto overscroll-contain bg-slate-950/70 p-3 md:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !topicResolverLoading && !topicResolverGeminiLoading && !topicResolverSaveLoading) setTopicResolverOpen(false); }}>
+          <section className="panel flex h-[calc(100dvh-1.5rem)] max-h-[calc(100dvh-1.5rem)] min-h-0 w-full max-w-7xl flex-col overflow-hidden border-slate-700 bg-slate-900 p-4 md:h-[calc(100dvh-3rem)] md:max-h-[calc(100dvh-3rem)] md:p-6" role="dialog" aria-modal="true" aria-labelledby="topic-resolver-title">
             <div className="flex shrink-0 items-start justify-between gap-4">
               <div className="min-w-0">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-lime-400">Admin review</p>
@@ -856,7 +856,8 @@ export const PastExamPapersPage = () => {
               <button type="button" className="btn-secondary h-10 w-10 flex-none p-0" aria-label="Close topic resolver" title="Close" onClick={() => setTopicResolverOpen(false)} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading}><X className="mx-auto h-4 w-4" /></button>
             </div>
 
-            <div className="mt-5 grid shrink-0 gap-3 md:grid-cols-[1fr_1fr_auto]">
+            <div className="topic-resolver-scroll mt-5 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2" aria-label="Topic resolver results and controls" tabIndex={0}>
+            <div className="grid shrink-0 gap-3 md:grid-cols-[1fr_1fr_auto]">
               <label className="grid gap-2 text-sm font-semibold text-slate-200">Subject
                 <select className="input" value={topicResolverSubject} onChange={(event) => { setTopicResolverSubject(event.target.value); setTopicResolverRows([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading}>
                   <option value="">Choose subject</option>
@@ -893,8 +894,7 @@ export const PastExamPapersPage = () => {
             {topicResolverStatus ? <p className="mt-3 shrink-0 text-sm text-slate-300" role="status">{topicResolverStatus}</p> : null}
 
             {topicResolverRows.length ? (
-              <div className="mt-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-slate-700">
-                <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
+              <div className="topic-resolver-table-scroll mt-4 overflow-x-auto rounded-lg border border-slate-700">
                   <table className="min-w-[1050px] border-collapse text-left text-sm">
                     <thead className="sticky top-0 bg-slate-800 text-xs uppercase text-slate-300">
                       <tr>
@@ -931,9 +931,9 @@ export const PastExamPapersPage = () => {
                       {!visibleTopicResolverRows.length ? <tr><td colSpan="6" className="px-3 py-8 text-center text-slate-400">No topic names match that search.</td></tr> : null}
                     </tbody>
                   </table>
-                </div>
               </div>
             ) : null}
+            </div>
             <div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-700 pt-4">
               <label className="flex items-start gap-2 text-xs text-slate-300">
                 <input type="checkbox" checked={topicResolverReviewed} onChange={(event) => setTopicResolverReviewed(event.target.checked)} disabled={Boolean(unresolvedTopicRows.length) || topicResolverGeminiLoading || topicResolverSaveLoading} />

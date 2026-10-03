@@ -42,6 +42,33 @@ body {
   -ms-overflow-style: none;
 }
 
+.topic-resolver-scroll,
+.topic-resolver-table-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #84cc16 #1e293b;
+  -ms-overflow-style: auto;
+}
+
+.topic-resolver-scroll::-webkit-scrollbar,
+.topic-resolver-table-scroll::-webkit-scrollbar {
+  display: block;
+  width: 10px;
+  height: 10px;
+}
+
+.topic-resolver-scroll::-webkit-scrollbar-track,
+.topic-resolver-table-scroll::-webkit-scrollbar-track {
+  border-radius: 9999px;
+  background: #1e293b;
+}
+
+.topic-resolver-scroll::-webkit-scrollbar-thumb,
+.topic-resolver-table-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid #1e293b;
+  border-radius: 9999px;
+  background: #84cc16;
+}
+
 @layer components {
   .panel {
     @apply rounded-2xl border border-slate-800/80 bg-slate-900/85 text-slate-100 shadow-[0_4px_25px_rgba(0,0,0,0.45)] backdrop-blur;
