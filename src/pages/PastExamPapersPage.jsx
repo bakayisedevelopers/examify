@@ -397,10 +397,18 @@ export const PastExamPapersPage = () => {
       setTopicResolverCorrections({});
       setTopicResolverMethods({});
       setTopicResolverReviewed(true);
+      setTopicResolverCatalog((current) => [...new Set([
+        ...current,
+        ...mappings.map((mapping) => String(mapping.canonicalTopic ?? '').trim().replace(/\s*\|\s*/g, ' | ')),
+      ].filter(Boolean))].sort((left, right) => left.localeCompare(right)));
       const savedSuggestionCount = mappings.filter((mapping) => mapping.resolutionType === 'suggested').length;
-      setTopicResolverStatus(savedSuggestionCount
+      const savedMessage = savedSuggestionCount
         ? `Saved ${result.savedCount} reviewed mapping${result.savedCount === 1 ? '' : 's'} for ${topicResolverSubject}, ${topicResolverGrade}, including ${savedSuggestionCount} accepted Google Gemini suggestion${savedSuggestionCount === 1 ? '' : 's'}.`
-        : `Saved ${result.savedCount} reviewed topic mapping${result.savedCount === 1 ? '' : 's'} for ${topicResolverSubject}, ${topicResolverGrade}.`);
+        : `Saved ${result.savedCount} reviewed topic mapping${result.savedCount === 1 ? '' : 's'} for ${topicResolverSubject}, ${topicResolverGrade}.`;
+      const catalogMessage = result.globalCatalogSynced
+        ? ` Synced ${result.syncedTopicCount} distinct resolved topic${result.syncedTopicCount === 1 ? '' : 's'} to the global grade list; ${result.addedGlobalTopicCount} were newly added and duplicates were skipped.`
+        : '';
+      setTopicResolverStatus(`${savedMessage}${catalogMessage} Analyzed paper records were left unchanged.`);
     } catch (error) {
       setTopicResolverStatus(error.message || 'Could not save the topic mappings.');
     } finally {
@@ -877,7 +885,7 @@ export const PastExamPapersPage = () => {
               <div className="min-w-0">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-lime-400">Admin review</p>
                 <h2 id="topic-resolver-title" className="mt-2 text-xl font-bold text-white md:text-2xl">Topic resolver preview</h2>
-                <p className="mt-2 max-w-3xl text-sm text-slate-300">Review Firestore topic matches and Google Gemini suggestions for one subject and grade. When the catalog has no fit, Gemini may suggest a concise Child | Parent label. New suggestions enter the catalog only when you save the reviewed mappings.</p>
+                <p className="mt-2 max-w-3xl text-sm text-slate-300">Review Firestore topic matches and Google Gemini suggestions for one subject and grade. Saving reviewed mappings also copies each distinct resolved Child | Parent label into that grade’s global topic list. Duplicate labels are skipped; analyzed paper records are not changed.</p>
               </div>
               <button type="button" className="btn-secondary h-10 w-10 flex-none p-0" aria-label="Close topic resolver" title="Close" onClick={() => setTopicResolverOpen(false)} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading}><X className="mx-auto h-4 w-4" /></button>
             </div>
@@ -989,7 +997,7 @@ export const PastExamPapersPage = () => {
                 <button type="button" className="btn-secondary" onClick={() => { setTopicResolverRows([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); setTopicResolverSearch(''); setTopicResolverStatus('Select a subject and grade to search.'); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading}>Clear results</button>
                 <button type="button" className="btn-primary inline-flex items-center justify-center gap-2" onClick={saveReviewedTopicMappings} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || !topicResolverRows.length || unresolvedTopicRows.length > 0 || !topicResolverReviewed}>
                   {topicResolverSaveLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                  Save mappings
+                  Save mappings & sync topics
                 </button>
               </div>
             </div>

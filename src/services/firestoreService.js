@@ -2157,35 +2157,43 @@ export const saveTopicResolverMappings = async ({ subject, grade, rows = [], adm
       resolutionType: isAllowedTopic ? 'canonical' : resolutionType,
     });
   });
-  if (!isFirebaseConfigured) return { savedCount: uniqueRows.size };
+  if (!isFirebaseConfigured) {
+    return { savedCount: uniqueRows.size, syncedTopicCount: 0, addedGlobalTopicCount: 0, globalCatalogSynced: false };
+  }
 
   ensureDb();
   const entries = [...uniqueRows.values()];
-  const acceptedSuggestions = [...new Set(entries
-    .filter((entry) => entry.resolutionType === 'suggested' && !allowedTopics.has(entry.canonicalTopic))
-    .map((entry) => entry.canonicalTopic))];
-  if (acceptedSuggestions.length) {
-    const subjectRef = doc(db, paths.globalSubject(subject));
-    const gradeRef = doc(db, paths.globalGrade(subject, grade));
-    await setDoc(subjectRef, { subjectName: subject, updatedAt: serverTimestamp() }, { merge: true });
-    await runTransaction(db, async (transaction) => {
-      const gradeSnapshot = await transaction.get(gradeRef);
-      const existingTopics = Array.isArray(gradeSnapshot.data()?.topics) ? gradeSnapshot.data().topics : [];
-      const combined = [...existingTopics, ...acceptedSuggestions];
-      const byKey = new Map();
-      combined.forEach((topic) => {
-        const label = String(topic ?? '').trim().replace(/\s*\|\s*/g, ' | ');
-        const key = normalizeCatalogTopicKey(label);
-        if (label.split('|').length === 2 && key && !byKey.has(key)) byKey.set(key, label);
-      });
-      transaction.set(gradeRef, {
-        subjectName: subject,
-        gradeName: grade,
-        topics: [...byKey.values()],
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
+  const topicsToSync = new Map();
+  entries.forEach(({ canonicalTopic }) => {
+    const label = String(canonicalTopic ?? '').trim().replace(/\s*\|\s*/g, ' | ');
+    const key = normalizeCatalogTopicKey(label);
+    if (label.split('|').length === 2 && key && !topicsToSync.has(key)) topicsToSync.set(key, label);
+  });
+  const subjectRef = doc(db, paths.globalSubject(subject));
+  const gradeRef = doc(db, paths.globalGrade(subject, grade));
+  await setDoc(subjectRef, { subjectName: subject, updatedAt: serverTimestamp() }, { merge: true });
+  const catalogResult = await runTransaction(db, async (transaction) => {
+    const gradeSnapshot = await transaction.get(gradeRef);
+    const existingTopics = Array.isArray(gradeSnapshot.data()?.topics) ? gradeSnapshot.data().topics : [];
+    const existingKeys = new Set();
+    const byKey = new Map();
+    [...existingTopics, ...topicsToSync.values()].forEach((topic) => {
+      const label = String(topic ?? '').trim().replace(/\s*\|\s*/g, ' | ');
+      const key = normalizeCatalogTopicKey(label);
+      if (label.split('|').length !== 2 || !key) return;
+      if (existingTopics.includes(topic)) existingKeys.add(key);
+      if (!byKey.has(key)) byKey.set(key, label);
     });
-  }
+    const topics = [...byKey.values()];
+    const addedGlobalTopicCount = [...topicsToSync.keys()].filter((key) => !existingKeys.has(key)).length;
+    transaction.set(gradeRef, {
+      subjectName: subject,
+      gradeName: grade,
+      topics,
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+    return { addedGlobalTopicCount, syncedTopicCount: topicsToSync.size };
+  });
   let savedCount = 0;
   for (let offset = 0; offset < entries.length; offset += 400) {
     const batch = writeBatch(db);
@@ -2205,7 +2213,7 @@ export const saveTopicResolverMappings = async ({ subject, grade, rows = [], adm
     });
     await batch.commit();
   }
-  return { savedCount };
+  return { savedCount, ...catalogResult, globalCatalogSynced: true };
 };
 
 export const resolveTopicsWithGemini = async ({ subject, grade, topics = [] } = {}) => {
