@@ -28,7 +28,7 @@ export const SOUTH_AFRICAN_GRADES = [
 
 export const PAPER_MONTHS = ['March', 'June', 'September', 'December'];
 
-export const PAPER_NUMBERS = ['Paper 1', 'Paper 2', 'Paper 3', 'Paper 4', 'Other'];
+export const PAPER_NUMBERS = ['Paper 1', 'Paper 2', 'Paper 3', 'Paper 4', 'Examplar'];
 
 export const REGIONS = [
   'National',

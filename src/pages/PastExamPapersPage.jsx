@@ -49,12 +49,17 @@ const overlapScore = (leftFile, rightFile) => {
 const inferMetadataFromName = (file, profile) => {
   const name = file?.name ?? '';
   const lower = name.toLowerCase();
+  const filenameWords = lower.replace(/[^a-z0-9]+/g, ' ');
   const year = Number(lower.match(/\b(20\d{2}|19\d{2})\b/)?.[1]) || new Date().getFullYear();
   const month = PAPER_MONTHS.find((item) => lower.includes(item.toLowerCase())) ?? PAPER_MONTHS[0];
-  const paperNumber = PAPER_NUMBERS.find((item) => {
+  const examplarDetected = /\b(?:examplar|exemplar)(?=\b|[0-9])/i.test(filenameWords);
+  const detectedPaperNumber = PAPER_NUMBERS.find((item) => {
     const number = item.match(/\d/)?.[0];
     return number && new RegExp(`(?:paper|p|paper\\s*)\\s*${number}|${number}[^0-9]*paper`, 'i').test(name);
-  }) ?? PAPER_NUMBERS[0];
+  });
+  const paperNumber = examplarDetected
+    ? 'Examplar'
+    : detectedPaperNumber ?? PAPER_NUMBERS[0];
   const subject = SUBJECTS.find((item) => lower.includes(item.toLowerCase().replace(/\s+/g, ' '))) ?? DEFAULT_SUBJECT;
   const grade = SOUTH_AFRICAN_GRADES.find((item) => item !== 'Select Grade' && lower.includes(item.toLowerCase())) ?? profile?.grade ?? SOUTH_AFRICAN_GRADES[0];
   const region = REGIONS.find((item) => lower.includes(item.toLowerCase())) ?? profile?.province ?? REGIONS[0];
@@ -1007,7 +1012,10 @@ const UploadFields = ({ value, onChange, subjects, compact = false }) => (
     <label><span className="label">Region</span><select className="input" value={value.region} onChange={(event) => onChange({ region: event.target.value })}>{REGIONS.map((region) => <option key={region}>{region}</option>)}</select></label>
     <label><span className="label">Year</span><input type="number" min="2000" max="2100" className="input" value={value.year} onChange={(event) => onChange({ year: event.target.value })} /></label>
     <label><span className="label">Month</span><select className="input" value={value.month} onChange={(event) => onChange({ month: event.target.value })}>{PAPER_MONTHS.map((month) => <option key={month}>{month}</option>)}</select></label>
-    <label><span className="label">Paper number</span><select className="input" value={value.paperNumber} onChange={(event) => onChange({ paperNumber: event.target.value })}>{PAPER_NUMBERS.map((paperNumber) => <option key={paperNumber}>{paperNumber}</option>)}</select></label>
+    <label><span className="label">Paper number</span><select className="input" value={value.paperNumber} onChange={(event) => onChange({ paperNumber: event.target.value })}>
+      {value.paperNumber && !PAPER_NUMBERS.includes(value.paperNumber) ? <option value={value.paperNumber}>{value.paperNumber} (existing record)</option> : null}
+      {PAPER_NUMBERS.map((paperNumber) => <option key={paperNumber}>{paperNumber}</option>)}
+    </select></label>
     {!compact ? <label className="md:col-span-2"><span className="label">Notes</span><textarea className="input min-h-24" value={value.notes} onChange={(event) => onChange({ notes: event.target.value })} /></label> : <label className="md:col-span-3"><span className="label">Notes</span><input className="input" value={value.notes} onChange={(event) => onChange({ notes: event.target.value })} /></label>}
   </>
 );
