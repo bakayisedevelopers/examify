@@ -166,6 +166,11 @@ export const PastExamPapersPage = () => {
   const [bulkRows, setBulkRows] = useState([]);
   const [bulkMemoFiles, setBulkMemoFiles] = useState([]);
   const [filters, setFilters] = useState({ subject: 'all', year: 'all' });
+  const [adminPaperFilters, setAdminPaperFilters] = useState({
+    analyzing: { search: '', subject: 'all', year: 'all' },
+    analyzed: { search: '', subject: 'all', year: 'all' },
+    failed: { search: '', subject: 'all', year: 'all' },
+  });
   const [studentFilterOverrides, setStudentFilterOverrides] = useState({});
   const [searchTerm, setSearchTerm] = useState('');
   const [editingPaper, setEditingPaper] = useState(null);
@@ -264,6 +269,24 @@ export const PastExamPapersPage = () => {
       .filter((paper) => filters.subject === 'all' || paper.subject === filters.subject)
       .filter((paper) => filters.year === 'all' || String(paper.year) === String(filters.year));
   }, [papers, role, visibleSubjects, filters, isStudentExploring, studentSubjects, studentGrade, studentFilterOverrides, searchTerm]);
+  const adminPaperGroups = useMemo(() => {
+    const groups = { analyzing: [], analyzed: [], failed: [] };
+    const orderedPapers = [...papers].sort((left, right) =>
+      Number(getPaperField(right, 'year') || 0) - Number(getPaperField(left, 'year') || 0) ||
+      getPaperDateValue(right.createdAt) - getPaperDateValue(left.createdAt));
+
+    orderedPapers.forEach((paper) => {
+      const status = paper.analysisStatus;
+      const group = status === 'Failed' || status === 'Cancelled'
+        ? 'failed'
+        : status === 'Analyzed' || (!status && paper.availableForGeneration)
+          ? 'analyzed'
+          : 'analyzing';
+      groups[group].push(paper);
+    });
+
+    return groups;
+  }, [papers]);
   const years = useMemo(() => [...new Set(papers.map((paper) => getPaperField(paper, 'year')).filter(Boolean))].sort((a, b) => Number(b) - Number(a)), [papers]);
   const grades = useMemo(() => [...new Set([
     ...SOUTH_AFRICAN_GRADES.filter((grade) => grade !== 'Select Grade'),
@@ -282,6 +305,10 @@ export const PastExamPapersPage = () => {
     setSearchTerm('');
     setStudentFilterOverrides({});
   };
+  const updateAdminPaperFilter = (group, field, value) => setAdminPaperFilters((current) => ({
+    ...current,
+    [group]: { ...current[group], [field]: value },
+  }));
 
   const searchTopicResolver = async () => {
     if (!topicResolverSubject || !topicResolverGrade) {
@@ -643,6 +670,62 @@ export const PastExamPapersPage = () => {
     }
   };
 
+  const renderPaperCard = (paper) => (
+    <div key={paper.id}>
+      {role === ROLES.STUDENT ? (
+        <div className="panel p-3 md:hidden">
+          <div className="flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <h3 className="break-words text-sm font-semibold text-slate-950">{getPaperTitle(paper)}</h3>
+              <span className="mt-2 inline-flex max-w-full truncate rounded-full border border-lime-400/20 bg-lime-400/10 px-2.5 py-1 text-xs font-medium text-lime-300">{getPaperField(paper, 'subject') || 'Subject not listed'}</span>
+            </div>
+            <span className="flex h-10 w-8 flex-none items-center justify-center">
+              <MobilePaperAnalysisIndicator paper={paper} />
+            </span>
+            <button
+              type="button"
+              className="btn-secondary h-10 w-10 flex-none p-0"
+              aria-label={`${expandedPaperIds[paper.id] ? 'Hide' : 'Show'} ${paper.displayName || 'paper'} details`}
+              aria-expanded={Boolean(expandedPaperIds[paper.id])}
+              title={expandedPaperIds[paper.id] ? 'Hide paper details' : 'Show paper details'}
+              onClick={() => setExpandedPaperIds((current) => ({ ...current, [paper.id]: !current[paper.id] }))}
+            >
+              <ChevronDown className={`mx-auto h-4 w-4 transition-transform ${expandedPaperIds[paper.id] ? 'rotate-180' : ''}`} aria-hidden="true" />
+            </button>
+          </div>
+          {expandedPaperIds[paper.id] ? (
+            <div className="mt-3 border-t border-slate-200 pt-3">
+              <p className="text-xs text-slate-600">{getPaperField(paper, 'grade') || 'Grade not listed'} • {getPaperField(paper, 'region') || 'Region not listed'} • {getPaperField(paper, 'month')} {getPaperField(paper, 'year')} • {getPaperField(paper, 'paperNumber') || 'Paper 1'}</p>
+              {paper.notes ? <p className="mt-2 text-sm text-slate-600">{paper.notes}</p> : null}
+              <div className="mt-3 flex flex-wrap gap-2">
+                {paper.paperUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Paper</Link> : null}
+                {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-sm text-slate-500">No memo uploaded</span>}
+              </div>
+              <PaperAnalysisStatus paper={paper} />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <div className={`${role === ROLES.STUDENT ? 'hidden md:block ' : ''}panel p-5`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-950">{paper.displayName || getPaperTitle(paper)}</h3>
+            <p className="mt-1 text-sm text-slate-500">{paper.region} • {paper.month} {paper.year} • {paper.paperNumber ?? 'Paper 1'}</p>
+          </div>
+          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.25em] text-slate-600">{paper.subject}</span>
+        </div>
+        <PaperAnalysisStatus paper={paper} />
+        <div className="mt-4 flex flex-wrap gap-3 text-sm">
+          <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Open paper</Link>
+          {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Open memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-slate-500">No memo uploaded</span>}
+          {canManagePaperAnalysis(role) ? <button type="button" className="btn-secondary" onClick={() => startEditPaper(paper)}>Edit</button> : null}
+          {canManagePaperAnalysis(role) && canQueuePaperAnalysis(paper) ? <button type="button" className="btn-primary" onClick={() => queuePaperReanalysis(paper)}>{reanalysisButtonLabel(paper)}</button> : null}
+          {canManagePaperAnalysis(role) && canStopPaperAnalysis(paper) ? <button type="button" className="btn-secondary text-rose-700 hover:text-rose-800" onClick={() => stopPaperAnalysis(paper).catch((error) => setStatus(error.message || 'Could not stop analysis.'))}>Stop analysis</button> : null}
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <AppShell title="Past exam papers" subtitle={canManagePaperAnalysis(role) ? 'Browse, upload, and manage question papers for analysis.' : 'Browse question papers and memoranda for your subjects.'} role={role} user={profile} onLogout={logout}>
       <SectionHeader
@@ -652,7 +735,9 @@ export const PastExamPapersPage = () => {
           ? isStudentExploring
             ? 'Search and filter all Examifying question papers.'
             : 'Showing recent papers for your grade and subjects. Search or filter to explore the full Examifying collection.'
-          : 'The list is scoped to your subjects. Use filters to narrow by subject or year.'}
+          : role === ROLES.ADMIN
+            ? 'Review papers grouped by analysis status. Each section has separate filters.'
+            : 'The list is scoped to your subjects. Use filters to narrow by subject or year.'}
       />
       {role === ROLES.STUDENT ? (
         <div className="panel grid gap-3 p-4">
@@ -704,7 +789,7 @@ export const PastExamPapersPage = () => {
             </div>
           ) : null}
         </div>
-      ) : (
+      ) : role !== ROLES.ADMIN ? (
         <div className="panel grid gap-3 p-4 md:grid-cols-2">
           <select className="input" value={filters.subject} onChange={(event) => setFilters((current) => ({ ...current, subject: event.target.value }))}>
             <option value="all">All subjects</option>
@@ -715,67 +800,82 @@ export const PastExamPapersPage = () => {
             {years.map((year) => <option key={year} value={year}>{year}</option>)}
           </select>
         </div>
-      )}
+      ) : null}
       {role === ROLES.STUDENT && !isStudentExploring ? <p className="text-xs text-slate-500">Showing up to 20 recent papers. Search or select a filter to browse all matching results.</p> : null}
 
-      <div className="space-y-4">
-        {visiblePapers.map((paper) => (
-          <div key={paper.id}>
-            {role === ROLES.STUDENT ? (
-              <div className="panel p-3 md:hidden">
-                <div className="flex items-start gap-3">
-                  <div className="min-w-0 flex-1">
-                    <h3 className="break-words text-sm font-semibold text-slate-950">{getPaperTitle(paper)}</h3>
-                    <span className="mt-2 inline-flex max-w-full truncate rounded-full border border-lime-400/20 bg-lime-400/10 px-2.5 py-1 text-xs font-medium text-lime-300">{getPaperField(paper, 'subject') || 'Subject not listed'}</span>
-                  </div>
-                  <span className="flex h-10 w-8 flex-none items-center justify-center">
-                    <MobilePaperAnalysisIndicator paper={paper} />
+      {role === ROLES.ADMIN ? (
+        <div className="space-y-4">
+          {[
+            { key: 'analyzing', title: 'Analyzing', emptyMessage: 'No papers are currently analyzing.' },
+            { key: 'analyzed', title: 'Analyzed', emptyMessage: 'No completed paper analyses.' },
+            { key: 'failed', title: 'Failed', emptyMessage: 'No failed or cancelled paper analyses.' },
+          ].map(({ key, title, emptyMessage }) => {
+            const sectionPapers = adminPaperGroups[key];
+            const sectionFilter = adminPaperFilters[key];
+            const sectionSubjects = [...new Set([
+              ...visibleSubjects,
+              ...sectionPapers.map((paper) => getPaperField(paper, 'subject')).filter(Boolean),
+            ])].sort((left, right) => left.localeCompare(right));
+            const sectionYears = [...new Set(sectionPapers.map((paper) => getPaperField(paper, 'year')).filter(Boolean))]
+              .sort((left, right) => Number(right) - Number(left));
+            const searchTokens = sectionFilter.search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+            const filteredSectionPapers = sectionPapers.filter((paper) => {
+              const matchesSubject = sectionFilter.subject === 'all' || getPaperField(paper, 'subject') === sectionFilter.subject;
+              const matchesYear = sectionFilter.year === 'all' || String(getPaperField(paper, 'year')) === String(sectionFilter.year);
+              const searchText = getPaperSearchText(paper);
+              return matchesSubject && matchesYear && searchTokens.every((token) => searchText.includes(token));
+            });
+
+            return (
+              <details key={key} className="panel overflow-hidden">
+                <summary className="cursor-pointer list-none px-5 py-4 marker:hidden [&::-webkit-details-marker]:hidden">
+                  <span className="flex flex-wrap items-center justify-between gap-3">
+                    <span className="text-lg font-semibold text-slate-950">{title}</span>
+                    <span className="flex items-center gap-3">
+                      <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">{sectionPapers.length} paper{sectionPapers.length === 1 ? '' : 's'}</span>
+                      <ChevronDown className="h-4 w-4 text-slate-500" aria-hidden="true" />
+                    </span>
                   </span>
-                  <button
-                    type="button"
-                    className="btn-secondary h-10 w-10 flex-none p-0"
-                    aria-label={`${expandedPaperIds[paper.id] ? 'Hide' : 'Show'} ${paper.displayName || 'paper'} details`}
-                    aria-expanded={Boolean(expandedPaperIds[paper.id])}
-                    title={expandedPaperIds[paper.id] ? 'Hide paper details' : 'Show paper details'}
-                    onClick={() => setExpandedPaperIds((current) => ({ ...current, [paper.id]: !current[paper.id] }))}
-                  >
-                    <ChevronDown className={`mx-auto h-4 w-4 transition-transform ${expandedPaperIds[paper.id] ? 'rotate-180' : ''}`} aria-hidden="true" />
-                  </button>
-                </div>
-                {expandedPaperIds[paper.id] ? (
-                  <div className="mt-3 border-t border-slate-200 pt-3">
-                    <p className="text-xs text-slate-600">{getPaperField(paper, 'grade') || 'Grade not listed'} • {getPaperField(paper, 'region') || 'Region not listed'} • {getPaperField(paper, 'month')} {getPaperField(paper, 'year')} • {getPaperField(paper, 'paperNumber') || 'Paper 1'}</p>
-                    {paper.notes ? <p className="mt-2 text-sm text-slate-600">{paper.notes}</p> : null}
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {paper.paperUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Paper</Link> : null}
-                      {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-sm text-slate-500">No memo uploaded</span>}
-                    </div>
-                    <PaperAnalysisStatus paper={paper} />
+                </summary>
+                <div className="space-y-4 border-t border-slate-200 p-4 md:p-5">
+                  <div className="grid gap-3 md:grid-cols-[minmax(12rem,2fr)_minmax(10rem,1fr)_minmax(8rem,1fr)]">
+                    <label>
+                      <span className="sr-only">Search {title.toLowerCase()} papers</span>
+                      <input
+                        type="search"
+                        className="input"
+                        value={sectionFilter.search}
+                        onChange={(event) => updateAdminPaperFilter(key, 'search', event.target.value)}
+                        placeholder={`Search ${title.toLowerCase()} papers`}
+                      />
+                    </label>
+                    <select aria-label={`Filter ${title.toLowerCase()} papers by subject`} className="input" value={sectionFilter.subject} onChange={(event) => updateAdminPaperFilter(key, 'subject', event.target.value)}>
+                      <option value="all">All subjects</option>
+                      {sectionSubjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+                    </select>
+                    <select aria-label={`Filter ${title.toLowerCase()} papers by year`} className="input" value={sectionFilter.year} onChange={(event) => updateAdminPaperFilter(key, 'year', event.target.value)}>
+                      <option value="all">All years</option>
+                      {sectionYears.map((year) => <option key={year} value={year}>{year}</option>)}
+                    </select>
                   </div>
-                ) : null}
-              </div>
-            ) : null}
-            <div className={`${role === ROLES.STUDENT ? 'hidden md:block ' : ''}panel p-5`}>
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h3 className="text-lg font-semibold text-slate-950">{paper.displayName || getPaperTitle(paper)}</h3>
-                <p className="mt-1 text-sm text-slate-500">{paper.region} • {paper.month} {paper.year} • {paper.paperNumber ?? 'Paper 1'}</p>
-              </div>
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.25em] text-slate-600">{paper.subject}</span>
-            </div>
-            <PaperAnalysisStatus paper={paper} />
-            <div className="mt-4 flex flex-wrap gap-3 text-sm">
-              <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Open paper</Link>
-              {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Open memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-slate-500">No memo uploaded</span>}
-              {canManagePaperAnalysis(role) ? <button type="button" className="btn-secondary" onClick={() => startEditPaper(paper)}>Edit</button> : null}
-              {canManagePaperAnalysis(role) && canQueuePaperAnalysis(paper) ? <button type="button" className="btn-primary" onClick={() => queuePaperReanalysis(paper)}>{reanalysisButtonLabel(paper)}</button> : null}
-              {canManagePaperAnalysis(role) && canStopPaperAnalysis(paper) ? <button type="button" className="btn-secondary text-rose-700 hover:text-rose-800" onClick={() => stopPaperAnalysis(paper).catch((error) => setStatus(error.message || 'Could not stop analysis.'))}>Stop analysis</button> : null}
-            </div>
-            </div>
-          </div>
-        ))}
-        {!visiblePapers.length ? <div className="panel p-5 text-sm text-slate-500">No papers match these filters.</div> : null}
-      </div>
+                  {filteredSectionPapers.length ? (
+                    <div className="space-y-4">{filteredSectionPapers.map(renderPaperCard)}</div>
+                  ) : (
+                    <div className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
+                      {sectionPapers.length ? 'No papers match these filters.' : emptyMessage}
+                    </div>
+                  )}
+                </div>
+              </details>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {visiblePapers.map(renderPaperCard)}
+          {!visiblePapers.length ? <div className="panel p-5 text-sm text-slate-500">No papers match these filters.</div> : null}
+        </div>
+      )}
 
       {canManagePaperAnalysis(role) ? <section className="panel space-y-5 p-6">
         <div className="flex flex-wrap gap-2">
