@@ -24,7 +24,7 @@ export const StudentBillingPage = () => {
   const initialSelection = {
     planId: params.get('planId') || subscriptionState?.pendingPlan?.planId || subscriptionState?.subscriptionPlanId || 'free',
     billingPeriod: params.get('billingPeriod') || subscriptionState?.pendingPlan?.billingPeriod || subscriptionState?.subscriptionBillingPeriod,
-    subjectCount: params.get('subjectCount') || subscriptionState?.pendingPlan?.subjectCount || subscriptionState?.subscriptionSubjectCount || 2,
+    subjectCount: params.get('subjectCount') || subscriptionState?.pendingPlan?.subjectCount || subscriptionState?.subscriptionSubjectCount || 1,
   };
 
   const formatRenewalDate = (value) => {
@@ -186,7 +186,7 @@ export const StudentBillingPage = () => {
             handleContinue({
               planId: selection.planId || subscriptionState.subscriptionPlanId,
               billingPeriod: selection.billingPeriod || subscriptionState.subscriptionBillingPeriod || 'monthly',
-              subjectCount: selection.subjectCount || subscriptionState.subscriptionSubjectCount || 2,
+              subjectCount: selection.subjectCount || subscriptionState.subscriptionSubjectCount || 1,
             });
           }}
         />

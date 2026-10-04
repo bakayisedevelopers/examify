@@ -91,7 +91,7 @@ export const SignupPage = () => {
       if (form.role === ROLES.STUDENT) {
         const selectedPlanId = ['free', 'circle', 'personalized'].includes(planId) ? planId : 'free';
         const billingPeriod = selection.get('billingPeriod') === 'yearly' ? 'yearly' : 'monthly';
-        const subjectCount = selection.get('subjectCount') || '2';
+        const subjectCount = selection.get('subjectCount') || '1';
         navigate(`/student/billing?planId=${selectedPlanId}&billingPeriod=${billingPeriod}&subjectCount=${encodeURIComponent(subjectCount)}`);
       } else {
         navigate(targetRoute);

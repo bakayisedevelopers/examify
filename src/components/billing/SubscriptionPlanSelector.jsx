@@ -5,7 +5,7 @@ import { calculateSubscriptionQuote } from '../../utils/subscriptionPlans';
 const plans = {
   free: { name: 'Free', category: 'Question papers', icon: BookOpen },
   circle: { name: 'Circle', category: 'Group', icon: Users },
-  personalized: { name: 'Personalized', category: 'One-on-one', icon: UserRound },
+  personalized: { name: 'Personalized', category: 'One-on-one + group', icon: UserRound },
 };
 
 const formatRand = (amount) => `R${amount.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}`;
@@ -13,8 +13,9 @@ const formatRand = (amount) => `R${amount.toLocaleString('en-ZA', { maximumFract
 export const SubscriptionPlanSelector = ({ onContinue, isSubmitting = false, initialSelection = {} }) => {
   const [planId, setPlanId] = useState(plans[initialSelection.planId] ? initialSelection.planId : 'circle');
   const [billingPeriod, setBillingPeriod] = useState(initialSelection.billingPeriod === 'yearly' ? 'yearly' : 'monthly');
-  const [subjectCount, setSubjectCount] = useState(Math.max(2, Math.min(20, Number(initialSelection.subjectCount) || 2)));
+  const [subjectCount, setSubjectCount] = useState(Math.max(1, Math.min(20, Number(initialSelection.subjectCount) || 1)));
   const quote = calculateSubscriptionQuote({ planId, billingPeriod, subjectCount });
+  const billingPeriodLabel = billingPeriod === 'yearly' ? 'year' : 'month';
 
   const selectPlan = (nextPlan) => setPlanId(nextPlan);
 
@@ -64,15 +65,16 @@ export const SubscriptionPlanSelector = ({ onContinue, isSubmitting = false, ini
                 </ul>
               ) : id === 'circle' ? (
                 <ul className="mt-3 min-h-[7rem] space-y-2 text-sm text-slate-300">
-                  <li>4 × {subjectCount} subjects = {planQuote.sessionsPerMonth} group sessions/month</li>
+                  <li>{planQuote.groupLessonsPerSubject} group lessons per subject in each subscription period ({planQuote.groupLessonsPerWindow} total)</li>
                   <li>Examifying Program access for each registered subject</li>
-                  <li>Up to 2 subjects included; {formatRand(planQuote.additionalSubjectAmount)}/month per additional subject</li>
+                  <li>1 subject included; {formatRand(planQuote.additionalSubjectAmountForPeriod)} per additional subject/{billingPeriodLabel}</li>
                 </ul>
               ) : (
                 <ul className="mt-3 min-h-[7rem] space-y-2 text-sm text-slate-300">
-                  <li>4 × {subjectCount} subjects = {planQuote.sessionsPerMonth} one-on-one sessions/month</li>
+                  <li>{planQuote.oneOnOneLessonsPerSubject} one-on-one lessons per subject in each subscription period ({planQuote.oneOnOneLessonsPerWindow} total)</li>
+                  <li>{planQuote.groupLessonsPerSubject} group lessons per subject in each subscription period ({planQuote.groupLessonsPerWindow} total)</li>
                   <li>Examifying Program access for each registered subject</li>
-                  <li>Up to 2 subjects included; {formatRand(planQuote.additionalSubjectAmount)}/month per additional subject</li>
+                  <li>1 subject included; {formatRand(planQuote.additionalSubjectAmountForPeriod)} per additional subject/{billingPeriodLabel}</li>
                 </ul>
               )}
 
@@ -88,13 +90,13 @@ export const SubscriptionPlanSelector = ({ onContinue, isSubmitting = false, ini
         <div className="panel flex flex-wrap items-center justify-between gap-5 p-5">
           <div>
             <p className="text-sm font-semibold text-white">Registered subjects</p>
-            <p className="mt-1 text-xs text-slate-400">Up to 2 included; additional subjects are charged monthly.</p>
+            <p className="mt-1 text-xs text-slate-400">Choose 1 to 20 subjects. The first subject is included in the plan price.</p>
           </div>
           <div className="flex items-center gap-3">
-            <button type="button" className="btn-secondary h-11 w-11 p-0" onClick={() => setSubjectCount((count) => Math.max(2, count - 1))} aria-label="Remove one subject" disabled={subjectCount <= 2}>
+            <button type="button" className="btn-secondary h-11 w-11 p-0" onClick={() => setSubjectCount((count) => Math.max(1, count - 1))} aria-label="Remove one subject" disabled={subjectCount <= 1}>
               <Minus className="h-4 w-4" aria-hidden="true" />
             </button>
-            <input type="number" min="2" max="20" step="1" className="input w-24 text-center" value={subjectCount} onChange={(event) => setSubjectCount(Math.max(2, Math.min(20, Math.floor(Number(event.target.value) || 2))))} aria-label="Number of registered subjects" />
+            <input type="number" min="1" max="20" step="1" className="input w-24 text-center" value={subjectCount} onChange={(event) => setSubjectCount(Math.max(1, Math.min(20, Math.floor(Number(event.target.value) || 1))))} aria-label="Number of registered subjects" />
             <button type="button" className="btn-secondary h-11 w-11 p-0" onClick={() => setSubjectCount((count) => Math.min(20, count + 1))} aria-label="Add one subject" disabled={subjectCount >= 20}>
               <Plus className="h-4 w-4" aria-hidden="true" />
             </button>
@@ -108,7 +110,7 @@ export const SubscriptionPlanSelector = ({ onContinue, isSubmitting = false, ini
           <p className="mt-1 text-3xl font-bold text-white">{formatRand(quote.amount)}</p>
           {billingPeriod === 'yearly' && planId !== 'free' ? <p className="mt-1 text-sm text-slate-400">{formatRand(quote.amount / 12)} per month equivalent · billed yearly</p> : null}
           {quote.additionalSubjects > 0 ? <p className="mt-1 text-sm text-slate-400">Includes {quote.additionalSubjects} additional {quote.additionalSubjects === 1 ? 'subject' : 'subjects'}.</p> : null}
-          {planId !== 'free' ? <p className="mt-1 text-sm text-slate-400">{quote.sessionsPerMonth} total sessions this month</p> : null}
+          {planId !== 'free' ? <p className="mt-1 text-sm text-slate-400">{quote.sessionsPerWindow} total lessons in this subscription period</p> : null}
         </div>
         <button type="button" className="btn-primary min-w-40" onClick={() => onContinue?.({ planId, billingPeriod, subjectCount: quote.subjectCount, quote })} disabled={isSubmitting || !onContinue}>
           {isSubmitting ? 'Please wait...' : planId === 'free' ? 'Continue with Free' : 'Continue'}

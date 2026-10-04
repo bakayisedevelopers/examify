@@ -84,7 +84,7 @@ export const ProfileBillingPage = ({ role }) => {
               continueSubscription({
                 planId: selection.planId || subscriptionState.subscriptionPlanId,
                 billingPeriod: selection.billingPeriod || subscriptionState.subscriptionBillingPeriod || 'monthly',
-                subjectCount: selection.subjectCount || subscriptionState.subscriptionSubjectCount || 2,
+                subjectCount: selection.subjectCount || subscriptionState.subscriptionSubjectCount || 1,
               });
             }}
           />
@@ -94,7 +94,7 @@ export const ProfileBillingPage = ({ role }) => {
           initialSelection={{
             planId: subscriptionState.pendingPlan?.planId || subscriptionState.subscriptionPlanId,
             billingPeriod: subscriptionState.pendingPlan?.billingPeriod || subscriptionState.subscriptionBillingPeriod,
-            subjectCount: subscriptionState.pendingPlan?.subjectCount || subscriptionState.subscriptionSubjectCount || 2,
+            subjectCount: subscriptionState.pendingPlan?.subjectCount || subscriptionState.subscriptionSubjectCount || 1,
           }}
           onContinue={continueSubscription}
           isSubmitting={isStartingSubscription}

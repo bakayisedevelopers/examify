@@ -391,7 +391,7 @@ export const ParentDashboardPage = () => {
                   handlePayForStudent(subscriptionStudent, {
                     planId: selection.planId || subscriptionStudent.subscriptionPlanId,
                     billingPeriod: selection.billingPeriod || subscriptionStudent.subscriptionBillingPeriod || 'monthly',
-                    subjectCount: selection.subjectCount || subscriptionStudent.subscriptionSubjectCount || 2,
+                    subjectCount: selection.subjectCount || subscriptionStudent.subscriptionSubjectCount || 1,
                   });
                 }}
               />
