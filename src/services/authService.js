@@ -28,9 +28,13 @@ export const loginWithEmail = async ({ email, password }) => {
   return { user: credential.user, profile };
 };
 
-export const registerWithEmail = async ({ fullName, email, password, role, extraProfile = {} }) => {
+export const registerWithEmail = async ({ fullName, email, password, role, extraProfile = {}, legalAcceptance }) => {
   if (!auth) throw new Error('Firebase not configured. Please set up environment variables.');
   if (!['student', 'tutor', 'teacher', 'parent'].includes(role)) throw new Error('Choose a valid account type.');
+  if (legalAcceptance?.termsAccepted !== true || legalAcceptance?.privacyNoticeAcknowledged !== true
+    || !legalAcceptance?.version) {
+    throw new Error('Please accept the current Terms of Use and acknowledge the Privacy Policy before creating an account.');
+  }
   const isTutorRole = role === 'tutor' || role === 'teacher';
   const whatsappNumber = role === 'student' ? normalizeWhatsAppNumber(extraProfile.whatsappNumber) : '';
   const studentDefaults = role === 'student'
@@ -48,6 +52,12 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
     email: credential.user.email || email.trim(),
     displayName: fullName.trim(),
     role,
+    termsAccepted: true,
+    termsAcceptedAt: serverTimestamp(),
+    termsVersion: legalAcceptance.version,
+    privacyNoticeAcknowledged: true,
+    privacyNoticeAcknowledgedAt: serverTimestamp(),
+    privacyNoticeVersion: legalAcceptance.version,
     ...(isTutorRole ? { subject: null, subjects: [] } : {}),
     isTeacher: role === 'teacher' || extraProfile.isTeacher === true || extraProfile.isTeacher === 'true',
     createdAt: serverTimestamp(),

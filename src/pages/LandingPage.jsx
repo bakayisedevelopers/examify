@@ -477,7 +477,7 @@ export const LandingPage = () => {
             <div className="flex items-center gap-3">
               <img src="/logo.png" alt="" className="h-10 w-10 shrink-0 object-contain drop-shadow-md" />
               <div>
-                <span className="text-xl font-black tracking-tight text-white flex items-center gap-2">
+                <span className="flex items-center gap-2 bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 bg-clip-text text-xl font-black tracking-tight text-transparent">
                   Examifying
                   <span className="rounded bg-lime-400/15 border border-lime-400/30 px-1.5 py-0.5 text-[10px] font-bold text-lime-400 uppercase tracking-widest">
                     Maths
@@ -495,7 +495,7 @@ export const LandingPage = () => {
             <ul className="mt-3 space-y-2 text-sm text-slate-400">
               <li>
                 <Link to="/policies#terms" className="hover:text-lime-400 transition-colors flex items-center gap-1">
-                  Terms of Service <ArrowUpRight className="h-3 w-3" />
+                  Terms of Use <ArrowUpRight className="h-3 w-3" />
                 </Link>
               </li>
               <li>

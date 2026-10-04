@@ -5,7 +5,7 @@ import { useAuth } from '../../hooks/useAuth';
 export const ProfileLegalPage = ({ role }) => {
   const { profile, logout } = useAuth();
   const links = [
-    { label: 'Terms of Service', to: '/policies#terms' },
+    { label: 'Terms of Use', to: '/policies#terms' },
     { label: 'Refund & Cancellation', to: '/policies#refunds' },
     { label: 'Privacy Policy', to: '/policies#privacy' },
     { label: 'Contact Info', to: '/policies#contact' },

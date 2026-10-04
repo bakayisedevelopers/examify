@@ -4,6 +4,7 @@ import { REGIONS, ROLES, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
 import { useAuth } from '../../hooks/useAuth';
 import { Logo } from '../../components/common/Logo';
 import { normalizeWhatsAppNumber } from '../../utils/whatsapp';
+import { LEGAL_POLICY_VERSION } from '../../lib/legalPolicyVersion';
 
 export const SignupPage = () => {
   const navigate = useNavigate();
@@ -99,8 +100,11 @@ export const SignupPage = () => {
         email: form.email,
         password: form.password,
         role: effectiveRole,
-        policiesAccepted: true,
-        policiesAcceptedAt: new Date().toISOString(),
+        legalAcceptance: {
+          termsAccepted: acceptedPolicies,
+          privacyNoticeAcknowledged: acceptedPolicies,
+          version: LEGAL_POLICY_VERSION,
+        },
         extraProfile: {
           grade: form.role === ROLES.STUDENT ? form.grade : null,
           province: form.role === ROLES.STUDENT ? form.province : null,
@@ -223,14 +227,15 @@ export const SignupPage = () => {
           <p>
             By creating an account you agree to Examifying{' '}
             <Link to="/policies#terms" className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">
-              Terms of Service
+              Terms of Use
             </Link>,{' '}
             <Link to="/policies#refunds" className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">
               Refund Policy
             </Link>, and acknowledge our{' '}
-            <Link to="/policies#contact" className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">
-              Contact Information
+            <Link to="/policies#privacy" className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">
+              Privacy Policy
             </Link>.
+            {form.role === ROLES.STUDENT ? <span className="mt-2 block">A student under 18 must have prior consent from a parent, legal guardian, or other competent person before an account is created.</span> : null}
           </p>
         </div>
 

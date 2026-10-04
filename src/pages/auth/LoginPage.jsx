@@ -64,7 +64,7 @@ export const LoginPage = () => {
           <p>
             By logging in you agree to Examifying{' '}
             <Link to="/policies#terms" className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">
-              Terms of Service
+              Terms of Use
             </Link>,{' '}
             <Link to="/policies#refunds" className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">
               Refund Policy
