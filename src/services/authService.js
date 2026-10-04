@@ -35,8 +35,6 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
   const whatsappNumber = role === 'student' ? normalizeWhatsAppNumber(extraProfile.whatsappNumber) : '';
   const studentDefaults = role === 'student'
     ? {
-      previousYearMark: Number(extraProfile.previousYearMark ?? 0),
-      latestMark: Number(extraProfile.previousYearMark ?? 0),
       paymentCompleted: false,
       subscriptionStatus: 'pending',
     }
@@ -111,7 +109,7 @@ export const logout = async () => {
   return true;
 };
 
-export const updateUserProfileDetails = async ({ uid, displayName, previousYearMark, grade, whatsappNumber, newPassword }) => {
+export const updateUserProfileDetails = async ({ uid, displayName, grade, whatsappNumber, newPassword }) => {
 
   const normalizedWhatsAppNumber = whatsappNumber === undefined ? undefined : normalizeWhatsAppNumber(whatsappNumber);
 
@@ -131,16 +129,13 @@ export const updateUserProfileDetails = async ({ uid, displayName, previousYearM
 
     const payload = { updatedAt: serverTimestamp() };
     if (displayName) payload.displayName = displayName;
-    if (previousYearMark !== undefined && previousYearMark !== null) {
-      payload.previousYearMark = Number(previousYearMark);
-    }
     if (normalizedWhatsAppNumber) payload.whatsappNumber = normalizedWhatsAppNumber;
     
     await updateDoc(doc(db, collections.users, uid), payload);
     return { uid, ...payload };
   } else {
     // Demo mode bypass
-    return { uid, displayName, previousYearMark, grade, whatsappNumber: normalizedWhatsAppNumber };
+    return { uid, displayName, grade, whatsappNumber: normalizedWhatsAppNumber };
   }
 };
 

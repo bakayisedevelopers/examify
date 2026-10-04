@@ -18,7 +18,6 @@ export const SignupPage = () => {
     role: ROLES.STUDENT,
     grade: SOUTH_AFRICAN_GRADES[0],
     province: REGIONS[0],
-    previousYearMark: '0',
     school: '',
     whatsappNumber: '',
   });
@@ -80,7 +79,6 @@ export const SignupPage = () => {
         extraProfile: {
           grade: form.role === ROLES.STUDENT ? form.grade : null,
           province: form.role === ROLES.STUDENT ? form.province : null,
-          previousYearMark: form.role === ROLES.STUDENT ? Number(form.previousYearMark) || 0 : null,
           school: (form.role === ROLES.STUDENT || form.role === 'teacher') ? form.school.trim() : null,
           ...(form.role === ROLES.STUDENT ? { whatsappNumber } : {}),
           isTeacher: form.role === 'teacher',
@@ -169,11 +167,6 @@ export const SignupPage = () => {
               <select className="input" value={form.province} onChange={handleChange('province')}>
                 {REGIONS.map((region) => <option key={region}>{region}</option>)}
               </select>
-            </label>
-
-            <label className="block">
-              <span className="label">Previous year’s mark (%)</span>
-              <input type="number" className="input" min="0" max="100" value={form.previousYearMark} onChange={handleChange('previousYearMark')} required />
             </label>
 
           </>

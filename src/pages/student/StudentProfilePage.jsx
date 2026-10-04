@@ -12,7 +12,6 @@ export const StudentProfilePage = () => {
   const subscriptionState = useStudentSubscriptionState(profile);
   
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
-  const [previousYearMark, setPreviousYearMark] = useState(profile?.previousYearMark ?? 0);
   const [whatsappNumber, setWhatsAppNumber] = useState(profile?.whatsappNumber || '');
   const [password, setPassword] = useState('');
   const [saving, setSaving] = useState(false);
@@ -26,7 +25,6 @@ export const StudentProfilePage = () => {
       await updateUserProfileDetails({
         uid: profile?.uid,
         displayName,
-        previousYearMark,
         whatsappNumber,
         newPassword: password || undefined,
       });
@@ -45,7 +43,7 @@ export const StudentProfilePage = () => {
   return (
     <AppShell
       title="Profile"
-      subtitle="Review and update your learner profile, onboarding mark, and security settings."
+      subtitle="Review and update your learner profile and security settings."
       role="student"
       user={profile}
       onLogout={logout}
@@ -64,19 +62,6 @@ export const StudentProfilePage = () => {
             className="input"
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
-            required
-          />
-        </div>
-
-        <div>
-          <label className="label">Previous year mark (%)</label>
-          <input
-            type="number"
-            min="0"
-            max="100"
-            className="input"
-            value={previousYearMark}
-            onChange={(e) => setPreviousYearMark(e.target.value)}
             required
           />
         </div>
