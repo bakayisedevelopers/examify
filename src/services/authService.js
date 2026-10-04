@@ -109,9 +109,10 @@ export const logout = async () => {
   return true;
 };
 
-export const updateUserProfileDetails = async ({ uid, displayName, grade, whatsappNumber, newPassword }) => {
+export const updateUserProfileDetails = async ({ uid, displayName, grade, whatsappNumber, newPassword, restoreSubjectInstanceIds = [] }) => {
 
   const normalizedWhatsAppNumber = whatsappNumber === undefined ? undefined : normalizeWhatsAppNumber(whatsappNumber);
+  let gradeChangeResult = null;
 
   if (isFirebaseConfigured && auth?.currentUser) {
     if (displayName) {
@@ -124,7 +125,7 @@ export const updateUserProfileDetails = async ({ uid, displayName, grade, whatsa
     if (grade) {
       if (!functions) throw new Error('Firebase Functions are not configured. Grade changes are temporarily unavailable.');
       const changeGrade = httpsCallable(functions, 'changeStudentGrade');
-      await changeGrade({ studentId: uid, newGrade: grade });
+      gradeChangeResult = (await changeGrade({ studentId: uid, newGrade: grade, restoreSubjectInstanceIds })).data;
     }
 
     const payload = { updatedAt: serverTimestamp() };
@@ -132,7 +133,7 @@ export const updateUserProfileDetails = async ({ uid, displayName, grade, whatsa
     if (normalizedWhatsAppNumber) payload.whatsappNumber = normalizedWhatsAppNumber;
     
     await updateDoc(doc(db, collections.users, uid), payload);
-    return { uid, ...payload };
+    return { uid, ...payload, gradeChangeResult };
   } else {
     // Demo mode bypass
     return { uid, displayName, grade, whatsappNumber: normalizedWhatsAppNumber };

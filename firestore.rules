@@ -70,6 +70,35 @@ service cloud.firestore {
         && ((subscription.status == 'active' && subscription.renewalDate > request.time)
           || (subscription.status == 'past_due' && subscription.graceEndsAt > request.time));
     }
+    function lessonIdentityIsUnchanged(subjectInstanceId) {
+      return request.resource.data.get('studentId', '') == resource.data.get('studentId', '')
+        && request.resource.data.get('tutorId', '') == resource.data.get('tutorId', '')
+        && request.resource.data.get('subject', '') == resource.data.get('subject', '')
+        && request.resource.data.get('subjectInstanceId', subjectInstanceId) == subjectInstanceId
+        && request.resource.data.get('sessionMode', 'one-on-one') == resource.data.get('sessionMode', 'one-on-one')
+        && request.resource.data.get('groupSessionId', '') == resource.data.get('groupSessionId', '')
+        && request.resource.data.get('lessonDate', '') == resource.data.get('lessonDate', '');
+    }
+    function validPlannedLessonDetailsUpdate(studentId, subjectInstanceId) {
+      return canTeach(studentId, subjectInstanceId)
+        && resource.data.status == 'planned'
+        && request.resource.data.status == 'planned'
+        && lessonIdentityIsUnchanged(subjectInstanceId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'lessonType', 'whatsappLessonLink', 'locationDetails', 'updatedAt'
+        ]);
+    }
+    function validLessonOutcomeUpdate(studentId, subjectInstanceId) {
+      return canTeach(studentId, subjectInstanceId)
+        && resource.data.status in ['planned', 'incomplete', 'lesson_log_pending']
+        && request.resource.data.status in ['completed', 'missed']
+        && lessonIdentityIsUnchanged(subjectInstanceId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'lessonId', 'topics', 'topic', 'topicReport', 'note', 'topicUnderstandingScores',
+          'understandingLevel', 'status', 'attendanceStatus', 'attended', 'completedOn',
+          'lessonType', 'whatsappLessonLink', 'locationDetails', 'assignmentPeriodId', 'updatedAt'
+        ]);
+    }
 
     match /users/{userId} {
       allow read: if signedIn();
@@ -118,7 +147,11 @@ service cloud.firestore {
         }
         match /lessons/{lessonId} {
           allow read: if canReadEpisode(userId, subjectInstanceId);
-          allow create, update, delete: if isAdmin() || canTeach(userId, subjectInstanceId);
+          allow create: if isAdmin();
+          allow update: if isAdmin()
+            || validPlannedLessonDetailsUpdate(userId, subjectInstanceId)
+            || validLessonOutcomeUpdate(userId, subjectInstanceId);
+          allow delete: if isAdmin();
         }
         match /reports/{reportId} {
           allow read: if canReadEpisode(userId, subjectInstanceId);
@@ -218,6 +251,10 @@ service cloud.firestore {
     }
     match /topicResolverMappings/{mappingId} { allow read, write: if isAdmin(); }
     match /settings/{settingId} { allow read: if signedIn(); allow write: if isAdmin(); }
+    match /discountCodes/{codeId} {
+      allow read, write: if false;
+      match /redemptions/{redemptionId} { allow read, write: if false; }
+    }
     match /{document=**} { allow read, write: if false; }
   }
 }

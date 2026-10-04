@@ -1,8 +1,9 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions';
 import { admin, getDb } from './admin.js';
-import { applyFreeSubscription, chargeAuthorizationForSubscription } from './paystack.js';
+import { applyFreeSubscription, applyZeroCostSubscriptionRenewal, chargeAuthorizationForSubscription } from './paystack.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
+import { applyRecurringDiscount } from './discountCodesCore.js';
 
 const subscriptionRef = (db, studentId) => db.collection('users').doc(studentId).collection('subscriptions').doc('current');
 const paymentRef = (db, studentId, reference) => db.collection('users').doc(studentId).collection('payments').doc(reference);
@@ -89,6 +90,13 @@ const markUncertainAttempt = async ({ db, studentId, subscription, dueDate, atte
       billingPeriod: selectedPlan.billingPeriod,
       subjectCount: selectedPlan.subjectCount,
       amount: selectedPlan.amount ?? subscription.amount ?? 0,
+      ...(attempt.discountCode ? {
+        originalAmount: attempt.originalAmount ?? null,
+        discountAmount: attempt.discountAmount ?? null,
+        discountPercent: attempt.discountPercent ?? null,
+        discountCode: attempt.discountCode,
+        discountBillingDuration: attempt.discountBillingDuration ?? 'recurring',
+      } : {}),
       currency: selectedPlan.currency ?? subscription.currency ?? 'ZAR',
       verificationPending: true,
       lastVerificationError: String(error?.message ?? error ?? 'Charge outcome could not be confirmed').slice(0, 240),
@@ -102,11 +110,19 @@ const getAttemptQuote = (subscription) => {
   const plan = attempt.planId
     ? attempt
     : (subscription.pendingPlan?.planId ? subscription.pendingPlan : subscription);
-  return calculateSubscriptionQuote({
+  const baseQuote = calculateSubscriptionQuote({
     planId: plan.planId,
     billingPeriod: plan.billingPeriod,
     subjectCount: plan.subjectCount,
   });
+  const benefit = attempt.discountPercent ? {
+    code: attempt.discountCode,
+    percentOff: attempt.discountPercent,
+    planId: attempt.planId,
+    billingPeriod: attempt.billingPeriod,
+    subjectCount: attempt.subjectCount,
+  } : subscription.discountBenefit;
+  return applyRecurringDiscount(baseQuote, benefit, plan);
 };
 
 export const processSubscriptionRenewals = onSchedule(
@@ -220,6 +236,25 @@ export const processSubscriptionRenewals = onSchedule(
         continue;
       }
 
+      const selectedPlan = subscription.pendingPlan?.planId ? subscription.pendingPlan : subscription;
+      if (subscription.discountBillingDuration === 'recurring' && Number(subscription.discountPercent) === 100) {
+        try {
+          const baseQuote = calculateSubscriptionQuote({
+            planId: selectedPlan.planId,
+            billingPeriod: selectedPlan.billingPeriod,
+            subjectCount: selectedPlan.subjectCount,
+          });
+          const zeroQuote = applyRecurringDiscount(baseQuote, subscription.discountBenefit, selectedPlan);
+          if (zeroQuote.amount === 0 && zeroQuote.discountPercent === 100) {
+            await applyZeroCostSubscriptionRenewal({ studentId, quote: zeroQuote, renewalDate: subscription.renewalDate });
+            logger.info('Applied zero-cost recurring subscription renewal', { studentId, reference: `zero-renewal-${studentId}-${dueDate.getTime()}` });
+            continue;
+          }
+        } catch (error) {
+          logger.error('Zero-cost recurring renewal could not be applied', { studentId, error: error?.message ?? String(error) });
+        }
+      }
+
       if (subscription.autoRenew !== true) {
         await setManualPaymentRequired({
           db,
@@ -247,11 +282,13 @@ export const processSubscriptionRenewals = onSchedule(
 
       let quote;
       try {
-        quote = calculateSubscriptionQuote({
+        const baseQuote = calculateSubscriptionQuote({
           planId: subscription.pendingPlan?.planId || subscription.planId,
           billingPeriod: subscription.pendingPlan?.billingPeriod || subscription.billingPeriod,
           subjectCount: subscription.pendingPlan?.subjectCount ?? subscription.subjectCount,
         });
+        const selectedPlan = subscription.pendingPlan?.planId ? subscription.pendingPlan : subscription;
+        quote = applyRecurringDiscount(baseQuote, subscription.discountBenefit, selectedPlan);
       } catch (error) {
         logger.error('Subscription plan could not be priced for renewal', { studentId, error: error.message });
         await setManualPaymentRequired({ db, studentId, dueDate, reason: 'invalid_saved_plan' });

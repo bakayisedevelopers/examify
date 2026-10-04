@@ -9,12 +9,27 @@ export { processSubscriptionRenewals } from './subscriptionRenewals.js';
 export { auditSubscriptionChanges, auditAuthorizationChanges } from './subscriptionAudit.js';
 
 export {
+  createDiscountCode,
+  listDiscountCodes,
+  setDiscountCodeActive,
+  validateDiscountCode,
+  reconcileDiscountCodeReservations,
+} from './discountCodes.js';
+
+export {
   assignStudentToTutor,
   manageStaffStudentAccess,
   updateStudentSubjects,
   assignStudentToParent,
   changeStudentGrade,
+  getStudentSubjectHistoryOptions,
 } from './assignmentHistory.js';
+
+export {
+  createPlannedLessonSession,
+  reserveCompletedLessonLog,
+  mutatePlannedLessonSession,
+} from './lessonEntitlements.js';
 
 export {
   callKiloText,

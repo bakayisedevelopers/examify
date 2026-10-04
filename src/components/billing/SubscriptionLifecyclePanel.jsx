@@ -14,6 +14,7 @@ const formatDate = (value) => {
   const date = asDate(value);
   return date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString() : 'Not scheduled';
 };
+const formatRand = (amount) => `R${Number(amount || 0).toLocaleString('en-ZA', { maximumFractionDigits: 2 })}`;
 
 export const SubscriptionLifecyclePanel = ({
   studentId,
@@ -110,6 +111,9 @@ export const SubscriptionLifecyclePanel = ({
           </p>
           {paidPlan && !isPastDue && !currentState.cancelAtPeriodEnd ? (
             <p className="mt-1 text-sm text-slate-500">Next renewal: {formatDate(currentUntil)}</p>
+          ) : null}
+          {paidPlan && currentState.discountBillingDuration === 'recurring' && currentState.discountPercent ? (
+            <p className="mt-1 text-sm text-lime-700">Recurring discount: {currentState.discountPercent}% ({currentState.discountCode}) · current cycle total {formatRand(currentState.amount)}</p>
           ) : null}
         </div>
 

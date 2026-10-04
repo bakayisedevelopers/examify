@@ -113,6 +113,14 @@
       ]
     },
     {
+      "collectionGroup": "redemptions",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "reservedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "generationRuns",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
@@ -142,6 +150,14 @@
           "fieldPath": "updatedAt",
           "order": "DESCENDING"
         }
+      ]
+    },
+    {
+      "collectionGroup": "lessons",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "groupSessionId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
       ]
     },
     {

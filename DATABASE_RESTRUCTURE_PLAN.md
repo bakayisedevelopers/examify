@@ -11,7 +11,7 @@ This document outlines the student-centered Firestore layout where each subject 
 1. **Maths Only & Single Primary Tutor:** Each student has one primary Maths tutor per subject episode (`primaryTutorId`), managed under the subject episode.
 2. **Students Pay / Parents Pay for Students:** Subscription state, payment authorizations, and transaction records are student-scoped under `users/{studentId}` (with `payerId` for parent payers).
 3. **Tutors Manage Students:** Tutors track attendance, complete lessons, grade exercise submissions, and review peer-marking work.
-4. **Authoritative Subject Episode:** A student's active subject episode (`users/{studentId}/subjects/{subjectInstanceId}`) is the single authority for current grade, curriculum, assigned staff, completed topics, lessons, exercises, submissions, and generation runs.
+4. **Authoritative Subject Episode:** A student's active subject episode (`users/{studentId}/subjects/{subjectInstanceId}`) is the single authority for current grade, curriculum, assigned staff, completed topics, per-subject lesson quota, lessons, exercises, submissions, and generation runs.
 5. **Topics as Unique Topic Documents (No Duplicates):** Within a subject episode, each canonical topic has exactly **one** document under `topics/{canonicalTopicKey}`. Multiple lessons may cover or repeat the same topic over time, but the topic document itself is never duplicated.
 6. **Understanding Scores Scoped to Topics:** Scores belong to topics, not lessons. Each topic document maintains an `understandingScores` subcollection recording score events from three distinct sources:
    - `Lesson`: logged when a lesson covering that topic is completed.
@@ -26,9 +26,9 @@ This document outlines the student-centered Firestore layout where each subject 
 9. **Handwritten Answers Uploaded as Images:** Answer submissions, peer-marked annotations, and tutor-marked work are stored in Firebase Storage and referenced under the exercise.
 10. **Re-addition & Topic Restoration (3-Month Window):**
     - Cancelling a subject sets `status: 'cancelled'` and records `cancelledAt`. The episode remains archived in history.
-    - If re-added within **3 calendar months** for the **same grade**, learning history (topics, understanding scores, and topic reports) is restored into the new episode.
+    - If re-added within **3 calendar months** for the **same grade**, a user may explicitly opt in to copy only topics and their understanding scores into the new episode.
     - **Tutors and staff roles are NOT carried over on re-add:** Staff access is kept unassigned on re-add so that tutor assignments and roles can be configured fresh.
-    - **Grade changes** always start completely fresh with zero topics and no topic carry-over.
+    - **Grade changes** cancel all active subject episodes, update the student's grade, and do not create replacement episodes automatically. The student adds destination-grade subjects again and may explicitly restore matching recent histories.
 
 ---
 
@@ -48,17 +48,19 @@ users/{uid}
     // completedTopicCount, dailyExerciseTarget (1 to 5)
     // primaryTutorId, staffByUid, activeStaffIds, historicalStaffIds,
     // staffMemberships (embedded audit: uid, role, grantedAt, endedAt),
+    // lessonQuota (cycleId, planId, windowStartAt, renewalDate,
+    // group + oneOnOne: granted, carriedIn, used, remaining),
     // studentName, createdAt, updatedAt
 
     topics/{canonicalTopicKey}
       // UNIQUE per canonical topic in this episode (NO DUPLICATES)
       // canonicalTopicKey, topicName, firstCompletedAt, lastCoveredAt
-      // understandingLevel (derived overall average: 0-10)
+      // understandingLevel (derived overall average: 0-1)
       // scoreCount, latestScore, tutorReport (current topic note)
       understandingScores/{scoreId}
         // Immutable score log
         // sourceType: 'Lesson' | 'Exercise' | 'markingReview'
-        // score: number (0-10)
+        // score: number (0-1)
         // sourceId: lessonId | exerciseId | peerAssignmentId
         // tutorId: uid of tutor who graded or reviewed
         // createdAt: timestamp
@@ -172,18 +174,25 @@ Understanding scores are kept in the subcollection `topics/{canonicalTopicKey}/u
 - Cancelled episodes are excluded from active dashboard views and exercise generation.
 
 ### 2. Re-addition Within 3 Months (Same Grade)
-- If a student re-adds a subject within **3 calendar months** of cancellation at the **same grade**:
-  - The new active episode copies all `topics` documents and their nested `understandingScores` entries.
-  - Provenance is recorded via `previousSubjectInstanceId` and `restoredAt`.
+  - If a student opts in to re-add a subject within **3 calendar months** of cancellation at the **same grade**:
+    - The new active episode copies all `topics` documents and their nested `understandingScores` entries.
+    - Provenance is recorded via `previousSubjectInstanceId` and `restoredAt`.
+    - Reports, lessons, exercises, submissions, and other episode data are not copied.
   - **Staff roles are intentionally reset:** `primaryTutorId` and staff memberships are **not carried over**. The student/parent/admin can assign a tutor fresh.
 - If re-added **after 3 calendar months**:
   - Starts fresh with 0 topics. No topic history is copied.
 
 ### 3. Grade Changes
-- When a student advances to the next grade or changes grade:
-  - A brand-new subject episode is created with 0 topics and `grade: newGrade`.
-  - Old grade topics are never copied into the new grade episode.
-  - Previous grade episodes remain in history as archived read-only records.
+- When a student changes grade, every active subject episode is cancelled, active staff memberships end, planned lessons are cancelled, and the profile grade is updated.
+- No destination-grade subject episodes are created automatically. The student adds subjects for the new grade after the change.
+- The student may explicitly select a cancelled episode from the destination grade if it was cancelled within the last three calendar months. Only topics and nested understanding scores are copied to the new episode; the old episode remains intact.
+
+### 4. Lesson Entitlement Ledger
+- Each active subject episode stores its own `lessonQuota` object, which is authoritative for that subject's quota and usage.
+- The ledger has a subscription `cycleId`, `planId`, `windowStartAt`, `renewalDate`, and separate `group` and `oneOnOne` buckets. Each bucket records `granted`, `carriedIn`, `used`, and `remaining`.
+- Scheduling reserves one slot atomically in each participating student's subject document. Planned, completed, and missed lessons consume quota. Cancellation releases it; lesson documents remain the audit trail.
+- A quota window starts at successful activation or renewal. Successful renewal grants the new plan allowance and carries unused quota forward by mode. Failed and pending payments do not advance the ledger.
+- Browser clients cannot create or delete lesson rows or update quota fields directly. Trusted Functions reserve, modify, and cancel planned sessions; frontend lesson completion and score entry remain scoped by Firestore rules.
 
 ---
 
@@ -246,7 +255,8 @@ Understanding scores are kept in the subcollection `topics/{canonicalTopicKey}/u
 - `src/components/dashboard/ExerciseCard.jsx`: Route submission and review operations strictly through updated service functions.
 
 ### 2. Cloud Functions (`functions/src/`)
-- `assignmentHistory.js`: Implement episode lifecycle (create active episode, cancel, same-grade 3-month topic restore without tutor carry-over, grade-change fresh start).
+- `assignmentHistory.js`: Implement episode lifecycle, explicit same-grade three-month topic/score restoration, grade-change cancellation, subject-capacity enforcement, and paid-plan tutor assignment checks.
+- `lessonEntitlements.js`: Enforce lesson mode, paid renewal window, group roster mutations, per-subject quota reservation, cancellation refunds, and completed-lesson log reservation.
 - `paystack.js`: Read/write nested subscription, authorization, and payment documents under `users/{studentId}`.
 - `subscriptionRenewals.js`: Query `collectionGroup(db, 'subscriptions').where('status', '==', 'active')` for recurring renewal processing.
 - `exerciseAccess.js`: Verify active subject episode status and nested subscription status before allowing generation.
@@ -266,6 +276,9 @@ Understanding scores are kept in the subcollection `topics/{canonicalTopicKey}/u
 - Peer marking reads reviewer-scoped nested assignments and submits marked image pages through the callable.
 - Firestore rules and indexes include the active episode, tutor-history, peer-marking, generation-run, subscription, and analysis access/query paths. Past-paper documents and question-paper analysis remain in their existing collections.
 - The application no longer queries the replaced top-level learning, tutor-assignment, peer-marking, or billing collections.
+- Grade changes cancel old subject episodes without creating replacements. Restoration is an explicit per-subject choice that copies only topics and their understanding scores.
+- Tutor assignment and scheduling require a verified active paid subscription. Circle supports group lessons only; Personalized supports group and one-on-one.
+- Active subject documents carry the per-cycle quota ledger; planned lesson creation, roster changes, and cancellation use trusted callables.
 
 ### Local verification
 
@@ -310,8 +323,9 @@ Firestore rules, indexes, Cloud Functions, and Hosting were deployed to project 
 ### Phase 3: Subject Lifecycle, Access Control, and Rules [COMPLETED]
 - Implement server-side add, cancel, and re-add in `functions/src/assignmentHistory.js`: (Done)
   - Enforce single active episode per subject. (Done)
-  - Implement same-grade 3-month topic restoration (copying topics and scores, resetting tutor/staff). (Done)
-  - Implement grade-change clean slate (zero topics via `changeStudentGrade`). (Done)
+  - Implement explicit same-grade three-month restoration (copy topics and scores only, resetting tutor/staff). (Done)
+  - Implement grade change by cancelling old episodes without creating replacements; optional destination-grade topic and score restoration requires selection. (Done)
+  - Enforce active paid tutor assignment and trusted lesson quota operations. (Done)
   - Sync tutor assignments and staff access to active subject episode documents. (Done)
 - Update `firestore.rules` and `storage.rules` with strict scoped access. (Done)
 
@@ -328,6 +342,7 @@ Firestore rules, indexes, Cloud Functions, and Hosting were deployed to project 
 - Move Paystack transaction initiation, verification, and renewals to nested billing subcollections.
 - Update Cloud Function Firestore event triggers in `notifications.js` to match nested document patterns.
 - Deploy rules, indexes, Functions, and Hosting. (Done 2026-10-02)
+- Grade-change restoration and per-subject lesson entitlement changes deployed to Firestore, Functions, and Hosting (2026-10-04); authenticated end-to-end account testing remains pending.
 - Verify global question-paper data remains untouched.
 
 ---
@@ -340,8 +355,10 @@ Firestore rules, indexes, Cloud Functions, and Hosting were deployed to project 
 - [x] Tutor reviewing peer-marking appends a `markingReview` score in the reviewer's topic `understandingScores`.
 - [x] Daily exercise generation scales from 1 up to a maximum of 5 based on completed topic count.
 - [x] Missed exercises remain locked; only today's exercise can be worked on.
-- [x] Cancelling a subject marks the episode cancelled; re-adding within 3 months restores topic progress but resets tutors/staff roles.
-- [x] Changing grades creates a clean subject episode with zero topics.
+- [x] Cancelling a subject marks the episode cancelled; restoration within three months is explicit and copies only topics plus understanding scores, with staff reset.
+- [x] Changing grades cancels active episodes without auto-creating destination-grade subjects; optional matching history requires explicit selection.
+- [x] Active subject documents store lesson quota windows and per-mode balances; trusted callables reserve and release lesson slots.
+- [x] Free assignment/scheduling is blocked; Circle is group only; Personalized allows group and one-on-one.
 - [x] Reviewers query assigned peer reviews via collection-group query and submit via callable function.
 - [x] Subscriptions, authorizations, and payments are student-nested and server-protected.
 - [x] All question papers, analysis runs, topic resolver mappings, and settings are preserved intact.

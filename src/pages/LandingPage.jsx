@@ -25,8 +25,9 @@ export const LandingPage = () => {
   const { profile } = useAuth();
   const navigate = useNavigate();
 
-  const continueFromPricing = ({ planId, billingPeriod, subjectCount }) => {
+  const continueFromPricing = ({ planId, billingPeriod, subjectCount, discountCode }) => {
     const params = new URLSearchParams({ planId, billingPeriod, subjectCount: String(subjectCount) });
+    if (discountCode) params.set('discountCode', discountCode);
     navigate(`/signup?${params.toString()}`);
   };
 
@@ -378,7 +379,7 @@ export const LandingPage = () => {
 
       <section className="border-y border-lime-500/20 bg-slate-900/40 py-20">
         <div className="mx-auto max-w-7xl px-4 lg:px-6">
-          <SubscriptionPlanSelector onContinue={continueFromPricing} />
+          <SubscriptionPlanSelector onContinue={continueFromPricing} mobileSwipe allowDiscountInput />
         </div>
       </section>
 

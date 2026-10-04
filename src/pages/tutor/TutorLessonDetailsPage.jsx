@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
@@ -31,6 +31,16 @@ const today = () => {
 const emptyTopicGroups = { extracted: [], manual: [], all: [] };
 const emptyParticipant = () => ({ attended: true, topicReport: '', scores: {} });
 const createSessionId = () => globalThis.crypto?.randomUUID?.() ?? `lesson-group-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+const asDate = (value) => value?.toDate?.() ?? (value instanceof Date ? value : value ? new Date(value) : null);
+const johannesburgDateKey = (value) => {
+  const date = asDate(value);
+  if (!date || Number.isNaN(date.getTime())) return '';
+  const parts = new Intl.DateTimeFormat('en', {
+    timeZone: 'Africa/Johannesburg', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+};
 
 const getStudentLabel = (student) => student.displayName || student.name || student.email || student.studentId;
 const lessonRatioToInputScore = (value) => {
@@ -77,6 +87,33 @@ export const TutorLessonDetailsPage = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [status, setStatus] = useState('');
   const [statusTone, setStatusTone] = useState('info');
+  const [plannedRequestId, setPlannedRequestId] = useState(createSessionId);
+
+  const plannedRequestFingerprint = JSON.stringify({
+    subject, grade, lessonDate, lessonType, whatsappLessonLink, locationDetails, sessionMode,
+    selectedStudentIds: [...selectedStudentIds].sort(), topics,
+  });
+
+  useEffect(() => {
+    setPlannedRequestId(createSessionId());
+  }, [plannedRequestFingerprint]);
+
+  const getStudentLessonBlocker = useCallback((student, mode = sessionMode, date = lessonDate) => {
+    const planId = student.subscriptionPlanId;
+    if (planId === 'free' || student.paymentCompleted === false) return 'An active paid subscription is required.';
+    if (planId && !['circle', 'personalized'].includes(planId)) return 'This student does not have a schedulable subscription plan.';
+    if (planId === 'circle' && mode !== 'group') return 'The Circle plan includes group lessons only.';
+    if (planId === 'personalized' && !['group', 'one-on-one'].includes(mode)) return 'This plan does not include the selected lesson format.';
+    const quota = student.lessonQuota;
+    const renewalKey = johannesburgDateKey(quota?.renewalDate || student.subscriptionRenewalDate);
+    const startKey = johannesburgDateKey(quota?.windowStartAt || student.entitlementWindowStartAt);
+    if (renewalKey && date >= renewalKey) return 'Choose a date before this student’s subscription renews.';
+    if (startKey && date < startKey) return 'Choose a date on or after this student’s subscription activation.';
+    const bucket = quota?.[mode === 'group' ? 'group' : 'oneOnOne'];
+    const remaining = Number(bucket?.remaining);
+    if (Number.isFinite(remaining) && remaining < 1) return `No ${mode === 'group' ? 'group' : 'one-on-one'} lesson quota remains this cycle.`;
+    return '';
+  }, [lessonDate, sessionMode]);
 
   useEffect(() => {
     if (!profile?.uid) return;
@@ -180,7 +217,10 @@ export const TutorLessonDetailsPage = () => {
     context.studentId === row.studentId
     && context.subject === (row.subject || DEFAULT_SUBJECT)
     && context.accessRole === 'co-owner')));
-  const isEditable = canManageExisting && (isNew || lessonRows.length > 0);
+  const isEditable = canManageExisting && (isNew || (lessonRows.length > 0
+    && lessonRows.every((row) => ['planned', 'incomplete', 'lesson_log_pending'].includes(row.status))));
+  const canCancelSession = canManageExisting && lessonRows.length > 0
+    && lessonRows.every((row) => ['planned', 'incomplete'].includes(row.status));
   const canEditPlannedRoster = canManageExisting
     && sessionMode === 'group'
     && lessonRows.length > 0
@@ -206,9 +246,13 @@ export const TutorLessonDetailsPage = () => {
     if (sessionMode === 'group' && selectedStudents.length < 2) return 'Select at least two assigned students to create a group lesson.';
     if (sessionMode === 'one-on-one' && selectedStudents.length !== 1) return 'Choose one assigned student for this lesson.';
     if (!lessonDate) return 'Choose a lesson date.';
+    const selectedLessonBlocker = selectedStudents
+      .map((student) => ({ student, message: getStudentLessonBlocker(student) }))
+      .find((entry) => entry.message);
+    if (selectedLessonBlocker) return `${getStudentLabel(selectedLessonBlocker.student)}: ${selectedLessonBlocker.message}`;
     if (!topics.length) return 'Add at least one planned topic before creating the lesson.';
     return '';
-  }, [availableStudents.length, contexts, contextsLoaded, eligibilityError, eligibilityLoaded, grade, isNew, lessonDate, profile?.uid, selectedStudents.length, sessionMode, subject, subjectOptions.length, topics.length]);
+  }, [availableStudents.length, contexts, contextsLoaded, eligibilityError, eligibilityLoaded, getStudentLessonBlocker, grade, isNew, lessonDate, profile?.uid, selectedStudents, sessionMode, subject, subjectOptions.length, topics.length]);
 
   useEffect(() => {
     if (!subject || !grade || !isNew && !lessonRows.length) {
@@ -303,7 +347,7 @@ export const TutorLessonDetailsPage = () => {
     setStatus('');
     setStatusTone('info');
     try {
-      const groupSessionId = sessionMode === 'group' ? createSessionId() : '';
+      const groupSessionId = sessionMode === 'group' ? plannedRequestId : '';
       const createdRows = await savePlannedLessonSession({
         tutorId: profile.uid,
         subject,
@@ -315,6 +359,7 @@ export const TutorLessonDetailsPage = () => {
         locationDetails,
         sessionMode,
         groupSessionId,
+        operationId: plannedRequestId,
       });
       if (!createdRows.length) throw new Error('No lesson records were created.');
       navigate(`${basePath}/lessons/${createdRows[0].id}`);
@@ -409,7 +454,7 @@ export const TutorLessonDetailsPage = () => {
   };
 
   const handleDelete = async () => {
-    if (!lessonRows.length || !window.confirm('Delete this lesson session and its student records? This cannot be undone.')) return;
+    if (!lessonRows.length || !window.confirm('Cancel this planned lesson session? The cancelled records will remain in lesson history.')) return;
     setIsSaving(true);
     try {
       await deleteLessonSession({ tutorId: profile.uid, lessonRows });
@@ -476,14 +521,18 @@ export const TutorLessonDetailsPage = () => {
             {sessionMode === 'one-on-one' ? (
               <select className="input" value={selectedStudentIds[0] || ''} onChange={(event) => setSelectedStudentIds(event.target.value ? [event.target.value] : [])}>
                 <option value="">Choose assigned student</option>
-                {availableStudents.map((student) => <option key={student.studentId} value={student.studentId}>{getStudentLabel(student)}</option>)}
+                {availableStudents.map((student) => {
+                  const blocker = getStudentLessonBlocker(student);
+                  return <option key={student.studentId} value={student.studentId} disabled={Boolean(blocker)}>{getStudentLabel(student)}{blocker ? ` — ${blocker}` : ''}</option>;
+                })}
               </select>
             ) : (
               <div className="max-h-64 divide-y divide-slate-200 overflow-y-auto rounded-lg border border-slate-200">
                 {availableStudents.map((student) => (
                   <label key={student.studentId} className="flex cursor-pointer items-center gap-3 px-3 py-2.5 text-sm text-slate-700 hover:bg-slate-50">
-                    <input type="checkbox" checked={selectedStudentIds.includes(student.studentId)} onChange={(event) => toggleStudent(student.studentId, event.target.checked)} />
+                    <input type="checkbox" checked={selectedStudentIds.includes(student.studentId)} onChange={(event) => toggleStudent(student.studentId, event.target.checked)} disabled={Boolean(getStudentLessonBlocker(student))} />
                     <span className="min-w-0 flex-1"><span className="block truncate font-semibold">{getStudentLabel(student)}</span><span className="block truncate text-xs text-slate-500">{student.email || student.studentId}</span></span>
+                    {getStudentLessonBlocker(student) ? <span className="max-w-48 text-right text-xs text-amber-700">{getStudentLessonBlocker(student)}</span> : null}
                   </label>
                 ))}
                 {!availableStudents.length ? <p className="p-3 text-sm text-slate-500">No current co-owner students match this subject and grade.</p> : null}
@@ -603,8 +652,8 @@ export const TutorLessonDetailsPage = () => {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm text-slate-500">{attendingCount} attending • {lessonRows.length - attendingCount} missed</p>
             <div className="flex flex-wrap gap-3">
-              {canManageExisting ? <button type="button" className="btn-secondary text-rose-700 hover:text-rose-800" onClick={handleDelete} disabled={isSaving}>Delete session</button> : null}
-              {canManageExisting ? <button type="button" className="btn-primary" onClick={saveLessonRecords} disabled={isSaving || !lessonRows.length || !topics.length}>{isSaving ? 'Saving…' : 'Save lesson records'}</button> : null}
+              {canCancelSession ? <button type="button" className="btn-secondary text-rose-700 hover:text-rose-800" onClick={handleDelete} disabled={isSaving}>Cancel session</button> : null}
+              {isEditable ? <button type="button" className="btn-primary" onClick={saveLessonRecords} disabled={isSaving || !lessonRows.length || !topics.length}>{isSaving ? 'Saving…' : 'Save lesson records'}</button> : null}
             </div>
           </div>
         </section>

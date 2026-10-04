@@ -2,6 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { admin, getDb } from './admin.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
 import { normalizeSupportedSubject } from './subjects.js';
+import { buildSubjectLessonQuota, releaseCancelledLessonQuota } from './lessonEntitlements.js';
 
 const ACCESS_ROLES = ['co-owner', 'marker', 'viewer'];
 const requireUid = (request) => {
@@ -72,12 +73,15 @@ const assertPaidSubjectCapacity = async ({ db, studentId, existingCount, additio
     : null;
   const payment = paymentSnapshot?.exists ? paymentSnapshot.data() : null;
   if (!payment || payment.status !== 'success' || payment.studentId !== studentId
-    || payment.reference !== subscription.latestReference || Number(payment.amount) !== quote.amount) {
+    || payment.reference !== subscription.latestReference || Number(payment.amount) !== quote.amount
+    || payment.currency !== quote.currency || payment.planId !== quote.planId
+    || payment.billingPeriod !== quote.billingPeriod || Number(payment.subjectCount) !== quote.subjectCount) {
     throw new HttpsError('failed-precondition', 'A matching successful student payment is required.');
   }
   if (existingCount + additions > quote.subjectCount) {
     throw new HttpsError('failed-precondition', `Your subscription includes ${quote.subjectCount} subject(s).`);
   }
+  return { subscription, quote };
 };
 
 const copyTopicHistory = async ({ db, previousRef, nextRef }) => {
@@ -97,18 +101,7 @@ const copyTopicHistory = async ({ db, previousRef, nextRef }) => {
     await commitIfFull();
     const scores = await topic.ref.collection('understandingScores').get();
     for (const score of scores.docs) {
-      const scoreData = score.data();
-      if (scoreData.scoreScale !== 'ratio-0-to-1') {
-        const rawScore = Number(scoreData.score);
-        const hasQuestionMarks = Number.isFinite(Number(scoreData.earnedMarks))
-          && Number.isFinite(Number(scoreData.totalMarks)) && Number(scoreData.totalMarks) > 0;
-        const divisor = scoreData.sourceType === 'Lesson' || !hasQuestionMarks ? 10 : 100;
-        if (Number.isFinite(rawScore) && rawScore >= 0 && rawScore <= divisor) {
-          scoreData.score = Math.round((rawScore / divisor) * 10000) / 10000;
-          scoreData.scoreScale = 'ratio-0-to-1';
-        }
-      }
-      batch.set(targetTopic.collection('understandingScores').doc(score.id), scoreData);
+      batch.set(targetTopic.collection('understandingScores').doc(score.id), score.data());
       writes += 1;
       await commitIfFull();
     }
@@ -117,13 +110,74 @@ const copyTopicHistory = async ({ db, previousRef, nextRef }) => {
   return topics.size;
 };
 
+const getVerifiedSubjectCapacity = async ({ db, studentId }) => {
+  const subscriptionSnapshot = await studentSubscriptionRef(db, studentId).get();
+  if (!subscriptionSnapshot.exists) return 0;
+  const subscription = subscriptionSnapshot.data();
+  const renewalDate = subscription.renewalDate?.toDate?.();
+  if (subscription.status !== 'active' || !renewalDate || renewalDate <= new Date()
+    || !['circle', 'personalized'].includes(subscription.planId) || !subscription.latestReference) return 0;
+  let quote;
+  try {
+    quote = calculateSubscriptionQuote(subscription);
+  } catch {
+    return 0;
+  }
+  const paymentSnapshot = await studentPaymentRef(db, studentId, subscription.latestReference).get();
+  const payment = paymentSnapshot.exists ? paymentSnapshot.data() : null;
+  return payment?.status === 'success' && payment.studentId === studentId
+    && payment.reference === subscription.latestReference && Number(payment.amount) === quote.amount
+    && payment.planId === quote.planId && payment.billingPeriod === quote.billingPeriod
+    && Number(payment.subjectCount) === quote.subjectCount ? quote.subjectCount : 0;
+};
+
+const getRestorableSubjectEpisodes = async ({ db, studentId, grade, now = new Date() }) => {
+  const snapshot = await subjectCollection(db, studentId).get();
+  const cutoff = dateThreeMonthsBefore(now);
+  const latestBySubject = new Map();
+  snapshot.docs.forEach((episode) => {
+    const data = episode.data();
+    const cancelledAt = data.cancelledAt?.toDate?.();
+    const subject = normalizeSupportedSubject(data.subjectKey);
+    if (data.status !== 'cancelled' || data.grade !== grade || !cancelledAt || cancelledAt < cutoff || !subject) return;
+    const previous = latestBySubject.get(subject);
+    if (!previous || cancelledAt > previous.cancelledAt) {
+      latestBySubject.set(subject, { episodeId: episode.id, subject, grade, cancelledAt });
+    }
+  });
+  return [...latestBySubject.values()]
+    .sort((left, right) => left.subject.localeCompare(right.subject))
+    .map((candidate) => ({ ...candidate, cancelledAt: candidate.cancelledAt.toISOString() }));
+};
+
+export const getStudentSubjectHistoryOptions = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const uid = requireUid(request);
+  const studentId = String(request.data?.studentId ?? '').trim();
+  const grade = String(request.data?.grade ?? '').trim();
+  if (!studentId || !/^Grade (?:[4-9]|1[0-2])$/.test(grade)) {
+    throw new HttpsError('invalid-argument', 'Choose a student and a valid destination grade.');
+  }
+  const db = getDb();
+  const studentSnapshot = await db.collection('users').doc(studentId).get();
+  if (!studentSnapshot.exists || studentSnapshot.data().role !== 'student') throw new HttpsError('not-found', 'Student profile not found.');
+  await authorizeStudentChange({ db, uid, studentId, student: studentSnapshot.data() });
+  const [candidates, subjectCapacity] = await Promise.all([
+    getRestorableSubjectEpisodes({ db, studentId, grade }),
+    getVerifiedSubjectCapacity({ db, studentId }),
+  ]);
+  return { studentId, grade, subjectCapacity, candidates };
+});
+
 export const updateStudentSubjects = onCall({ cpu: 'gcf_gen1', timeoutSeconds: 300 }, async (request) => {
   const uid = requireUid(request);
   const { studentId, action } = request.data ?? {};
   if (!studentId || !['add', 'remove'].includes(action)) throw new HttpsError('invalid-argument', 'A student and action are required.');
   const requested = action === 'add' ? request.data?.subjects : [request.data?.subject];
   const subjects = [...new Set((Array.isArray(requested) ? requested : []).filter(Boolean).map(normalizeSubject))];
+  const restoreSubjectInstanceIds = [...new Set((Array.isArray(request.data?.restoreSubjectInstanceIds)
+    ? request.data.restoreSubjectInstanceIds : []).map((value) => String(value ?? '').trim()).filter(Boolean))];
   if (!subjects.length) throw new HttpsError('invalid-argument', 'Choose at least one supported subject.');
+  if (action !== 'add' && restoreSubjectInstanceIds.length) throw new HttpsError('invalid-argument', 'History can only be restored while adding subjects.');
   const db = getDb();
   const studentRef = db.collection('users').doc(studentId);
   const studentSnapshot = await studentRef.get();
@@ -169,9 +223,23 @@ export const updateStudentSubjects = onCall({ cpu: 'gcf_gen1', timeoutSeconds: 3
       .filter((document) => ['active', 'restoring'].includes(document.data().status))
       .map((document) => [normalizeSubject(document.data().subjectKey), document]));
     const additions = subjects.filter((subject) => !currentBySubject.has(subject));
-    if (additions.length) {
-      await assertPaidSubjectCapacity({ db, studentId, existingCount: currentBySubject.size, additions: additions.length, transaction });
-    }
+    const selectedHistory = restoreSubjectInstanceIds.map((episodeId) => episodes.find((document) => document.id === episodeId));
+    if (selectedHistory.some((episode) => !episode)) throw new HttpsError('failed-precondition', 'A selected history episode is no longer available. Reload and choose again.');
+    const cutoff = dateThreeMonthsBefore(now);
+    const selectedHistoryBySubject = new Map();
+    selectedHistory.forEach((episode) => {
+      const data = episode.data();
+      const previousSubject = normalizeSubject(data.subjectKey);
+      const cancelledAt = data.cancelledAt?.toDate?.();
+      if (data.status !== 'cancelled' || data.grade !== current.grade || !cancelledAt || cancelledAt < cutoff
+        || !additions.includes(previousSubject) || selectedHistoryBySubject.has(previousSubject)) {
+        throw new HttpsError('failed-precondition', 'Selected topic history must be a recent cancelled episode for a subject being added at the same grade.');
+      }
+      selectedHistoryBySubject.set(previousSubject, episode);
+    });
+    const capacity = additions.length
+      ? await assertPaidSubjectCapacity({ db, studentId, existingCount: currentBySubject.size, additions: additions.length, transaction })
+      : null;
     const createdSubjects = [];
     const restoreTasks = [];
     for (const subject of subjects) {
@@ -182,12 +250,18 @@ export const updateStudentSubjects = onCall({ cpu: 'gcf_gen1', timeoutSeconds: 3
         }
         continue;
       }
-      const previous = episodes
-        .filter((document) => document.data().status === 'cancelled' && normalizeSubject(document.data().subjectKey) === subject)
-        .sort((left, right) => (right.data().cancelledAt?.toMillis?.() ?? 0) - (left.data().cancelledAt?.toMillis?.() ?? 0))[0];
-      const cancelledAt = previous?.data().cancelledAt?.toDate?.();
-      const restore = Boolean(previous && previous.data().grade === current.grade && cancelledAt >= dateThreeMonthsBefore(now));
+      const previous = selectedHistoryBySubject.get(subject) ?? null;
+      const restore = Boolean(previous);
       const episodeRef = subjectCollection(db, studentId).doc();
+      const lessonQuota = buildSubjectLessonQuota({
+        subscription: capacity.subscription,
+        quote: capacity.quote,
+        windowStartAt: capacity.subscription.entitlementWindowStartAt || capacity.subscription.renewedAt || capacity.subscription.activatedAt,
+        renewalDate: capacity.subscription.renewalDate,
+        carryForward: false,
+        cycleId: capacity.subscription.latestReference,
+        updatedAt: timestamp,
+      });
       transaction.set(episodeRef, {
         studentId, subjectKey: subject, subjectName: subject, grade: current.grade ?? '', curriculum: 'CAPS',
         status: restore ? 'restoring' : 'active', startedAt: timestamp, cancelledAt: null,
@@ -195,6 +269,7 @@ export const updateStudentSubjects = onCall({ cpu: 'gcf_gen1', timeoutSeconds: 3
         restoredAt: restore ? timestamp : null,
         completedTopicCount: restore ? Number(previous.data().completedTopicCount) || 0 : 0,
         dailyExerciseTarget: restore ? Math.min(5, Math.max(1, Number(previous.data().completedTopicCount) || 1)) : 1,
+        lessonQuota,
         primaryTutorId: '', staffByUid: {}, activeStaffIds: [], historicalStaffIds: [], staffMemberships: [],
         studentName: current.displayName || current.email || 'Student', createdAt: timestamp, updatedAt: timestamp,
       });
@@ -257,17 +332,44 @@ export const assignStudentToTutor = onCall({ cpu: 'gcf_gen1' }, async (request) 
     throw new HttpsError('invalid-argument', 'A student and tutor or teacher are required.');
   }
   const db = getDb();
-  const [actor, tutor, episodeSnapshot] = await Promise.all([
-    db.collection('users').doc(actorId).get(), db.collection('users').doc(tutorId).get(),
-    subjectCollection(db, studentId).where('subjectKey', '==', subject).where('status', '==', 'active').limit(1).get(),
-  ]);
-  if (actor.data()?.role !== 'admin') throw new HttpsError('permission-denied', 'Only an admin can assign the primary tutor.');
-  ensureTutorForSubject(tutor.exists ? tutor.data() : null, subject);
-  if (episodeSnapshot.empty) throw new HttpsError('not-found', 'Active subject episode not found.');
-  const episode = episodeSnapshot.docs[0];
+  const actorRef = db.collection('users').doc(actorId);
+  const tutorRef = db.collection('users').doc(tutorId);
+  const studentRef = db.collection('users').doc(studentId);
+  const subscriptionRef = studentSubscriptionRef(db, studentId);
   const now = admin.firestore.Timestamp.now();
-  await db.runTransaction(async (transaction) => {
-    const currentEpisode = await transaction.get(episode.ref);
+  const episode = await db.runTransaction(async (transaction) => {
+    const [actorSnapshot, tutorSnapshot, studentSnapshot, subscriptionSnapshot, activeEpisodes] = await Promise.all([
+      transaction.get(actorRef), transaction.get(tutorRef), transaction.get(studentRef), transaction.get(subscriptionRef),
+      transaction.get(subjectCollection(db, studentId).where('status', '==', 'active')),
+    ]);
+    if (!actorSnapshot.exists || actorSnapshot.data().role !== 'admin') throw new HttpsError('permission-denied', 'Only an admin can assign the primary tutor.');
+    if (!studentSnapshot.exists || studentSnapshot.data().role !== 'student') throw new HttpsError('not-found', 'Student profile not found.');
+    ensureTutorForSubject(tutorSnapshot.exists ? tutorSnapshot.data() : null, subject);
+    const subscription = subscriptionSnapshot.exists ? subscriptionSnapshot.data() : null;
+    const renewalDate = subscription?.renewalDate?.toDate?.();
+    if (!subscription || subscription.status !== 'active' || !['circle', 'personalized'].includes(subscription.planId)
+      || !renewalDate || renewalDate <= now.toDate() || !subscription.latestReference) {
+      throw new HttpsError('failed-precondition', 'A student needs an active paid subscription before a tutor can be assigned.');
+    }
+    let quote;
+    try { quote = calculateSubscriptionQuote(subscription); } catch {
+      throw new HttpsError('failed-precondition', 'The student’s active subscription selection is invalid.');
+    }
+    const paymentRef = studentPaymentRef(db, studentId, subscription.latestReference);
+    const paymentSnapshot = await transaction.get(paymentRef);
+    const payment = paymentSnapshot.exists ? paymentSnapshot.data() : null;
+    if (!payment || payment.status !== 'success' || payment.studentId !== studentId
+      || payment.reference !== subscription.latestReference || Number(payment.amount) !== quote.amount
+      || payment.currency !== quote.currency || payment.planId !== quote.planId
+      || payment.billingPeriod !== quote.billingPeriod || Number(payment.subjectCount) !== quote.subjectCount) {
+      throw new HttpsError('failed-precondition', 'A matching successful subscription payment is required before assigning a tutor.');
+    }
+    if (activeEpisodes.size > quote.subjectCount) {
+      throw new HttpsError('failed-precondition', 'The student has more active subjects than their subscription allows.');
+    }
+    const matchingEpisode = activeEpisodes.docs.find((document) => normalizeSubject(document.data().subjectKey) === subject);
+    if (!matchingEpisode) throw new HttpsError('not-found', 'Active subject episode not found.');
+    const currentEpisode = await transaction.get(matchingEpisode.ref);
     if (!currentEpisode.exists || currentEpisode.data().status !== 'active') {
       throw new HttpsError('not-found', 'Active subject episode not found.');
     }
@@ -281,8 +383,9 @@ export const assignStudentToTutor = onCall({ cpu: 'gcf_gen1' }, async (request) 
       staffMemberships: [...(current.staffMemberships ?? []), membership({ uid: tutorId, role: 'co-owner', grantedAt: now, grantedBy: actorId })],
       updatedAt: now,
     });
+    return { id: currentEpisode.id, studentId, tutorId, subject };
   });
-  return { id: episode.id, studentId, tutorId, subject };
+  return episode;
 });
 
 export const manageStaffStudentAccess = onCall({ cpu: 'gcf_gen1' }, async (request) => {
@@ -321,28 +424,213 @@ export const manageStaffStudentAccess = onCall({ cpu: 'gcf_gen1' }, async (reque
 export const changeStudentGrade = onCall({ cpu: 'gcf_gen1' }, async (request) => {
   const uid = requireUid(request);
   const { studentId, newGrade } = request.data ?? {};
-  if (!studentId || !newGrade) throw new HttpsError('invalid-argument', 'Student and new grade are required.');
+  const grade = String(newGrade ?? '').trim();
+  const restoreSubjectInstanceIds = [...new Set((Array.isArray(request.data?.restoreSubjectInstanceIds)
+    ? request.data.restoreSubjectInstanceIds : []).map((value) => String(value ?? '').trim()).filter(Boolean))];
+  if (!studentId || !/^Grade (?:[4-9]|1[0-2])$/.test(grade)) throw new HttpsError('invalid-argument', 'Student and a valid new grade are required.');
+  if (restoreSubjectInstanceIds.length > 20) throw new HttpsError('invalid-argument', 'Choose no more than 20 subject histories to restore.');
   const db = getDb();
   const studentRef = db.collection('users').doc(studentId);
   const studentSnapshot = await studentRef.get();
   if (!studentSnapshot.exists || studentSnapshot.data().role !== 'student') throw new HttpsError('not-found', 'Student profile not found.');
   const student = studentSnapshot.data();
   await authorizeStudentChange({ db, uid, studentId, student });
-  if (student.grade === newGrade) return { studentId, grade: newGrade, unchanged: true };
-  const active = await subjectCollection(db, studentId).where('status', '==', 'active').get();
   const now = admin.firestore.Timestamp.now();
-  const batch = db.batch();
-  active.docs.forEach((episode) => {
-    batch.update(episode.ref, { status: 'cancelled', cancelledAt: now, cancelledBy: uid, endReason: 'grade_changed', activeStaffIds: [], primaryTutorId: '', updatedAt: now });
-    const subject = normalizeSubject(episode.data().subjectKey);
-    batch.set(subjectCollection(db, studentId).doc(), {
-      studentId, subjectKey: subject, subjectName: subject, grade: newGrade, curriculum: 'CAPS', status: 'active',
-      startedAt: now, cancelledAt: null, completedTopicCount: 0, dailyExerciseTarget: 1,
-      primaryTutorId: '', staffByUid: {}, activeStaffIds: [], historicalStaffIds: [], staffMemberships: [],
-      studentName: student.displayName || student.email || 'Student', createdAt: now, updatedAt: now,
+  const subscriptionRef = studentSubscriptionRef(db, studentId);
+  const result = await db.runTransaction(async (transaction) => {
+    const [currentStudent, subscriptionSnapshot, episodeSnapshot] = await Promise.all([
+      transaction.get(studentRef), transaction.get(subscriptionRef), transaction.get(subjectCollection(db, studentId)),
+    ]);
+    if (!currentStudent.exists || currentStudent.data().role !== 'student') throw new HttpsError('not-found', 'Student profile not found.');
+    const current = currentStudent.data();
+    const episodes = episodeSnapshot.docs;
+    const active = episodes.filter((episode) => episode.data().status === 'active');
+    const sameGrade = current.grade === grade;
+    const activeToCancel = sameGrade ? [] : active;
+    const restoring = episodes.filter((episode) => episode.data().status === 'restoring'
+      && episode.data().grade === grade && (!restoreSubjectInstanceIds.length || restoreSubjectInstanceIds.includes(episode.data().previousSubjectInstanceId)));
+    if (sameGrade && !restoring.length && !restoreSubjectInstanceIds.length) return { unchanged: true, previousGrade: current.grade, restoredTasks: [], resetEpisodesCount: 0, cancelledLessonRefs: [] };
+
+    const selected = sameGrade
+      ? restoring.map((episode) => episodes.find((candidate) => candidate.id === episode.data().previousSubjectInstanceId)).filter(Boolean)
+      : restoreSubjectInstanceIds.map((id) => episodes.find((episode) => episode.id === id));
+    if (selected.some((episode) => !episode)) throw new HttpsError('failed-precondition', 'A selected history episode is no longer available. Reload and choose again.');
+    if (!sameGrade && active.some((episode) => episode.data().grade === grade)) {
+      throw new HttpsError('failed-precondition', 'An active subject already exists for the destination grade. Reload before changing grades.');
+    }
+
+    const cutoff = dateThreeMonthsBefore(new Date());
+    const selectedBySubject = new Map();
+    selected.forEach((episode) => {
+      const data = episode.data();
+      const subject = normalizeSubject(data.subjectKey);
+      const cancelledAt = data.cancelledAt?.toDate?.();
+      if ((!sameGrade && data.status !== 'cancelled') || data.grade !== grade || !cancelledAt || cancelledAt < cutoff
+        || selectedBySubject.has(subject)) {
+        throw new HttpsError('failed-precondition', 'Selected topic history must be a recent cancelled episode in the destination grade.');
+      }
+      selectedBySubject.set(subject, episode);
     });
+
+    const subscription = subscriptionSnapshot.exists ? subscriptionSnapshot.data() : null;
+    let restoreQuotaContext = null;
+    if (selected.length) {
+      const renewalDate = subscription?.renewalDate?.toDate?.();
+      if (subscription?.status !== 'active' || !renewalDate || renewalDate <= new Date()
+        || !['circle', 'personalized'].includes(subscription?.planId) || !subscription?.latestReference) {
+        throw new HttpsError('failed-precondition', 'An active paid subscription is required to restore subject history.');
+      }
+      const quote = calculateSubscriptionQuote(subscription);
+      const paymentRef = studentPaymentRef(db, studentId, subscription.latestReference);
+      const paymentSnapshot = await transaction.get(paymentRef);
+      const payment = paymentSnapshot.exists ? paymentSnapshot.data() : null;
+      if (!payment || payment.status !== 'success' || payment.studentId !== studentId
+        || payment.reference !== subscription.latestReference || Number(payment.amount) !== quote.amount
+        || payment.currency !== quote.currency || payment.planId !== quote.planId
+        || payment.billingPeriod !== quote.billingPeriod || Number(payment.subjectCount) !== quote.subjectCount) {
+        throw new HttpsError('failed-precondition', 'A matching successful payment is required to restore subject history.');
+      }
+      if (selected.length > quote.subjectCount) throw new HttpsError('failed-precondition', `Your active subscription allows up to ${quote.subjectCount} subject(s).`);
+      restoreQuotaContext = { subscription, quote };
+    }
+
+    const plannedQueries = activeToCancel.map((episode) => transaction.get(episode.ref.collection('lessons').where('status', 'in', ['planned', 'incomplete'])));
+    const plannedSnapshots = plannedQueries.length ? await Promise.all(plannedQueries) : [];
+    const affectedLessons = plannedSnapshots.flatMap((snapshot) => snapshot.docs);
+    const groupIds = [...new Set(affectedLessons.map((lesson) => lesson.data().groupSessionId).filter(Boolean))];
+    const groupSnapshots = await Promise.all(groupIds.map((groupSessionId) => transaction.get(
+      db.collectionGroup('lessons').where('groupSessionId', '==', groupSessionId).where('status', 'in', ['planned', 'incomplete']),
+    )));
+    const allGroupRows = new Map(groupSnapshots.flatMap((snapshot) => snapshot.docs).map((lesson) => [lesson.ref.path, lesson]));
+    const affectedPaths = new Set(affectedLessons.map((lesson) => lesson.ref.path));
+    const groupActions = [];
+    for (const groupId of groupIds) {
+      const rows = [...allGroupRows.values()].filter((lesson) => lesson.data().groupSessionId === groupId);
+      const affectedGroupRows = rows.filter((lesson) => affectedPaths.has(lesson.ref.path));
+      const nextCount = rows.length - affectedGroupRows.length;
+      groupActions.push({ rows, cancelAll: nextCount < 2, nextCount });
+    }
+    const cancelledLessonRefs = new Set();
+    const groupCountUpdates = new Map();
+    groupActions.forEach(({ rows, cancelAll, nextCount }) => rows.forEach((lesson) => {
+      if (cancelAll || affectedPaths.has(lesson.ref.path)) cancelledLessonRefs.add(lesson.ref.path);
+      else {
+        groupCountUpdates.set(lesson.ref.path, { ref: lesson.ref, nextCount });
+      }
+    }));
+    affectedLessons.filter((lesson) => !lesson.data().groupSessionId).forEach((lesson) => cancelledLessonRefs.add(lesson.ref.path));
+
+    const lessonDocsByPath = new Map([...allGroupRows, ...affectedLessons.map((lesson) => [lesson.ref.path, lesson])]);
+    const rowsToCancel = [...cancelledLessonRefs].map((path) => lessonDocsByPath.get(path)).filter(Boolean);
+    const episodeSnapshotByPath = new Map(episodes.map((episode) => [episode.ref.path, episode]));
+    const quotaEpisodeRefs = [...new Map(rowsToCancel
+      .filter((lessonDoc) => ['planned', 'incomplete'].includes(lessonDoc.data().status))
+      .map((lessonDoc) => {
+        const episodeRef = lessonDoc.ref.parent.parent;
+        return [episodeRef.path, episodeRef];
+      })).values()];
+    const missingQuotaEpisodeRefs = quotaEpisodeRefs.filter((episodeRef) => !episodeSnapshotByPath.has(episodeRef.path));
+    const missingQuotaEpisodeSnapshots = missingQuotaEpisodeRefs.length
+      ? await Promise.all(missingQuotaEpisodeRefs.map((episodeRef) => transaction.get(episodeRef)))
+      : [];
+    missingQuotaEpisodeRefs.forEach((episodeRef, index) => episodeSnapshotByPath.set(episodeRef.path, missingQuotaEpisodeSnapshots[index]));
+    const quotaUpdates = new Map();
+    rowsToCancel.forEach((lessonDoc) => {
+      const lesson = lessonDoc.data();
+      if (!['planned', 'incomplete'].includes(lesson.status)) return;
+      const episodeRef = lessonDoc.ref.parent.parent;
+      const episodeSnapshot = episodeSnapshotByPath.get(episodeRef.path);
+      if (!episodeSnapshot?.exists) return;
+      const lessonQuota = releaseCancelledLessonQuota({
+        lessonQuota: quotaUpdates.get(episodeRef.path) ?? episodeSnapshot.data().lessonQuota,
+        lesson, now,
+      });
+      if (lessonQuota) quotaUpdates.set(episodeRef.path, lessonQuota);
+    });
+    const episodeWritePaths = new Set([
+      ...activeToCancel.map((episode) => episode.ref.path),
+      ...quotaUpdates.keys(),
+    ]);
+    const createdRestorationCount = sameGrade ? 0 : selected.length;
+    if (episodeWritePaths.size + cancelledLessonRefs.size + groupCountUpdates.size + createdRestorationCount + (sameGrade ? 0 : 1) > 500) {
+      throw new HttpsError('resource-exhausted', 'There are too many scheduled lessons to change this grade in one operation. Cancel some future lessons and retry.');
+    }
+
+    if (!sameGrade) {
+      activeToCancel.forEach((episode) => transaction.update(episode.ref, {
+        status: 'cancelled', cancelledAt: now, cancelledBy: uid, endReason: 'grade_changed',
+        activeStaffIds: [], primaryTutorId: '',
+        staffMemberships: (episode.data().staffMemberships ?? []).map((item) => item.endedAt ? item : { ...item, endedAt: now, endedBy: uid }),
+        ...(quotaUpdates.has(episode.ref.path) ? { lessonQuota: quotaUpdates.get(episode.ref.path) } : {}),
+        updatedAt: now,
+      }));
+      transaction.update(studentRef, { grade, updatedAt: now });
+    }
+    quotaUpdates.forEach((lessonQuota, episodePath) => {
+      if (activeToCancel.some((episode) => episode.ref.path === episodePath)) return;
+      transaction.update(db.doc(episodePath), { lessonQuota, updatedAt: now });
+    });
+    groupCountUpdates.forEach(({ ref, nextCount }) => transaction.update(ref, { groupStudentCount: nextCount, updatedAt: now }));
+    cancelledLessonRefs.forEach((path) => {
+      const lessonDoc = lessonDocsByPath.get(path);
+      if (lessonDoc) transaction.update(lessonDoc.ref, {
+        status: 'cancelled', attendanceStatus: 'cancelled', attended: false,
+        cancelledAt: now, cancellationReason: 'grade_changed', updatedAt: now,
+      });
+    });
+
+    const restoredTasks = [];
+    selected.forEach((previous) => {
+      if (sameGrade) {
+        const currentRestoring = episodes.find((episode) => episode.data().status === 'restoring'
+          && episode.data().previousSubjectInstanceId === previous.data().previousSubjectInstanceId);
+        if (currentRestoring) restoredTasks.push({ subject: normalizeSubject(currentRestoring.data().subjectKey), episodeId: currentRestoring.id, previousEpisodeId: previous.data().previousSubjectInstanceId });
+        return;
+      }
+      const subject = normalizeSubject(previous.data().subjectKey);
+      const episodeRef = subjectCollection(db, studentId).doc();
+      const lessonQuota = buildSubjectLessonQuota({
+        subscription: restoreQuotaContext.subscription,
+        quote: restoreQuotaContext.quote,
+        windowStartAt: restoreQuotaContext.subscription.entitlementWindowStartAt
+          || restoreQuotaContext.subscription.renewedAt
+          || restoreQuotaContext.subscription.activatedAt,
+        renewalDate: restoreQuotaContext.subscription.renewalDate,
+        carryForward: false,
+        cycleId: restoreQuotaContext.subscription.latestReference,
+        updatedAt: now,
+      });
+      transaction.create(episodeRef, {
+        studentId, subjectKey: subject, subjectName: subject, grade, curriculum: 'CAPS',
+        status: 'restoring', startedAt: now, cancelledAt: null,
+        previousSubjectInstanceId: previous.id, restoredAt: now,
+        completedTopicCount: 0, dailyExerciseTarget: 1,
+        lessonQuota,
+        primaryTutorId: '', staffByUid: {}, activeStaffIds: [], historicalStaffIds: [], staffMemberships: [],
+        studentName: current.displayName || current.email || 'Student', createdAt: now, updatedAt: now,
+      });
+      restoredTasks.push({ subject, episodeId: episodeRef.id, previousEpisodeId: previous.id });
+    });
+    return {
+      unchanged: sameGrade,
+      previousGrade: current.grade,
+      resetEpisodesCount: sameGrade ? 0 : activeToCancel.length,
+      restoredTasks,
+      cancelledLessonRefs: [...cancelledLessonRefs],
+    };
   });
-  batch.update(studentRef, { grade: newGrade, updatedAt: now });
-  await batch.commit();
-  return { studentId, previousGrade: student.grade, newGrade, resetEpisodesCount: active.size };
+
+  for (const task of result.restoredTasks) {
+    const nextRef = subjectCollection(db, studentId).doc(task.episodeId);
+    const previousRef = subjectCollection(db, studentId).doc(task.previousEpisodeId);
+    const restoredTopicCount = await copyTopicHistory({ db, previousRef, nextRef });
+    await nextRef.update({ status: 'active', completedTopicCount: restoredTopicCount,
+      dailyExerciseTarget: Math.min(5, Math.max(1, restoredTopicCount)), restoredAt: now, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+  }
+  return {
+    studentId, previousGrade: result.previousGrade, grade,
+    unchanged: result.unchanged, resetEpisodesCount: result.resetEpisodesCount,
+    cancelledPlannedLessons: result.cancelledLessonRefs.length,
+    restoredSubjects: result.restoredTasks.map((task) => task.subject),
+  };
 });

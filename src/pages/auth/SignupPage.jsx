@@ -24,6 +24,7 @@ export const SignupPage = () => {
 
   const [acceptedPolicies, setAcceptedPolicies] = useState(false);
   const [status, setStatus] = useState('');
+  const pendingDiscountCode = new URLSearchParams(location.search).get('discountCode')?.toUpperCase() || '';
 
   const handleChange = (key) => (event) =>
     setForm((current) => ({ ...current, [key]: event.target.value }));
@@ -92,7 +93,12 @@ export const SignupPage = () => {
         const selectedPlanId = ['free', 'circle', 'personalized'].includes(planId) ? planId : 'free';
         const billingPeriod = selection.get('billingPeriod') === 'yearly' ? 'yearly' : 'monthly';
         const subjectCount = selection.get('subjectCount') || '1';
-        navigate(`/student/billing?planId=${selectedPlanId}&billingPeriod=${billingPeriod}&subjectCount=${encodeURIComponent(subjectCount)}`);
+        const discountCode = selection.get('discountCode');
+        const billingParams = new URLSearchParams({ planId: selectedPlanId, billingPeriod, subjectCount });
+        if (discountCode) billingParams.set('discountCode', discountCode.toUpperCase());
+        navigate(`/student/billing?${billingParams.toString()}`);
+      } else if (form.role === ROLES.PARENT && selection.get('discountCode')) {
+        navigate(`/parent?discountCode=${encodeURIComponent(selection.get('discountCode').toUpperCase())}`);
       } else {
         navigate(targetRoute);
       }
@@ -115,6 +121,7 @@ export const SignupPage = () => {
             Create your account
           </h2>
           <Logo className="mt-4" />
+          {pendingDiscountCode ? <p className="mt-4 rounded-xl border border-lime-400/20 bg-lime-400/5 p-3 text-sm text-lime-200">Discount code <span className="font-mono font-bold">{pendingDiscountCode}</span> will be checked securely in checkout after account creation.</p> : null}
         </div>
 
         <label className="block">
@@ -214,7 +221,7 @@ export const SignupPage = () => {
 
           <p className="mt-4 text-sm text-slate-400 text-center">
             Already have an account?{' '}
-            <Link to="/login" className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">
+            <Link to={`/login${location.search}`} className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">
               Log in
             </Link>.
           </p>

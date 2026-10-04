@@ -2,8 +2,10 @@
 
 ## Status and scope
 
-- Subscription pricing and the one-subject minimum/default are implemented in this change, as approved for the development reset.
-- Grade-change subject cancellation, optional history restoration, tutor assignment restrictions, lesson-mode restrictions, and lesson quotas remain planned work. They have not been implemented in this change.
+- Phase 1 pricing and the one-subject minimum/default are implemented.
+- Phase 2 grade changes and explicit history restoration are implemented, verified, and deployed.
+- Phase 3 paid-plan assignment checks, lesson-mode restrictions, and per-subject lesson quotas are implemented, verified, and deployed.
+- Firestore rules/indexes and Hosting are deployed; live signed-in account flows remain to be exercised with a test account.
 - No user, payment, subscription, subject, lesson, or history records are deleted by this work. The developer will clear development records separately before testing the new pricing data.
 
 ## Confirmed product rules
@@ -40,20 +42,20 @@
 - Free remains at 0 registered paid subjects.
 - Preserve the current yearly discount of 2 free months: annual charge is 10 times the corresponding monthly total. Lesson allowances still apply once per actual activation-to-renewal window; a yearly plan therefore has one quota window between annual renewals.
 
-## Existing implementation findings
+## Implementation findings
 
-- `changeStudentGrade` currently cancels active subject episodes but immediately creates fresh active episodes for all the same subject names at the new grade. It does not ask the student to choose subjects or restore history.
-- `updateStudentSubjects` already has a three-month, same-grade restoration path. Its `copyTopicHistory` helper copies topics and understanding-score records only, but restoration currently happens automatically when a matching subject is re-added. The planned change must make that restoration explicit opt-in.
-- `assignStudentToTutor` currently validates the admin, tutor, and active subject episode, but does not validate the student's current paid plan.
-- `savePlannedLessonSession` currently creates planned lesson rows from the frontend. It does not check plan, mode, renewal-window, or remaining lesson quotas. The group roster update path also needs the same authorization checks.
-- Both frontend and Functions currently maintain subscription pricing calculations. The active paid subject minimum is 2, with Circle at R249 for 2 included subjects plus R50 per extra subject, and Personalized at R1699 for 2 included subjects plus R600 per extra subject.
-- Paystack verification and exercise-access checks recompute expected amounts using the Functions pricing calculator. The development data reset is important because old payment records have amounts and subject counts from the old pricing rules.
+- `changeStudentGrade` now cancels current subject episodes, ends staff memberships, cancels planned lessons, updates the student's grade, and creates no replacement subjects automatically. It restores only explicitly selected matching histories.
+- `updateStudentSubjects` restores a recent same-grade history only when its cancelled episode ID is explicitly supplied. Fresh additions do not copy history. New and restored subject episodes receive the active subscription's per-subject quota ledger.
+- `assignStudentToTutor` verifies a matching successful payment, active paid subscription, and subject capacity before assigning a primary tutor.
+- Planned lesson creation, group roster changes, cancellation, and unscheduled lesson-log reservation now use trusted callables. Lesson completion and topic-score persistence remain in the frontend with restricted Firestore rules.
+- Quota windows start at successful Paystack activation/renewal. Each active subject stores the cycle ID, plan, window dates, and separate group/one-on-one grant, carried-in, used, and remaining counts. Successful renewal carries forward unused mode balances; failed or pending renewal does not advance the ledger.
+- Frontend and Functions pricing use the confirmed one-subject first-price model: Circle R199 + R49 per additional subject and Personalized R999 + R599 per additional subject. The development data reset remains necessary before testing legacy payment records against this pricing.
 
 ## Implementation plan
 
 ### Phase 1: Pricing engine and validation
 
-This phase is approved for implementation now.
+Completed.
 
 1. Update the frontend and Functions plan definitions with the confirmed prices and allowances in the table above.
 2. Change the paid subject minimum and default from 2 to 1, preserving the 20-subject maximum. Update signup query defaults, billing-page fallbacks, the subject-count control, frontend effective-subscription validation, and Functions quote validation so all entry points agree.
@@ -61,7 +63,7 @@ This phase is approved for implementation now.
 4. Update the plan selector copy and quote output so it displays the new subject rates and the Circle/Personalized lesson allowances per subscription window. Add separate group and one-on-one allowance values to the quote instead of presenting Personalized as only one-on-one.
 5. Keep the existing annual discount. Do not migrate or delete existing data. Because payment verification recomputes the quote from the current pricing rules, old test subscriptions and payment records must be cleared before testing the new prices; the developer will perform that reset separately.
 
-### Phase 2: Grade change and explicit history restoration
+### Phase 2: Grade change and explicit history restoration — completed
 
 1. Change the grade-transition operation to cancel each active subject episode, end its active tutor/staff membership, and update the student's grade without automatically creating replacement episodes.
 2. Cancel future planned lessons associated with the old active episodes as part of the transition. Leave completed lesson, exercise, topic, score, report, and submission data in the cancelled episode for audit/history.
@@ -71,9 +73,9 @@ This phase is approved for implementation now.
 6. For a subject added without opting into an eligible history, create a fresh episode. Keep the old cancelled episode intact.
 7. Update `DATABASE_RESTRUCTURE_PLAN.md` so it no longer says grade changes always start with zero topics and no carry-over.
 
-### Phase 3: Tutor assignment and lesson scheduling entitlements
+### Phase 3: Tutor assignment and lesson scheduling entitlements — completed
 
-1. Add a shared server-side entitlement check that reads the student's effective subscription, including the active renewal window and any valid payment/grace status. Store an explicit `entitlementWindowStartAt` at successful activation and advance it on successful renewals; pair it with `renewalDate` to form the quota window.
+1. Add a shared server-side entitlement check that reads the student's effective subscription, including the active renewal window and any valid payment/grace status. The subscription/payment record remains authoritative for payment and plan status. Each active student-subject document is the source of truth for that subject's lesson quota and usage, and stores the active quota window ID, window start, and renewal date so scheduling can validate and update the quota at the subject level.
 2. In `assignStudentToTutor`, reject new assignments when the student's effective plan is Free or the paid plan is not active for the requested subject. Keep the existing admin and approved-tutor checks.
 3. Keep useful immediate UI feedback in the tutor/admin pages, but treat the server check as authoritative.
 4. Enforce lesson access for every student in a session:
@@ -81,19 +83,23 @@ This phase is approved for implementation now.
    - Circle: allow group only.
    - Personalized: allow group or one-on-one.
 5. Enforce the lesson date inside the effective plan's `[activation time, renewal date)` window. If a downgrade is pending, use the current plan through its renewal date; do not use the pending plan early.
-6. Count the student's non-cancelled lesson rows under that subject episode, split by `sessionMode`. Planned, completed, and missed rows consume quota; cancelled rows do not. Each participant's own group lesson row consumes one group allowance for that student.
-7. Move only the security-sensitive planned-session creation and roster/quota mutations behind trusted Functions. Keep lesson completion, tutor score entry, and score review in the frontend where existing Firestore permissions safely allow them.
-8. Add or tighten Firestore rules so clients cannot bypass plan or quota checks by writing lesson schedule rows directly.
-9. At renewal, switch the effective plan and its lesson allowances only after the new payment/plan activation succeeds. A pending downgrade must not remove the benefits already paid through the current renewal date.
+6. Store per-mode quota and usage fields on each active student-subject document. Include the current cycle grant, any carried-forward balance, scheduled/used amount, remaining amount, window start, renewal date, and cycle identifier. A tutor's successful lesson scheduling atomically reserves/decrements one lesson from that student's subject quota. Completion and missed status keep that reservation consumed; cancellation releases it. A group lesson updates each participating student's own subject document. Lesson rows remain the audit trail, but do not replace the subject document as the quota source of truth.
+7. On successful initial payment or activation, initialize the quota ledger and window fields on every active subject document. On a successful renewal, atomically advance each active subject's cycle and add its remaining unused quota to the new cycle's allowance, split by lesson mode. Do not roll quota forward before payment succeeds. Pending downgrades retain the old plan's quota and access through the paid renewal date; after renewal, apply the renewed plan's mode restrictions while preserving the carried quota in the subject ledger.
+8. Move only the security-sensitive planned-session creation and roster/quota mutations behind trusted Functions. Keep lesson completion, tutor score entry, and score review in the frontend where existing Firestore permissions safely allow them.
+9. Add or tighten Firestore rules so clients cannot bypass plan or quota checks by writing lesson schedule rows or quota fields directly.
 
-## Verification checklist for the remaining phases
+## Verification checklist
 
 - Grade change leaves no active old-grade subject episodes, creates no replacements automatically, and retains old episode records.
 - History candidates are limited to the destination grade and the three-calendar-month cutoff; an unchecked candidate is never copied.
 - Restoring copies topics and understanding scores only, without staff, lesson, exercise, report, or submission documents.
 - The subject limit is enforced for restored and fresh subjects, including a one-subject subscription.
 - Free assignment and scheduling are rejected server-side. Circle rejects one-on-one; Personalized accepts both modes.
-- Quotas are calculated from activation through renewal, count planned/completed/missed, exclude cancelled, and are applied independently per student and subject.
+- The active subject document is authoritative for each student's per-subject, per-mode quota, usage, remaining balance, window start, and renewal date; scheduling updates it atomically and lesson rows provide the audit trail.
+- Quotas are calculated from activation through renewal, reserve planned lessons, keep completed/missed lessons consumed, release cancelled lessons, and are applied independently per student and subject.
+- Successful renewal advances each active subject's quota window and adds unused per-mode quota to the new cycle; failed or pending renewal never advances the quota window.
 - A pending downgrade preserves the current plan's scheduling rights until renewal; no lesson may be scheduled beyond the current renewal date under the current plan.
 - Frontend, Functions, Paystack initialization/verification, renewal charging, and access validation produce identical prices for 1, 2, and additional subjects on monthly and annual billing.
-- Build, frontend lint, Functions lint, and quote-parity checks pass for Phase 1. Phase 1 can be deployed for the clean development reset; deploy only the Functions affected by each later phase when that phase is complete.
+- Build, frontend lint, Functions lint, and quote-parity checks passed on 2026-10-04. Frontend lint reports five existing warnings and no errors; Functions lint is clean.
+- Firestore rules and required indexes deployed on 2026-10-04. Only affected Functions were deployed, followed by Hosting at https://examifying.web.app; the live Hosting URL returned HTTP 200 and the deployed callable/scheduled function list includes the new endpoints.
+- Live account flows still need a user-created test account: grade change, opt-in restoration, tutor assignment, each lesson mode/quota limit, cancellation refund, and renewal rollover.

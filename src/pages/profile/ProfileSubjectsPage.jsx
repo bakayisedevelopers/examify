@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
 import { ROLES } from '../../lib/constants';
-import { addStudentSubjects, getActiveSubjectsForStudent, getGlobalSubjects, getTutorMarksDocuments, removeUserSubject, updateUserSubjectAvailability } from '../../services/firestoreService';
+import { addStudentSubjects, getActiveSubjectsForStudent, getGlobalSubjects, getStudentSubjectHistoryOptions, getTutorMarksDocuments, removeUserSubject, updateUserSubjectAvailability } from '../../services/firestoreService';
 import { deleteTutorMarksDocument, retryTutorMarksDocument, uploadTutorMarksDocument } from '../../services/storageService';
 import { getApprovedTutorSubjects } from '../../utils/tutorSubjects';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
@@ -35,6 +35,9 @@ export const ProfileSubjectsPage = ({ role }) => {
   const [activeStudentSubjects, setActiveStudentSubjects] = useState([]);
   const [globalSubjects, setGlobalSubjects] = useState([]);
   const [globalSubjectsLoading, setGlobalSubjectsLoading] = useState(role === ROLES.STUDENT);
+  const [historyCandidates, setHistoryCandidates] = useState([]);
+  const [selectedHistoryIds, setSelectedHistoryIds] = useState([]);
+  const [historyCapacity, setHistoryCapacity] = useState(0);
   const tutorUploadFormRef = useRef(null);
   const loadStudentSubjects = useCallback(async () => {
     if (role !== ROLES.STUDENT || !profile?.uid) return;
@@ -45,6 +48,7 @@ export const ProfileSubjectsPage = ({ role }) => {
     return role === ROLES.STUDENT ? activeStudentSubjects : [];
   }, [activeStudentSubjects, isTutorRole, profile, role]);
   const availableSubjects = globalSubjects.filter((subject) => !currentSubjects.includes(subject));
+  const restorableHistoryCandidates = historyCandidates.filter((candidate) => !currentSubjects.includes(candidate.subject));
   const selectableSubjects = availableSubjects.filter((subject) => !selectedSubjects.includes(subject));
   const subjectLimit = Number(subscriptionState?.subscriptionSubjectCount) || 0;
   const remainingSubjectSlots = Math.max(0, subjectLimit - currentSubjects.length - selectedSubjects.length);
@@ -88,6 +92,23 @@ export const ProfileSubjectsPage = ({ role }) => {
     return () => { isActive = false; };
   }, [role]);
 
+  useEffect(() => {
+    if (role !== ROLES.STUDENT || !profile?.uid || !profile?.grade) return undefined;
+    let isActive = true;
+    getStudentSubjectHistoryOptions({ studentId: profile.uid, grade: profile.grade }).then((result) => {
+      if (!isActive) return;
+      setHistoryCandidates(Array.isArray(result.candidates) ? result.candidates : []);
+      setHistoryCapacity(Number(result.subjectCapacity) || 0);
+    }).catch((error) => {
+      console.error('[Examifying][SubjectHistory] load:error', error);
+      if (isActive) {
+        setHistoryCandidates([]);
+        setHistoryCapacity(0);
+      }
+    });
+    return () => { isActive = false; };
+  }, [profile?.grade, profile?.uid, role]);
+
   const handleAddSubjectToSelection = () => {
     if (!subjectToAdd || selectedSubjects.includes(subjectToAdd)) return;
     if (currentSubjects.length + selectedSubjects.length >= subjectLimit) {
@@ -100,6 +121,21 @@ export const ProfileSubjectsPage = ({ role }) => {
 
   const handleRemoveSelectedSubject = (subject) => {
     setSelectedSubjects((current) => current.filter((item) => item !== subject));
+    const candidate = historyCandidates.find((item) => item.subject === subject);
+    if (candidate) setSelectedHistoryIds((current) => current.filter((id) => id !== candidate.episodeId));
+  };
+
+  const handleRestoreHistoryChoice = (candidate, checked) => {
+    if (checked && !selectedSubjects.includes(candidate.subject)) {
+      if (currentSubjects.length + selectedSubjects.length >= subjectLimit) {
+        setStatus(`Your subscription includes up to ${subjectLimit} subjects. Remove a current subject before adding another.`);
+        return;
+      }
+      setSelectedSubjects((current) => [...current, candidate.subject]);
+    }
+    setSelectedHistoryIds((current) => checked
+      ? [...new Set([...current, candidate.episodeId])]
+      : current.filter((id) => id !== candidate.episodeId));
   };
 
   const handleAddStudentSubjects = async (event) => {
@@ -116,11 +152,12 @@ export const ProfileSubjectsPage = ({ role }) => {
     try {
       setSaving(true);
       setStatus('Adding subjects...');
-      await addStudentSubjects({ studentId: profile.uid, subjects: selectedSubjects });
+      await addStudentSubjects({ studentId: profile.uid, subjects: selectedSubjects, restoreSubjectInstanceIds: selectedHistoryIds });
       await loadStudentSubjects();
       await refreshProfile(profile.uid);
       setStatus(`${selectedSubjects.join(', ')} added to your subjects.`);
       setSelectedSubjects([]);
+      setSelectedHistoryIds([]);
       setSubjectToAdd('');
     } catch (error) {
       setStatus(error.message || 'Could not add subjects.');
@@ -310,6 +347,18 @@ export const ProfileSubjectsPage = ({ role }) => {
               Add to list
             </button>
           </div>
+          {restorableHistoryCandidates.length ? <fieldset className="space-y-2 rounded-2xl bg-amber-50 p-4">
+            <legend className="px-1 text-xs font-semibold uppercase tracking-[0.15em] text-amber-800">Recent topic history (optional)</legend>
+            <p className="text-xs text-amber-900">Choose a subject below if needed, then opt in to copy only its topics and understanding scores. Staff and lessons are not copied.</p>
+            <div className="space-y-2">
+              {restorableHistoryCandidates.map((candidate) => (
+                <label key={candidate.episodeId} className="flex items-start gap-3 rounded-xl bg-white/80 p-3 text-sm text-slate-700">
+                  <input type="checkbox" className="mt-0.5" checked={selectedHistoryIds.includes(candidate.episodeId)} onChange={(event) => handleRestoreHistoryChoice(candidate, event.target.checked)} disabled={historyCapacity === 0 || !selectedSubjects.includes(candidate.subject) && remainingSubjectSlots === 0} />
+                  <span><span className="font-semibold">{candidate.subject}</span><span className="block text-xs text-slate-500">Restore recent history from {new Date(candidate.cancelledAt).toLocaleDateString()} (capacity: {historyCapacity})</span></span>
+                </label>
+              ))}
+            </div>
+          </fieldset> : null}
           <div className="min-h-16 rounded-2xl bg-slate-50 p-4">
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Selected subjects</p>
             <div className="mt-3 flex flex-wrap gap-2">

@@ -24,6 +24,7 @@ import { AdminDashboardPage } from '../pages/admin/AdminDashboardPage';
 import { AdminUsersPage } from '../pages/admin/AdminUsersPage';
 import { AdminPaymentsPage } from '../pages/admin/AdminPaymentsPage';
 import { AdminSettingsPage } from '../pages/admin/AdminSettingsPage';
+import { AdminDiscountCodesPage } from '../pages/admin/AdminDiscountCodesPage';
 import { PastExamPapersPage } from '../pages/PastExamPapersPage';
 import { GuidePage } from '../pages/GuidePage';
 import { ROLES } from '../lib/constants';
@@ -128,6 +129,7 @@ export const AppRoutes = () => (
       <Route path="/admin" element={<AdminDashboardPage />} />
       <Route path="/admin/users" element={<AdminUsersPage />} />
       <Route path="/admin/payments" element={<AdminPaymentsPage />} />
+      <Route path="/admin/discount-codes" element={<AdminDiscountCodesPage />} />
       <Route path="/admin/settings" element={<AdminSettingsPage />} />
       <Route path="/admin/papers" element={<PastExamPapersPage />} />
       <Route path="/admin/papers/:paperId" element={<PaperReaderPage />} />

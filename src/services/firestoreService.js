@@ -3,7 +3,6 @@ import {
   collection,
   collectionGroup,
   deleteField,
-  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -1560,6 +1559,7 @@ export const saveCompletedLesson = async ({
   whatsappLessonLink = '',
   locationDetails = '',
   status = 'completed',
+  requestId = '',
 }) => {
   const lessonAccessDetails = {
     whatsappLessonLink: normalizeWhatsAppLessonLink(whatsappLessonLink),
@@ -1601,9 +1601,23 @@ export const saveCompletedLesson = async ({
   }
 
   ensureDb();
-  const episode = await ensureActiveSubjectEpisode(studentId, subject);
-
+  if (!functions) throw new Error('Firebase Functions are not configured to reserve lesson quota.');
+  const reserveLessonLog = httpsCallable(functions, 'reserveCompletedLessonLog');
+  const reservation = await reserveLessonLog({
+    operationId: requestId || globalThis.crypto?.randomUUID?.() || `lesson-log-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    studentId,
+    subject,
+    lessonDate: scheduledFor,
+    topics: lessonTopics,
+    lessonType,
+    ...lessonAccessDetails,
+    students: [{ studentId, subjectInstanceId: accessContext.subjectInstanceId, grade: accessContext.grade }],
+  });
+  const reservedLesson = reservation.data.lesson;
+  if (!reservedLesson?.documentPath || !reservedLesson?.id) throw new Error('The lesson quota was reserved, but no lesson record was returned. Retry this save.');
+  const ref = doc(db, reservedLesson.documentPath);
   const lessonData = {
+    ...reservedLesson,
     studentId,
     tutorId,
     subject,
@@ -1621,25 +1635,22 @@ export const saveCompletedLesson = async ({
     attendanceStatus: status === 'completed' ? 'attended' : status === 'missed' ? 'missed' : 'pending',
     attended: status === 'completed' ? true : status === 'missed' ? false : null,
     completedOn,
-    assignmentPeriodId: accessContext.assignmentPeriodId,
-    subjectInstanceId: episode?.id || '',
-    createdAt: serverTimestamp(),
+    assignmentPeriodId: reservedLesson.assignmentPeriodId || accessContext.assignmentPeriodId,
+    subjectInstanceId: reservedLesson.subjectInstanceId,
   };
-
-  if (!episode?.id) throw new Error('Active subject episode not found.');
-  const ref = doc(collection(db, 'users', studentId, 'subjects', episode.id, 'lessons'));
+  delete lessonData.createdAt;
   await persistLessonOutcome({
     lessonRef: ref,
     lessonData,
-    createLesson: true,
+    createLesson: false,
     studentId,
-    subjectInstanceId: episode.id,
+    subjectInstanceId: reservedLesson.subjectInstanceId,
     tutorId,
     topicScores: lessonTopicScores,
     tutorReport: topicReport,
   });
 
-  return { id: ref.id, ...lessonData, documentPath: ref.path };
+  return { ...reservedLesson, ...lessonData, id: ref.id, documentPath: ref.path };
 };
 
 export const savePlannedLessonSession = async ({
@@ -1653,6 +1664,7 @@ export const savePlannedLessonSession = async ({
   locationDetails = '',
   sessionMode = 'one-on-one',
   groupSessionId = '',
+  operationId = '',
 }) => {
   const uniqueStudents = [...new Map(students.map((student) => [`${student.studentId}:${subject}`, student])).values()];
   if (!tutorId || !subject || !lessonDate || !uniqueStudents.length) throw new Error('Choose a subject, date, and at least one student.');
@@ -1661,7 +1673,7 @@ export const savePlannedLessonSession = async ({
   if (sessionMode === 'one-on-one' && uniqueStudents.length !== 1) throw new Error('Choose exactly one student for a one-on-one lesson.');
   if (sessionMode === 'group' && !groupSessionId) throw new Error('A group lesson needs a session reference.');
   if (sessionMode === 'group' && new Set(uniqueStudents.map((student) => student.grade || '')).size !== 1) throw new Error('All students in a group lesson must be in the same grade.');
-  if (uniqueStudents.length > 500) throw new Error('A lesson session can include up to 500 students.');
+  if (uniqueStudents.length > 250) throw new Error('A lesson session can include up to 250 students.');
   if (!['online', 'inPerson'].includes(lessonType)) throw new Error('Choose online or in-person for this lesson.');
   const lessonAccessDetails = {
     whatsappLessonLink: normalizeWhatsAppLessonLink(whatsappLessonLink),
@@ -1701,23 +1713,19 @@ export const savePlannedLessonSession = async ({
     return plannedRows;
   }
   ensureDb();
-  const batch = writeBatch(db);
-  plannedRows.forEach((row) => {
-    const ref = doc(collection(db, 'users', row.studentId, 'subjects', row.subjectInstanceId, 'lessons'));
-    row.id = ref.id;
-    row.documentPath = ref.path;
-    const persistedRow = { ...row };
-    delete persistedRow.topicUnderstandingScores;
-    delete persistedRow.understandingLevel;
-    batch.set(ref, {
-      ...persistedRow,
-      topicReport: '',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+  if (!functions) throw new Error('Firebase Functions are not configured to reserve lesson quota.');
+  const createLesson = httpsCallable(functions, 'createPlannedLessonSession');
+  const result = await createLesson({
+    operationId: operationId || groupSessionId || globalThis.crypto?.randomUUID?.() || `planned-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    subject, topics, lessonDate, lessonType, ...lessonAccessDetails, sessionMode, groupSessionId,
+    students: uniqueStudents.map((student, index) => ({
+      studentId: student.studentId,
+      subjectInstanceId: accessContexts[index].subjectInstanceId,
+      grade: student.grade || accessContexts[index].grade || '',
+      displayName: student.displayName || student.name || student.email || '',
+    })),
   });
-  await batch.commit();
-  return plannedRows;
+  return result.data.lessons ?? [];
 };
 
 export const getLessonsByGroupSessionId = async (groupSessionId, tutorId) => {
@@ -1728,7 +1736,7 @@ export const getLessonsByGroupSessionId = async (groupSessionId, tutorId) => {
   ensureDb();
   if (!tutorId) throw new Error('Tutor access is required to load a group lesson.');
   const lessons = await getTutorLessonsForAssignedStudents(tutorId);
-  return lessons.filter((lesson) => lesson.groupSessionId === groupSessionId)
+  return lessons.filter((lesson) => lesson.groupSessionId === groupSessionId && lesson.status !== 'cancelled')
     .sort((left, right) => String(left.studentName || '').localeCompare(String(right.studentName || '')));
 };
 
@@ -1835,23 +1843,19 @@ export const updatePlannedLessonRoster = async ({ tutorId, lessonRows = [], addS
     return nextRows;
   }
 
-  const writeCount = removeIds.size + remaining.length + additions.length;
-  if (writeCount > 500) throw new Error('This roster change is too large to save atomically. Add or remove students in separate steps.');
   ensureDb();
-  const batch = writeBatch(db);
-  lessonRows.filter((lesson) => removeIds.has(lesson.id)).forEach((lesson) => batch.delete(lessonRefFor(lesson)));
-  remaining.forEach((lesson) => batch.update(lessonRefFor(lesson), {
-    groupStudentCount: nextCount,
-    updatedAt: serverTimestamp(),
-  }));
-  addedRows.forEach((row) => {
-    const ref = doc(collection(db, 'users', row.studentId, 'subjects', row.subjectInstanceId, 'lessons'));
-    row.id = ref.id;
-    row.documentPath = ref.path;
-    batch.set(ref, { ...row, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  if (!functions) throw new Error('Firebase Functions are not configured to update lesson quota.');
+  const mutateLesson = httpsCallable(functions, 'mutatePlannedLessonSession');
+  const result = await mutateLesson({
+    action: 'update-roster', groupSessionId, removeLessonIds: [...removeIds],
+    addStudents: additions.map((student, index) => ({
+      studentId: student.studentId,
+      subjectInstanceId: accessContexts[index].subjectInstanceId,
+      grade: student.grade || accessContexts[index].grade || '',
+      displayName: student.displayName || student.name || student.email || '',
+    })),
   });
-  await batch.commit();
-  return nextRows;
+  return result.data.lessons ?? nextRows;
 };
 
 export const completeLessonSession = async ({
@@ -1938,20 +1942,19 @@ export const completeLessonSession = async ({
 };
 
 export const deleteLessonSession = async ({ tutorId, lessonRows = [] }) => {
-  if (!tutorId || !lessonRows.length) throw new Error('Choose a lesson session to delete.');
-  if (lessonRows.length > 500) throw new Error('A lesson session can include up to 500 students.');
+  if (!tutorId || !lessonRows.length) throw new Error('Choose a lesson session to cancel.');
+  if (lessonRows.length > 250) throw new Error('A lesson session can include up to 250 students.');
   await Promise.all(lessonRows.map((lesson) =>
     requireCoOwnerAccess({ tutorId, studentId: lesson.studentId, subject: lesson.subject ?? DEFAULT_SUBJECT }),
   ));
   if (!isFirebaseConfigured) {
     removeMockLessonRows(lessonRows.map((lesson) => lesson.id));
-    return { deleted: true, count: lessonRows.length };
+    return { cancelled: true, count: lessonRows.length };
   }
   ensureDb();
-  const batch = writeBatch(db);
-  lessonRows.forEach((lesson) => batch.delete(lessonRefFor(lesson)));
-  await batch.commit();
-  return { deleted: true, count: lessonRows.length };
+  if (!functions) throw new Error('Firebase Functions are not configured to update lesson quota.');
+  const mutateLesson = httpsCallable(functions, 'mutatePlannedLessonSession');
+  return (await mutateLesson({ action: 'cancel', lessonRows })).data;
 };
 
 export const getTopicResolverSourceRecords = async ({ subject, grade } = {}) => {
@@ -3351,6 +3354,7 @@ export const getTutorAssignedStudentContexts = async (tutorId) => {
       assignmentId: item.id, assignmentPeriodId: item.id,
       accessRole: isPrimaryTutor ? 'co-owner' : episode.staffByUid?.[tutorId] ?? 'viewer',
       isPrimaryTutor,
+      lessonQuota: episode.lessonQuota ?? null,
     };
   });
   const students = await Promise.all(rows.map((row) => getDoc(doc(db, collections.users, row.studentId))));
@@ -3559,8 +3563,10 @@ export const deleteLesson = async (lessonId, tutorId) => {
     removeMockLessonRows([lessonId]);
     return { id: lessonId, deleted: true };
   }
-  await deleteDoc(doc(db, lesson.documentPath));
-  return { id: lessonId, deleted: true };
+  if (!functions) throw new Error('Firebase Functions are not configured to update lesson quota.');
+  const mutateLesson = httpsCallable(functions, 'mutatePlannedLessonSession');
+  const result = await mutateLesson({ action: 'cancel', lessonRows: [lesson] });
+  return { id: lessonId, ...result.data };
 };
 
 export const subscribeToAssignedTutorForStudent = (studentId, callback, subject = DEFAULT_SUBJECT) => {
@@ -3742,7 +3748,15 @@ export const updateStudentProfileByParent = async ({ parentId, studentId, update
 };
 
 
-export const addStudentSubjects = async ({ studentId, subjects }) => {
+export const getStudentSubjectHistoryOptions = async ({ studentId, grade }) => {
+  if (!studentId || !grade) throw new Error('Choose the student and grade to check for recent subject history.');
+  if (!isFirebaseConfigured) return { studentId, grade, subjectCapacity: 0, candidates: [] };
+  ensureDb();
+  const callable = httpsCallable(functions, 'getStudentSubjectHistoryOptions');
+  return (await callable({ studentId, grade })).data;
+};
+
+export const addStudentSubjects = async ({ studentId, subjects, restoreSubjectInstanceIds = [] }) => {
   const cleanSubjects = [...new Set((subjects ?? []).filter(Boolean))];
   if (!cleanSubjects.length) throw new Error('Choose at least one subject to add.');
 
@@ -3752,7 +3766,7 @@ export const addStudentSubjects = async ({ studentId, subjects }) => {
 
   ensureDb();
   const callable = httpsCallable(functions, 'updateStudentSubjects');
-  return (await callable({ studentId, action: 'add', subjects: cleanSubjects })).data;
+  return (await callable({ studentId, action: 'add', subjects: cleanSubjects, restoreSubjectInstanceIds })).data;
 };
 
 export const addStudentSubject = async ({ studentId, subject }) => addStudentSubjects({ studentId, subjects: [subject] });

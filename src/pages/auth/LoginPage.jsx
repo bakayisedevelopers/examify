@@ -1,16 +1,27 @@
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useLocation, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { Logo } from '../../components/common/Logo';
 
 export const LoginPage = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { login } = useAuth();
   const [form, setForm] = useState({ email: '', password: '' });
   const [status, setStatus] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   const redirectByRole = (profile) => {
+    const selection = new URLSearchParams(location.search);
+    const planId = selection.get('planId');
+    if (profile.role === 'student' && ['free', 'circle', 'personalized'].includes(planId)) {
+      navigate(`/student/billing?${selection.toString()}`);
+      return;
+    }
+    if (profile.role === 'parent' && selection.get('discountCode')) {
+      navigate(`/parent?discountCode=${encodeURIComponent(selection.get('discountCode'))}`);
+      return;
+    }
     const target = profile.isTeacher ? '/teacher' : `/${profile.role}`;
     navigate(target);
   };
@@ -64,7 +75,7 @@ export const LoginPage = () => {
         </button>
         {status ? <p className="text-sm text-rose-500">{status}</p> : null}
         <p className="text-sm text-slate-400 text-center">
-          Need an account? <Link to="/signup" className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">Create one</Link>.
+          Need an account? <Link to={`/signup${location.search}`} className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">Create one</Link>.
         </p>
       </form>
     </main>

@@ -25,6 +25,7 @@ export const StudentBillingPage = () => {
     planId: params.get('planId') || subscriptionState?.pendingPlan?.planId || subscriptionState?.subscriptionPlanId || 'free',
     billingPeriod: params.get('billingPeriod') || subscriptionState?.pendingPlan?.billingPeriod || subscriptionState?.subscriptionBillingPeriod,
     subjectCount: params.get('subjectCount') || subscriptionState?.pendingPlan?.subjectCount || subscriptionState?.subscriptionSubjectCount || 1,
+    discountCode: params.get('discountCode') || '',
   };
 
   const formatRenewalDate = (value) => {
@@ -90,7 +91,10 @@ export const StudentBillingPage = () => {
         ...selection,
         callbackUrl: `${window.location.origin}/student/billing`,
       });
-      if (result.free) {
+      if (result.freeCheckout) {
+        await completeStudentAccessFlow(result.reference);
+        navigate(location.pathname, { replace: true });
+      } else if (result.free) {
         const refreshedProfile = await refreshProfile(profile.uid);
         await refreshStudentSubscriptionState(refreshedProfile || profile);
         setStatus('Free subscription activated. Unlimited question papers are available.');
@@ -191,7 +195,7 @@ export const StudentBillingPage = () => {
           }}
         />
       ) : null}
-      {subscriptionState ? <SubscriptionPlanSelector key={`${initialSelection.planId}-${initialSelection.billingPeriod}-${initialSelection.subjectCount}`} onContinue={handleContinue} isSubmitting={isStartingSubscription || isVerifyingPayment} initialSelection={initialSelection} /> : null}
+      {subscriptionState ? <SubscriptionPlanSelector key={`${initialSelection.planId}-${initialSelection.billingPeriod}-${initialSelection.subjectCount}`} onContinue={handleContinue} isSubmitting={isStartingSubscription || isVerifyingPayment} initialSelection={initialSelection} initialDiscountCode={initialSelection.discountCode} studentId={profile.uid} mobileSwipe /> : null}
       <div className="mt-5 space-y-3">
         {status ? <div role="status" className="panel p-4 text-sm text-slate-700">{status}</div> : null}
         {isVerifyingPayment ? <p role="status" className="text-sm text-slate-600">Verifying your payment…</p> : null}

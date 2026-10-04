@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, BookOpen, ClipboardCheck, CreditCard, FileText, LogOut, Users, ShieldCheck, Menu, X, ChevronLeft, GraduationCap } from 'lucide-react';
+import { LayoutDashboard, BookOpen, ClipboardCheck, CreditCard, FileText, LogOut, Users, ShieldCheck, Menu, X, ChevronLeft, GraduationCap, Tag } from 'lucide-react';
 import { Logo } from './Logo';
 import { ROLES } from '../../lib/constants';
 import { useAuth } from '../../hooks/useAuth';
@@ -28,6 +28,7 @@ const navigationByRole = {
     { to: '/admin/users', label: 'Users', icon: Users },
     { to: '/admin/papers', label: 'Past papers', icon: BookOpen },
     { to: '/admin/payments', label: 'Payments', icon: CreditCard },
+    { to: '/admin/discount-codes', label: 'Discount codes', icon: Tag },
     { to: '/admin/settings', label: 'Settings', icon: ShieldCheck },
   ],
   [ROLES.PARENT]: [

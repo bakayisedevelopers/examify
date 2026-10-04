@@ -4,6 +4,9 @@ import { randomUUID } from 'node:crypto';
 import { getDb, admin } from './admin.js';
 import { getPaystackConfig } from './config.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
+import { getActiveSubjectLessonQuotaUpdates } from './lessonEntitlements.js';
+import { applyRecurringDiscount, calculateDiscount } from './discountCodesCore.js';
+import { getDiscountQuoteForCheckout, reserveDiscountRedemption, transitionDiscountRedemptionForPayment } from './discountCodes.js';
 
 const studentSubscriptionRef = (db, studentId) => db.collection('users').doc(studentId).collection('subscriptions').doc('current');
 const studentPaymentRef = (db, studentId, reference) => db.collection('users').doc(studentId).collection('payments').doc(reference);
@@ -63,11 +66,17 @@ export const applyFreeSubscription = async ({ studentId, pendingReference = null
     renewalAttempt: admin.firestore.FieldValue.delete(),
     renewalAttemptCount: 0,
     renewalChargeLock: admin.firestore.FieldValue.delete(),
+    discountBenefit: admin.firestore.FieldValue.delete(),
     manualPaymentRequired: false,
     lastChargeStatus: admin.firestore.FieldValue.delete(),
     updatedAt: now,
     ...(reason ? { lastSubscriptionChangeReason: reason } : {}),
   };
+  const freeSubscription = { ...quote, planId: 'free', status: 'active', renewalDate: null, latestReference: null };
+  const freeSubjectQuotas = await getActiveSubjectLessonQuotaUpdates({
+    db, studentId, subscription: freeSubscription, carryForward: false,
+    windowStartAt: null, renewalDate: null, cycleId: 'free', updatedAt: now,
+  });
   batch.set(studentSubscriptionRef(db, studentId), subscriptionPatch, { merge: true });
   batch.set(db.collection('users').doc(studentId), {
     paymentCompleted: false,
@@ -88,8 +97,168 @@ export const applyFreeSubscription = async ({ studentId, pendingReference = null
       updatedAt: now,
     }, { merge: true });
   }
+  freeSubjectQuotas.forEach(({ ref, lessonQuota }) => batch.set(ref, { lessonQuota, updatedAt: now }, { merge: true }));
   await batch.commit();
   return quote;
+};
+
+const completeZeroCostDiscountCheckout = async ({ db, studentId, payerId, isParent, email, reference, quote, discount, isNewRedemption = true }) => {
+  const now = admin.firestore.Timestamp.now();
+  const renewalDate = admin.firestore.Timestamp.fromDate(
+    new Date(now.toDate().getTime() + quote.billingCycleDays * 24 * 60 * 60 * 1000),
+  );
+  const paymentRef = studentPaymentRef(db, studentId, reference);
+  const subRef = studentSubscriptionRef(db, studentId);
+  const userRef = db.collection('users').doc(studentId);
+  const codeRef = db.collection('discountCodes').doc(discount.code);
+  const useRef = codeRef.collection('redemptions').doc(reference);
+  const subscriptionForQuota = {
+    ...quote,
+    status: 'active',
+    latestReference: reference,
+    renewalDate,
+    entitlementWindowStartAt: now,
+    activatedAt: now,
+    renewedAt: now,
+  };
+  const quotas = await getActiveSubjectLessonQuotaUpdates({
+    db, studentId, subscription: subscriptionForQuota, carryForward: false,
+    windowStartAt: now, renewalDate, cycleId: reference, updatedAt: now,
+  });
+
+  await db.runTransaction(async (transaction) => {
+    const [paymentSnapshot, subscriptionSnapshot, codeSnapshot, useSnapshot] = await Promise.all([
+      transaction.get(paymentRef), transaction.get(subRef),
+      ...(isNewRedemption ? [transaction.get(codeRef), transaction.get(useRef)] : []),
+    ]);
+    if (paymentSnapshot.exists && paymentSnapshot.data()?.status === 'success') return;
+    if (isNewRedemption && (!codeSnapshot?.exists || !useSnapshot?.exists || useSnapshot.data()?.status !== 'reserved')) {
+      throw new HttpsError('failed-precondition', 'The discount reservation could not be confirmed. Please start checkout again.');
+    }
+    const currentSubscription = subscriptionSnapshot.exists ? subscriptionSnapshot.data() : {};
+    const oldPendingReference = currentSubscription.pendingPlanReference;
+    const oldPendingRef = oldPendingReference && oldPendingReference !== reference
+      ? studentPaymentRef(db, studentId, oldPendingReference)
+      : null;
+    if (oldPendingRef) await transaction.get(oldPendingRef);
+
+    const recurringBenefit = discount.billingDuration === 'recurring' ? {
+      code: discount.code,
+      percentOff: discount.percentOff,
+      planId: quote.planId,
+      billingPeriod: quote.billingPeriod,
+      subjectCount: quote.subjectCount,
+      activatedAt: now,
+    } : admin.firestore.FieldValue.delete();
+    transaction.set(paymentRef, {
+      reference, studentId, payerId, parentId: isParent ? payerId : null, email,
+      status: 'success', originalAmount: discount.originalAmount,
+      discountAmount: discount.discountAmount, discountPercent: discount.percentOff,
+      discountCode: discount.code, discountBillingDuration: discount.billingDuration,
+      currency: quote.currency, ...quote, amount: 0, product: 'Examifying subscription',
+      paidAt: now, zeroCostCheckout: true, createdAt: now, updatedAt: now,
+    }, { merge: true });
+    transaction.set(subRef, {
+      studentId, status: 'active', ...quote, amount: 0,
+      originalAmount: discount.originalAmount, discountAmount: discount.discountAmount,
+      discountPercent: discount.percentOff, discountCode: discount.code,
+      discountBillingDuration: discount.billingDuration,
+      ...(discount.billingDuration === 'recurring' ? { discountBenefit: recurringBenefit } : { discountBenefit: admin.firestore.FieldValue.delete() }),
+      latestReference: reference, activatedAt: now, entitlementWindowStartAt: now,
+      renewedAt: now, renewalDate, cancelAtPeriodEnd: false,
+      manualPaymentRequired: !(discount.billingDuration === 'recurring' && discount.percentOff === 100),
+      autoRenew: discount.billingDuration === 'recurring' && discount.percentOff === 100,
+      renewalAttemptCount: 0,
+      graceEndsAt: admin.firestore.FieldValue.delete(), renewalAttempt: admin.firestore.FieldValue.delete(),
+      renewalChargeLock: admin.firestore.FieldValue.delete(), pendingPlan: admin.firestore.FieldValue.delete(),
+      pendingPlanReference: admin.firestore.FieldValue.delete(), pendingPlanSetAt: admin.firestore.FieldValue.delete(),
+      cancellation: admin.firestore.FieldValue.delete(), updatedAt: now,
+    }, { merge: true });
+    transaction.set(userRef, {
+      paymentCompleted: true, subscriptionStatus: 'active',
+      subscriptionPlanId: quote.planId, subscriptionPlanName: quote.planName,
+      subscriptionBillingPeriod: quote.billingPeriod, subscriptionSubjectCount: quote.subjectCount,
+      latestPaymentReference: reference, subscriptionRenewalDate: renewalDate,
+      pendingSubscriptionPlan: admin.firestore.FieldValue.delete(), updatedAt: now,
+    }, { merge: true });
+    if (isNewRedemption) {
+      transaction.set(useRef, { status: 'redeemed', paymentStatus: 'success', redeemedAt: now, updatedAt: now }, { merge: true });
+      transaction.update(codeRef, {
+        reservedRedemptions: admin.firestore.FieldValue.increment(-1),
+        successfulRedemptions: admin.firestore.FieldValue.increment(1), updatedAt: now,
+      });
+    }
+    if (oldPendingRef) transaction.set(oldPendingRef, {
+      status: 'cancelled', cancelledAt: now, cancellationReason: 'discounted_checkout_completed',
+    }, { merge: true });
+    quotas.forEach(({ ref, lessonQuota }) => transaction.set(ref, { lessonQuota, updatedAt: now }, { merge: true }));
+  });
+  return { freeCheckout: true, reference, quote, discount };
+};
+
+export const applyZeroCostSubscriptionRenewal = async ({ studentId, quote, renewalDate }) => {
+  const db = getDb();
+  const dueDate = renewalDate?.toDate?.() ?? (renewalDate instanceof Date ? renewalDate : null);
+  if (!dueDate || quote?.amount !== 0 || quote?.discountPercent !== 100 || quote?.discountBillingDuration !== 'recurring') {
+    throw new HttpsError('failed-precondition', 'The zero-cost recurring renewal is not eligible.');
+  }
+  const reference = `zero-renewal-${studentId}-${dueDate.getTime()}`;
+  const subRef = studentSubscriptionRef(db, studentId);
+  const paymentRef = studentPaymentRef(db, studentId, reference);
+  const userRef = db.collection('users').doc(studentId);
+  const now = admin.firestore.Timestamp.now();
+  const nextRenewalDate = admin.firestore.Timestamp.fromDate(
+    new Date(now.toDate().getTime() + quote.billingCycleDays * 24 * 60 * 60 * 1000),
+  );
+  const quotaSubscription = { ...quote, status: 'active', latestReference: reference, renewalDate: nextRenewalDate };
+  const quotas = await getActiveSubjectLessonQuotaUpdates({
+    db, studentId, subscription: quotaSubscription, carryForward: true,
+    windowStartAt: now, renewalDate: nextRenewalDate, cycleId: reference, updatedAt: now,
+  });
+  await db.runTransaction(async (transaction) => {
+    const [subSnapshot, paymentSnapshot] = await Promise.all([transaction.get(subRef), transaction.get(paymentRef)]);
+    if (paymentSnapshot.exists && paymentSnapshot.data()?.status === 'success') return;
+    if (!subSnapshot.exists) throw new HttpsError('not-found', 'The subscription could not be found.');
+    const current = subSnapshot.data();
+    const currentDue = current.renewalDate?.toDate?.();
+    const selectedPlan = current.pendingPlan?.planId ? current.pendingPlan : current;
+    const benefit = current.discountBenefit;
+    if (currentDue?.getTime() !== dueDate.getTime()
+      || current.cancelAtPeriodEnd === true || current.pendingPlan?.planId === 'free'
+      || benefit?.percentOff !== 100 || benefit?.planId !== selectedPlan.planId
+      || benefit?.billingPeriod !== selectedPlan.billingPeriod
+      || Number(benefit?.subjectCount) !== Number(selectedPlan.subjectCount)) {
+      throw new HttpsError('aborted', 'The subscription changed before its free renewal could be applied.');
+    }
+    transaction.set(paymentRef, {
+      reference, studentId, payerId: current.renewalAttempt?.payerId || studentId,
+      status: 'success', recurring: true, zeroCostCheckout: true,
+      originalAmount: quote.originalAmount, discountAmount: quote.discountAmount,
+      discountPercent: 100, discountCode: benefit.code, discountBillingDuration: 'recurring',
+      currency: quote.currency, ...quote, amount: 0,
+      createdAt: now, paidAt: now, updatedAt: now,
+    }, { merge: true });
+    transaction.set(subRef, {
+      ...quote, amount: 0, originalAmount: quote.originalAmount, discountAmount: quote.discountAmount,
+      discountPercent: 100, discountCode: benefit.code, discountBillingDuration: 'recurring',
+      latestReference: reference, status: 'active', autoRenew: true, manualPaymentRequired: false,
+      renewalDate: nextRenewalDate, activatedAt: now, entitlementWindowStartAt: now, renewedAt: now,
+      renewalAttemptCount: 0, renewalAttempt: admin.firestore.FieldValue.delete(),
+      renewalChargeLock: admin.firestore.FieldValue.delete(), graceEndsAt: admin.firestore.FieldValue.delete(),
+      nextRenewalAttemptAt: admin.firestore.FieldValue.delete(), pendingPlan: admin.firestore.FieldValue.delete(),
+      pendingPlanReference: admin.firestore.FieldValue.delete(), pendingPlanSetAt: admin.firestore.FieldValue.delete(),
+      updatedAt: now,
+    }, { merge: true });
+    transaction.set(userRef, {
+      paymentCompleted: true, subscriptionStatus: 'active', subscriptionPlanId: quote.planId,
+      subscriptionPlanName: quote.planName, subscriptionBillingPeriod: quote.billingPeriod,
+      subscriptionSubjectCount: quote.subjectCount, latestPaymentReference: reference,
+      subscriptionRenewalDate: nextRenewalDate, pendingSubscriptionPlan: admin.firestore.FieldValue.delete(),
+      updatedAt: now,
+    }, { merge: true });
+    quotas.forEach(({ ref, lessonQuota }) => transaction.set(ref, { lessonQuota, updatedAt: now }, { merge: true }));
+  });
+  return { succeeded: true, reference, zeroCostRenewal: true, nextRenewalDate };
 };
 
 const assertCanManageStudentSubscription = async ({ db, payerId, studentId }) => {
@@ -112,7 +281,7 @@ const assertCanManageStudentSubscription = async ({ db, payerId, studentId }) =>
 
 export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (request) => {
   try {
-    const { studentId, planId, billingPeriod, subjectCount, callbackUrl } = request.data ?? {};
+    const { studentId, planId, billingPeriod, subjectCount, callbackUrl, discountCode } = request.data ?? {};
     const payerId = request.auth?.uid;
     if (!payerId) throw new HttpsError('unauthenticated', 'Sign in before selecting a subscription.');
     if (!studentId) throw new HttpsError('invalid-argument', 'A student account is required.');
@@ -174,6 +343,27 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
       && Number(currentSubscription.subjectCount) === quote.subjectCount;
 
     const currentPendingPlan = currentSubscription?.pendingPlan ?? null;
+
+    let discountQuote = null;
+    if (discountCode) {
+      discountQuote = await getDiscountQuoteForCheckout({
+        db, code: discountCode, uid: payerId, email, studentId, planId, billingPeriod, subjectCount,
+      });
+    }
+    let rememberedDiscount = null;
+    const savedBenefit = currentSubscription?.discountBenefit;
+    if (!discountCode && currentSubscription?.discountBillingDuration === 'recurring' && savedBenefit) {
+      const recurringQuote = applyRecurringDiscount(quote, savedBenefit, quote);
+      if (recurringQuote.discountPercent) {
+        const amountParts = calculateDiscount(quote.amount, Number(savedBenefit.percentOff));
+        rememberedDiscount = {
+          code: savedBenefit.code,
+          percentOff: Number(savedBenefit.percentOff),
+          billingDuration: 'recurring',
+          ...amountParts,
+        };
+      }
+    }
     const pendingPlanMatches = subscriptionIsCurrent
       && currentPendingPlan?.planId === quote.planId
       && currentPendingPlan?.billingPeriod === quote.billingPeriod
@@ -268,6 +458,7 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
     const reference = makeReference('examifying', studentId);
 
     if (planId === 'free') {
+      const now = admin.firestore.Timestamp.now();
       const activeFree = {
         studentId,
         status: 'active',
@@ -286,12 +477,17 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
         renewalChargeLock: admin.firestore.FieldValue.delete(),
         cancellation: admin.firestore.FieldValue.delete(),
         lastChargeStatus: admin.firestore.FieldValue.delete(),
-        activatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        activatedAt: now,
+        entitlementWindowStartAt: null,
         pendingPlan: admin.firestore.FieldValue.delete(),
         pendingPlanReference: admin.firestore.FieldValue.delete(),
         pendingPlanSetAt: admin.firestore.FieldValue.delete(),
       };
       const batch = db.batch();
+      const freeSubjectQuotas = await getActiveSubjectLessonQuotaUpdates({
+        db, studentId, subscription: { ...quote, planId: 'free', status: 'active', latestReference: reference, renewalDate: null },
+        carryForward: false, windowStartAt: null, renewalDate: null, cycleId: reference, updatedAt: now,
+      });
       if (currentSubscription?.pendingPlanReference) {
         batch.set(studentPaymentRef(db, studentId, currentSubscription.pendingPlanReference), {
           status: 'cancelled',
@@ -325,8 +521,35 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
         subscriptionRenewalDate: null,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
+      freeSubjectQuotas.forEach(({ ref, lessonQuota }) => batch.set(ref, { lessonQuota, updatedAt: now }, { merge: true }));
       await batch.commit();
       return { free: true, reference, quote };
+    }
+
+    let reservedDiscount = null;
+    let appliedDiscount = rememberedDiscount;
+    if (discountQuote) {
+      reservedDiscount = await reserveDiscountRedemption({
+        db, code: discountQuote.code, reference, studentId, payerId, email, quote,
+      });
+      appliedDiscount = reservedDiscount;
+    }
+    if (appliedDiscount?.finalAmount === 0) {
+      return await completeZeroCostDiscountCheckout({
+        db, studentId, payerId, isParent, email, reference, quote,
+        discount: appliedDiscount, isNewRedemption: Boolean(reservedDiscount),
+      });
+    }
+    if (appliedDiscount) {
+      await studentPaymentRef(db, studentId, reference).set({
+        reference, studentId, payerId, parentId: isParent ? payerId : null, email,
+        status: 'initializing',
+        originalAmount: appliedDiscount.originalAmount, discountAmount: appliedDiscount.discountAmount,
+        discountPercent: appliedDiscount.percentOff, discountCode: appliedDiscount.code,
+        discountBillingDuration: appliedDiscount.billingDuration,
+        currency: quote.currency, ...quote, amount: appliedDiscount.finalAmount,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
     }
 
     logger.info('Initializing Paystack transaction', {
@@ -338,25 +561,36 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
       callbackUrl: paystackCallbackUrl,
     });
 
-    const transaction = await paystackRequest({
-      path: '/transaction/initialize',
-      method: 'POST',
-      payload: {
-        email,
-        amount: Math.round(quote.amount * 100),
-        currency: 'ZAR',
-        reference,
-        callback_url: callbackUrlWithStudent.toString(),
-        metadata: {
-          studentId,
-          payerId,
-          planId: quote.planId,
-          billingPeriod: quote.billingPeriod,
-          subjectCount: quote.subjectCount,
-          product: 'Examifying subscription',
+    let transaction;
+    try {
+      transaction = await paystackRequest({
+        path: '/transaction/initialize',
+        method: 'POST',
+        payload: {
+          email,
+          amount: Math.round((appliedDiscount?.finalAmount ?? quote.amount) * 100),
+          currency: 'ZAR',
+          reference,
+          callback_url: callbackUrlWithStudent.toString(),
+          metadata: {
+            studentId,
+            payerId,
+            planId: quote.planId,
+            billingPeriod: quote.billingPeriod,
+            subjectCount: quote.subjectCount,
+            ...(appliedDiscount ? { discountCode: appliedDiscount.code, discountPercent: appliedDiscount.percentOff } : {}),
+            product: 'Examifying subscription',
+          },
         },
-      },
-    });
+      });
+    } catch (error) {
+      if (appliedDiscount && error instanceof HttpsError) {
+        const cleanup = [studentPaymentRef(db, studentId, reference).set({ status: 'failed', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true })];
+        if (reservedDiscount) cleanup.push(transitionDiscountRedemptionForPayment({ db, code: reservedDiscount.code, reference, status: 'failed' }));
+        await Promise.all(cleanup);
+      }
+      throw error;
+    }
 
     await studentPaymentRef(db, studentId, reference).set({
       reference,
@@ -365,9 +599,16 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
       parentId: isParent ? payerId : null,
       email,
       status: 'initialized',
-      amount: quote.amount,
+      ...(appliedDiscount ? {
+        originalAmount: appliedDiscount.originalAmount,
+        discountAmount: appliedDiscount.discountAmount,
+        discountPercent: appliedDiscount.percentOff,
+        discountCode: appliedDiscount.code,
+        discountBillingDuration: appliedDiscount.billingDuration,
+      } : {}),
       currency: 'ZAR',
       ...quote,
+      amount: appliedDiscount?.finalAmount ?? quote.amount,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
@@ -376,6 +617,7 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
       accessCode: transaction.access_code,
       reference,
       quote,
+      ...(appliedDiscount ? { discount: appliedDiscount } : {}),
     };
   } catch (error) {
     logger.error('initializePaystackTransaction failed', error);
@@ -563,7 +805,10 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
   const payment = paymentSnapshot.data();
   if (payment.payerId !== payerId) throw new HttpsError('permission-denied', 'This payment belongs to another account.');
   if (payment.status === 'success') return { status: 'success', reference, authorizationStored: false };
-  if (!['initialized', 'pending', 'processing'].includes(payment.status) || !payment.planId || !payment.studentId) {
+  if (['failed', 'abandoned', 'reversed', 'amount_mismatch'].includes(payment.status)) {
+    return { status: payment.status, reference, authorizationStored: false };
+  }
+  if (!['initializing', 'initialized', 'pending', 'processing', 'ongoing'].includes(payment.status) || !payment.planId || !payment.studentId) {
     throw new HttpsError('failed-precondition', 'This payment cannot be verified. Please start a new subscription checkout.');
   }
 
@@ -578,26 +823,38 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
     throw new HttpsError('failed-precondition', 'The saved subscription selection is invalid.');
   }
 
+  const discount = payment.discountPercent
+    ? calculateDiscount(quote.amount, Number(payment.discountPercent))
+    : null;
+  const expectedAmount = discount?.finalAmount ?? quote.amount;
+
   const transaction = await paystackRequest({
     path: `/transaction/verify/${reference}`,
     method: 'GET',
   });
 
-  if (transaction.status === 'success' && (Number(transaction.amount) !== Math.round(quote.amount * 100) || transaction.currency !== quote.currency)) {
+  if (transaction.status === 'success' && (Number(transaction.amount) !== Math.round(expectedAmount * 100) || transaction.currency !== quote.currency)) {
     await paymentRef.set({ status: 'amount_mismatch', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
     throw new HttpsError('failed-precondition', 'The verified payment does not match this subscription price.');
   }
 
+  await transitionDiscountRedemptionForPayment({
+    db, code: payment.discountCode, reference, status: transaction.status,
+  });
+
   const authorization = transaction.authorization ?? null;
   const succeeded = transaction.status === 'success';
   const reusableAuthorization = Boolean(authorization?.authorization_code && authorization.reusable);
+  const activationDate = succeeded && transaction.paid_at && !Number.isNaN(new Date(transaction.paid_at).getTime())
+    ? new Date(transaction.paid_at)
+    : new Date();
+  const activationTimestamp = succeeded ? admin.firestore.Timestamp.fromDate(activationDate) : null;
   const nextRenewalDate = succeeded
-    ? admin.firestore.Timestamp.fromDate(new Date(Date.now() + quote.billingCycleDays * 24 * 60 * 60 * 1000))
+    ? admin.firestore.Timestamp.fromDate(new Date(activationDate.getTime() + quote.billingCycleDays * 24 * 60 * 60 * 1000))
     : null;
   const batch = db.batch();
   batch.set(paymentRef, {
     reference,
-    amount: Number(transaction.amount ?? 0) / 100,
     currency: transaction.currency ?? quote.currency,
     status: transaction.status,
     gatewayResponse: transaction.gateway_response,
@@ -607,6 +864,14 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
     payerId,
     email: transaction.customer?.email ?? payment.email,
     ...quote,
+    amount: Number(transaction.amount ?? 0) / 100,
+    ...(discount ? {
+      originalAmount: discount.originalAmount,
+      discountAmount: discount.discountAmount,
+      discountPercent: Number(payment.discountPercent),
+      discountCode: payment.discountCode,
+      discountBillingDuration: payment.discountBillingDuration,
+    } : {}),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
 
@@ -614,6 +879,16 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
     const subscriptionRef = studentSubscriptionRef(db, payment.studentId);
     const currentSubscriptionSnapshot = await subscriptionRef.get();
     const currentSubscription = currentSubscriptionSnapshot.exists ? currentSubscriptionSnapshot.data() : null;
+    const subscriptionForQuota = {
+      ...quote, status: 'active', latestReference: reference,
+      renewalDate: nextRenewalDate, entitlementWindowStartAt: activationTimestamp,
+      activatedAt: activationTimestamp, renewedAt: activationTimestamp,
+    };
+    const activeSubjectQuotas = await getActiveSubjectLessonQuotaUpdates({
+      db, studentId: payment.studentId, subscription: subscriptionForQuota,
+      carryForward: false, windowStartAt: activationTimestamp,
+      renewalDate: nextRenewalDate, cycleId: reference, updatedAt: activationTimestamp,
+    });
     const oldPendingReference = currentSubscription?.pendingPlanReference;
     if (oldPendingReference && oldPendingReference !== reference) {
       const oldPendingPlan = currentSubscription?.pendingPlan;
@@ -650,13 +925,32 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
       studentId: payment.studentId,
       status: 'active',
       ...quote,
-      amount: quote.amount,
+      amount: expectedAmount,
+      ...(discount ? {
+        originalAmount: discount.originalAmount,
+        discountAmount: discount.discountAmount,
+        discountPercent: Number(payment.discountPercent),
+        discountCode: payment.discountCode,
+        discountBillingDuration: payment.discountBillingDuration,
+        ...(payment.discountBillingDuration === 'recurring' ? {
+          discountBenefit: {
+            code: payment.discountCode,
+            percentOff: Number(payment.discountPercent),
+            planId: quote.planId,
+            billingPeriod: quote.billingPeriod,
+            subjectCount: quote.subjectCount,
+            activatedAt: activationTimestamp,
+          },
+        } : { discountBenefit: admin.firestore.FieldValue.delete() }),
+      } : { discountBenefit: admin.firestore.FieldValue.delete() }),
       latestReference: reference,
-      renewedAt: admin.firestore.FieldValue.serverTimestamp(),
+      activatedAt: activationTimestamp,
+      entitlementWindowStartAt: activationTimestamp,
+      renewedAt: activationTimestamp,
       renewalDate: nextRenewalDate,
-      autoRenew: reusableAuthorization,
+      autoRenew: reusableAuthorization || (payment.discountBillingDuration === 'recurring' && Number(payment.discountPercent) === 100),
       cancelAtPeriodEnd: false,
-      manualPaymentRequired: !reusableAuthorization,
+      manualPaymentRequired: !(reusableAuthorization || (payment.discountBillingDuration === 'recurring' && Number(payment.discountPercent) === 100)),
       renewalAttemptCount: 0,
       graceEndsAt: admin.firestore.FieldValue.delete(),
       renewalVerificationHoldUntil: admin.firestore.FieldValue.delete(),
@@ -681,6 +975,7 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
       pendingSubscriptionPlan: admin.firestore.FieldValue.delete(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
+    activeSubjectQuotas.forEach(({ ref, lessonQuota }) => batch.set(ref, { lessonQuota, updatedAt: activationTimestamp }, { merge: true }));
   }
 
   await batch.commit();
@@ -785,6 +1080,13 @@ export const chargeAuthorizationForSubscription = async ({
         subjectCount: subscriptionQuote.subjectCount,
         amount: subscriptionQuote.amount,
         currency: subscriptionQuote.currency,
+        ...(subscriptionQuote.discountPercent ? {
+          originalAmount: subscriptionQuote.originalAmount,
+          discountAmount: subscriptionQuote.discountAmount,
+          discountPercent: subscriptionQuote.discountPercent,
+          discountCode: subscriptionQuote.discountCode,
+          discountBillingDuration: subscriptionQuote.discountBillingDuration,
+        } : {}),
         pendingPlanReference: canResumeAttempt
           ? (existingAttempt.pendingPlanReference ?? null)
           : (pendingPlanReference ?? null),
@@ -871,8 +1173,12 @@ export const chargeAuthorizationForSubscription = async ({
     const nextAttemptDate = new Date(now.getTime() + 24 * 60 * 60 * 1000);
     const graceEndsDate = new Date(dueDate.getTime() + 3 * 24 * 60 * 60 * 1000);
     const retryAllowed = !amountMismatch && !outcomeUnknown && retryCount < 3 && now < graceEndsDate;
+    const renewalActivationDate = succeeded && charge.paid_at && !Number.isNaN(new Date(charge.paid_at).getTime())
+      ? new Date(charge.paid_at)
+      : new Date();
+    const renewalActivationAt = succeeded ? admin.firestore.Timestamp.fromDate(renewalActivationDate) : null;
     const nextRenewalDate = succeeded ? admin.firestore.Timestamp.fromDate(
-      new Date(Date.now() + subscriptionQuote.billingCycleDays * 24 * 60 * 60 * 1000)
+      new Date(renewalActivationDate.getTime() + subscriptionQuote.billingCycleDays * 24 * 60 * 60 * 1000)
     ) : null;
     const batch = db.batch();
     batch.set(studentPaymentRef(db, studentId, claim.reference), {
@@ -881,7 +1187,6 @@ export const chargeAuthorizationForSubscription = async ({
       payerId: claim.payerId,
       parentId: claim.payerId === studentId ? null : claim.payerId,
       email: claim.email,
-      amount: Number(charge.amount ?? Math.round(amount * 100)) / 100,
       currency: charge.currency ?? subscriptionQuote.currency,
       status: amountMismatch ? 'amount_mismatch' : succeeded ? 'success' : outcomeUnknown ? 'processing' : (charge.status || 'failed'),
       recurring: true,
@@ -889,11 +1194,22 @@ export const chargeAuthorizationForSubscription = async ({
       gatewayResponse: charge.gateway_response ?? null,
       paidAt: charge.paid_at ?? null,
       ...subscriptionQuote,
+      amount: Number(charge.amount ?? Math.round(amount * 100)) / 100,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       ...(claim.resumeAttempt ? {} : { createdAt: admin.firestore.FieldValue.serverTimestamp() }),
     }, { merge: true });
 
     if (succeeded) {
+      const renewedSubscriptionForQuota = {
+        ...subscriptionQuote, status: 'active', latestReference: claim.reference,
+        renewalDate: nextRenewalDate, entitlementWindowStartAt: renewalActivationAt,
+        activatedAt: renewalActivationAt, renewedAt: renewalActivationAt,
+      };
+      const renewedSubjectQuotas = await getActiveSubjectLessonQuotaUpdates({
+        db, studentId, subscription: renewedSubscriptionForQuota,
+        carryForward: true, windowStartAt: renewalActivationAt,
+        renewalDate: nextRenewalDate, cycleId: claim.reference, updatedAt: renewalActivationAt,
+      });
       batch.set(subscriptionRef, {
         studentId,
         status: 'active',
@@ -901,7 +1217,9 @@ export const chargeAuthorizationForSubscription = async ({
         latestReference: claim.reference,
         amount,
         currency: subscriptionQuote.currency,
-        renewedAt: admin.firestore.FieldValue.serverTimestamp(),
+        activatedAt: renewalActivationAt,
+        entitlementWindowStartAt: renewalActivationAt,
+        renewedAt: renewalActivationAt,
         renewalDate: nextRenewalDate,
         autoRenew: true,
         cancelAtPeriodEnd: false,
@@ -918,6 +1236,16 @@ export const chargeAuthorizationForSubscription = async ({
         cancellation: admin.firestore.FieldValue.delete(),
         lastChargeStatus: 'success',
         lastChargeAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
+        discountBenefit: subscriptionQuote.discountBillingDuration === 'recurring'
+          ? {
+            code: subscriptionQuote.discountCode,
+            percentOff: subscriptionQuote.discountPercent,
+            planId: subscriptionQuote.planId,
+            billingPeriod: subscriptionQuote.billingPeriod,
+            subjectCount: subscriptionQuote.subjectCount,
+            activatedAt: renewalActivationAt,
+          }
+          : admin.firestore.FieldValue.delete(),
       }, { merge: true });
       if (claim.pendingPlanReference) {
         batch.set(studentPaymentRef(db, studentId, claim.pendingPlanReference), {
@@ -937,6 +1265,7 @@ export const chargeAuthorizationForSubscription = async ({
         pendingSubscriptionPlan: admin.firestore.FieldValue.delete(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
+      renewedSubjectQuotas.forEach(({ ref, lessonQuota }) => batch.set(ref, { lessonQuota, updatedAt: renewalActivationAt }, { merge: true }));
     } else {
       batch.set(subscriptionRef, {
         status: 'past_due',
@@ -965,6 +1294,13 @@ export const chargeAuthorizationForSubscription = async ({
           subjectCount: subscriptionQuote.subjectCount,
           amount: subscriptionQuote.amount,
           currency: subscriptionQuote.currency,
+          ...(subscriptionQuote.discountPercent ? {
+            originalAmount: subscriptionQuote.originalAmount,
+            discountAmount: subscriptionQuote.discountAmount,
+            discountPercent: subscriptionQuote.discountPercent,
+            discountCode: subscriptionQuote.discountCode,
+            discountBillingDuration: subscriptionQuote.discountBillingDuration,
+          } : {}),
           pendingPlanReference: claim.pendingPlanReference,
         },
         renewalChargeLock: admin.firestore.FieldValue.delete(),
@@ -1033,22 +1369,40 @@ export const chargeStoredAuthorization = onCall(async (request) => {
     throw new HttpsError('failed-precondition', 'Automatic retry attempts are complete. Please choose a plan and pay to continue.');
   }
   const authorization = authSnapshot.exists ? authSnapshot.data() : null;
-  if (!inFlightAttempt && (!authorization || authorization.reusable !== true || !authorization.authorizationCode || !authorization.email)) {
-    throw new HttpsError('failed-precondition', 'A reusable payment authorization is required for renewal.');
-  }
 
   const selectedPlan = inFlightAttempt && subscription.renewalAttempt.planId
     ? subscription.renewalAttempt
     : subscription.pendingPlan?.planId ? subscription.pendingPlan : subscription;
   let subscriptionQuote;
   try {
-    subscriptionQuote = calculateSubscriptionQuote({
+    const baseQuote = calculateSubscriptionQuote({
       planId: selectedPlan.planId,
       billingPeriod: selectedPlan.billingPeriod,
       subjectCount: selectedPlan.subjectCount,
     });
+    const recurringBenefit = inFlightAttempt && subscription.renewalAttempt.discountPercent
+      ? {
+        code: subscription.renewalAttempt.discountCode,
+        percentOff: subscription.renewalAttempt.discountPercent,
+        planId: subscription.renewalAttempt.planId,
+        billingPeriod: subscription.renewalAttempt.billingPeriod,
+        subjectCount: subscription.renewalAttempt.subjectCount,
+      }
+      : subscription.discountBenefit;
+    subscriptionQuote = applyRecurringDiscount(baseQuote, recurringBenefit, selectedPlan);
   } catch {
     throw new HttpsError('failed-precondition', 'The saved subscription selection cannot be renewed.');
+  }
+
+  if (subscriptionQuote.amount === 0 && subscriptionQuote.discountPercent === 100
+    && subscriptionQuote.discountBillingDuration === 'recurring') {
+    const zeroRenewal = await applyZeroCostSubscriptionRenewal({
+      studentId, quote: subscriptionQuote, renewalDate: subscription.renewalDate,
+    });
+    return { status: 'success', charged: false, ...zeroRenewal };
+  }
+  if (!inFlightAttempt && (!authorization || authorization.reusable !== true || !authorization.authorizationCode || !authorization.email)) {
+    throw new HttpsError('failed-precondition', 'A reusable payment authorization is required for renewal.');
   }
 
   const result = await chargeAuthorizationForSubscription({

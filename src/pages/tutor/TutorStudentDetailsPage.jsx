@@ -16,6 +16,7 @@ import {
   getTutorExercisesForAssignedStudents,
   getTutorLessonsForAssignedStudents,
   getCompletedPeerMarkingWorkForTutor,
+  deleteLessonSession,
   deleteExerciseAssignmentForTutor,
   regenerateFutureUnsubmittedExercisesForTutor,
   saveCompletedLesson,
@@ -39,6 +40,7 @@ const today = () => {
 };
 const emptyLessonForm = { selectedTopic: '', topicUnderstandingScores: [], topicReport: '', lessonDate: today(), lessonType: 'online', whatsappLessonLink: '', locationDetails: '' };
 const emptyTopicGroups = { extracted: [], manual: [], all: [] };
+const createLessonRequestId = () => globalThis.crypto?.randomUUID?.() ?? `lesson-log-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 const hasValidScores = (entries = []) =>
   entries.length > 0 && entries.every((entry) => {
     const score = Number(entry.understandingLevel);
@@ -68,10 +70,16 @@ export const TutorStudentDetailsPage = () => {
   const [lessons, setLessons] = useState([]);
   const [topicOptions, setTopicOptions] = useState(emptyTopicGroups);
   const [lessonForm, setLessonForm] = useState(emptyLessonForm);
+  const [lessonLogRequestId, setLessonLogRequestId] = useState(createLessonRequestId);
   const [status, setStatus] = useState('');
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [deletingExerciseId, setDeletingExerciseId] = useState('');
   const [regenerationStatus, setRegenerationStatus] = useState(null);
+  const lessonLogFingerprint = JSON.stringify({ subject, lessonForm });
+
+  useEffect(() => {
+    setLessonLogRequestId(createLessonRequestId());
+  }, [lessonLogFingerprint, studentId]);
   const [staffMembers, setStaffMembers] = useState([]);
   const [staffAccess, setStaffAccess] = useState([]);
   const [selectedStaffId, setSelectedStaffId] = useState('');
@@ -303,7 +311,6 @@ export const TutorStudentDetailsPage = () => {
     const topicScoresText = lessonForm.topicUnderstandingScores.map((entry) => `${entry.topic}: ${Math.round(Number(entry.understandingLevel) * 10)}%`).join('\n');
     const report = [`--- ${topics.join(' | ')} ---`, 'Topics completed:', topicScoresText, 'Tutor report:', lessonForm.topicReport, `Date: ${new Date().toLocaleString()}`].join('\n');
 
-    await saveTutorReport({ tutorId: profile.uid, studentId, subject, reportType: 'lesson', note: report, studentName: student?.displayName || student?.name || 'Student' });
     const completedEntries = lessonForm.topicUnderstandingScores.map((entry) => ({ ...entry, topicReport: lessonForm.topicReport }));
     const plannedLessons = lessons.filter((item) => item.status === 'planned' || item.status === 'incomplete');
     const lessonToComplete = plannedLessons.find((item) =>
@@ -327,21 +334,14 @@ export const TutorStudentDetailsPage = () => {
     };
     const lesson = lessonToComplete
       ? await updateCompletedLesson({ lessonId: lessonToComplete.id, ...lessonPayload })
-      : await saveCompletedLesson(lessonPayload);
+      : await saveCompletedLesson({ ...lessonPayload, requestId: lessonLogRequestId });
+    await saveTutorReport({ reportId: `lesson-${lesson.id}`, tutorId: profile.uid, studentId, subject, reportType: 'lesson', note: report, studentName: student?.displayName || student?.name || 'Student' });
     const completedTopicKeys = new Set(topics.map((topicName) => topicName.toLocaleLowerCase()));
     const duplicatePlannedLessons = plannedLessons.filter((item) => item.id !== lessonToComplete?.id
       && (item.topics?.length ? item.topics : [item.topic]).some((itemTopic) => completedTopicKeys.has(String(itemTopic).toLocaleLowerCase())));
-    await Promise.all(duplicatePlannedLessons.map((item) => updateCompletedLesson({
-      lessonId: item.id,
-      tutorId: profile.uid,
-      topicReport: item.topicReport ?? item.note ?? '',
-      topicUnderstandingScores: item.topicUnderstandingScores ?? [],
-      topics: item.topics ?? (item.topic ? [item.topic] : []),
-      understandingLevel: item.understandingLevel ?? null,
-      lessonDate: item.lessonDate,
-      lessonType: item.lessonType,
-      status: 'cancelled',
-    })));
+    if (duplicatePlannedLessons.length) {
+      await deleteLessonSession({ tutorId: profile.uid, lessonRows: duplicatePlannedLessons });
+    }
     const generation = await generateExercisePlanIfEligible({
       student: { uid: studentId, grade: student?.grade, province: student?.province, paymentCompleted: student?.paymentCompleted },
       subject,

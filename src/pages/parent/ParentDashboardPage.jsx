@@ -199,7 +199,14 @@ export const ParentDashboardPage = () => {
         callbackUrl: `${window.location.origin}${location.pathname}`,
       });
 
-      if (result.free) {
+      if (result.freeCheckout) {
+        const renewalNote = result.discount?.billingDuration === 'recurring' && result.discount?.percentOff === 100
+          ? ' This code will continue the same plan as zero-cost renewal cycles.'
+          : ' Automatic renewal requires a successful card payment and reusable authorization.';
+        setStatus(`${student.displayName || 'Student'} subscription activated with the discount code.${renewalNote}`);
+        setSubscriptionStudent(null);
+        await loadStudents();
+      } else if (result.free) {
         setStatus(`${student.displayName || 'Student'} is now on the Free plan.`);
         setSubscriptionStudent(null);
         await loadStudents();
@@ -397,6 +404,8 @@ export const ParentDashboardPage = () => {
               />
             </div>
             <SubscriptionPlanSelector
+              studentId={subscriptionStudent.uid}
+              initialDiscountCode={new URLSearchParams(location.search).get('discountCode') || ''}
               key={`${subscriptionStudent.pendingPlan?.planId || subscriptionStudent.subscriptionPlanId}-${subscriptionStudent.pendingPlan?.billingPeriod || subscriptionStudent.subscriptionBillingPeriod}-${subscriptionStudent.pendingPlan?.subjectCount || subscriptionStudent.subscriptionSubjectCount}`}
               initialSelection={{
                 planId: subscriptionStudent.pendingPlan?.planId || subscriptionStudent.subscriptionPlanId,

@@ -27,7 +27,13 @@ export const ProfileBillingPage = ({ role }) => {
         ...selection,
         callbackUrl: `${window.location.origin}/student/billing`,
       });
-      if (result.free) {
+      if (result.freeCheckout) {
+        const refreshedProfile = await refreshProfile(profile.uid);
+        await refreshStudentSubscriptionState(refreshedProfile || profile);
+        setSubscriptionStatus(result.discount?.billingDuration === 'recurring' && result.discount?.percentOff === 100
+          ? 'Subscription activated. This recurring 100% code will continue the same plan as zero-cost renewal cycles.'
+          : 'Subscription activated with the discount code. Automatic renewal requires a successful card payment and reusable authorization.');
+      } else if (result.free) {
         const refreshedProfile = await refreshProfile(profile.uid);
         await refreshStudentSubscriptionState(refreshedProfile || profile);
         setSubscriptionStatus('Free plan activated. Unlimited question papers are available.');
@@ -90,6 +96,8 @@ export const ProfileBillingPage = ({ role }) => {
           />
         ) : null}
         {subscriptionState ? <SubscriptionPlanSelector
+          mobileSwipe
+          studentId={profile.uid}
           key={`${subscriptionState.pendingPlan?.planId || subscriptionState.subscriptionPlanId}-${subscriptionState.pendingPlan?.billingPeriod || subscriptionState.subscriptionBillingPeriod}-${subscriptionState.pendingPlan?.subjectCount || subscriptionState.subscriptionSubjectCount}`}
           initialSelection={{
             planId: subscriptionState.pendingPlan?.planId || subscriptionState.subscriptionPlanId,
