@@ -98,7 +98,16 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
           </div>
           <div className="min-w-0 text-center">
             {mobileHeaderContent ?? (
-              <h1 className="truncate bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 bg-clip-text text-sm font-bold text-transparent">{title}</h1>
+              <h1
+                className="truncate bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 bg-clip-text text-base font-extrabold text-transparent"
+                style={{
+                  backgroundImage: 'linear-gradient(90deg, #a3e635 0%, #bef264 50%, #34d399 100%)',
+                  WebkitBackgroundClip: 'text',
+                  WebkitTextFillColor: 'transparent',
+                }}
+              >
+                {title}
+              </h1>
             )}
           </div>
           <button
