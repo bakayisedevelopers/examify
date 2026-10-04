@@ -25,7 +25,7 @@ export const StudentBillingPage = () => {
     planId: params.get('planId') || subscriptionState?.pendingPlan?.planId || subscriptionState?.subscriptionPlanId || 'free',
     billingPeriod: params.get('billingPeriod') || subscriptionState?.pendingPlan?.billingPeriod || subscriptionState?.subscriptionBillingPeriod,
     subjectCount: params.get('subjectCount') || subscriptionState?.pendingPlan?.subjectCount || subscriptionState?.subscriptionSubjectCount || 1,
-    discountCode: params.get('discountCode') || '',
+    discountCode: params.get('discountCode') || subscriptionState?.pendingPlan?.discountCode || '',
   };
 
   const formatRenewalDate = (value) => {
@@ -100,7 +100,10 @@ export const StudentBillingPage = () => {
         setStatus('Free subscription activated. Unlimited question papers are available.');
         navigate('/student/papers');
       } else if (result.scheduledChange) {
-        setStatus(`Your ${result.quote.planName} plan will begin on ${formatRenewalDate(result.effectiveAt)}.${result.manualPaymentRequired ? ' Payment will be required then.' : ''}`);
+        const discountNote = result.discount
+          ? ` A ${result.discount.percentOff}% discount (${result.discount.billingDuration === 'fixed_months' ? `first ${result.discount.discountDurationMonths} months` : result.discount.billingDuration === 'recurring' ? 'recurring' : 'first payment'}) is reserved for this change; the next payment is R${Number(result.discount.finalAmount).toLocaleString('en-ZA')}.`
+          : '';
+        setStatus(`Your ${result.quote.planName} plan will begin on ${formatRenewalDate(result.effectiveAt)}.${discountNote}${result.manualPaymentRequired ? ' Payment will be required then.' : ''}`);
         const refreshedProfile = await refreshProfile(profile.uid);
         await refreshStudentSubscriptionState(refreshedProfile || profile);
       } else if (result.pendingChangeCancelled) {
@@ -191,11 +194,12 @@ export const StudentBillingPage = () => {
               planId: selection.planId || subscriptionState.subscriptionPlanId,
               billingPeriod: selection.billingPeriod || subscriptionState.subscriptionBillingPeriod || 'monthly',
               subjectCount: selection.subjectCount || subscriptionState.subscriptionSubjectCount || 1,
+              discountCode: selection.discountCode || '',
             });
           }}
         />
       ) : null}
-      {subscriptionState ? <SubscriptionPlanSelector key={`${initialSelection.planId}-${initialSelection.billingPeriod}-${initialSelection.subjectCount}`} onContinue={handleContinue} isSubmitting={isStartingSubscription || isVerifyingPayment} initialSelection={initialSelection} initialDiscountCode={initialSelection.discountCode} studentId={profile.uid} mobileSwipe /> : null}
+      {subscriptionState ? <SubscriptionPlanSelector key={`${initialSelection.planId}-${initialSelection.billingPeriod}-${initialSelection.subjectCount}-${initialSelection.discountCode}`} onContinue={handleContinue} isSubmitting={isStartingSubscription || isVerifyingPayment} initialSelection={initialSelection} initialDiscountCode={initialSelection.discountCode} studentId={profile.uid} mobileSwipe /> : null}
       <div className="mt-5 space-y-3">
         {status ? <div role="status" className="panel p-4 text-sm text-slate-700">{status}</div> : null}
         {isVerifyingPayment ? <p role="status" className="text-sm text-slate-600">Verifying your payment…</p> : null}

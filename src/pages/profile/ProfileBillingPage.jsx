@@ -47,7 +47,10 @@ export const ProfileBillingPage = ({ role }) => {
       } else if (result.scheduledChange) {
         const refreshedProfile = await refreshProfile(profile.uid);
         await refreshStudentSubscriptionState(refreshedProfile || profile);
-        setSubscriptionStatus(`${result.quote.planName} will start on ${new Date(result.effectiveAt).toLocaleDateString()}.${result.manualPaymentRequired ? ' Payment will be required then.' : ''}`);
+        const discountNote = result.discount
+          ? ` ${result.discount.percentOff}% discount (${result.discount.billingDuration === 'fixed_months' ? `first ${result.discount.discountDurationMonths} months` : result.discount.billingDuration === 'recurring' ? 'recurring' : 'first payment'}) is reserved for this change; the next payment is R${Number(result.discount.finalAmount).toLocaleString('en-ZA')}.`
+          : '';
+        setSubscriptionStatus(`${result.quote.planName} will start on ${new Date(result.effectiveAt).toLocaleDateString()}.${discountNote}${result.manualPaymentRequired ? ' Payment will be required then.' : ''}`);
       } else if (result.pendingChangeCancelled) {
         setSubscriptionStatus('Scheduled change cancelled. Your current plan will continue.');
       } else if (result.alreadyActive) {
@@ -97,6 +100,7 @@ export const ProfileBillingPage = ({ role }) => {
                 planId: selection.planId || subscriptionState.subscriptionPlanId,
                 billingPeriod: selection.billingPeriod || subscriptionState.subscriptionBillingPeriod || 'monthly',
                 subjectCount: selection.subjectCount || subscriptionState.subscriptionSubjectCount || 1,
+                discountCode: selection.discountCode || '',
               });
             }}
           />
@@ -104,7 +108,7 @@ export const ProfileBillingPage = ({ role }) => {
         {subscriptionState ? <SubscriptionPlanSelector
           mobileSwipe
           studentId={profile.uid}
-          key={`${subscriptionState.pendingPlan?.planId || subscriptionState.subscriptionPlanId}-${subscriptionState.pendingPlan?.billingPeriod || subscriptionState.subscriptionBillingPeriod}-${subscriptionState.pendingPlan?.subjectCount || subscriptionState.subscriptionSubjectCount}`}
+          key={`${subscriptionState.pendingPlan?.planId || subscriptionState.subscriptionPlanId}-${subscriptionState.pendingPlan?.billingPeriod || subscriptionState.subscriptionBillingPeriod}-${subscriptionState.pendingPlan?.subjectCount || subscriptionState.subscriptionSubjectCount}-${subscriptionState.pendingPlan?.discountCode || ''}`}
           initialSelection={{
             planId: subscriptionState.pendingPlan?.planId || subscriptionState.subscriptionPlanId,
             billingPeriod: subscriptionState.pendingPlan?.billingPeriod || subscriptionState.subscriptionBillingPeriod,
@@ -112,7 +116,7 @@ export const ProfileBillingPage = ({ role }) => {
           }}
           onContinue={continueSubscription}
           isSubmitting={isStartingSubscription}
-          initialDiscountCode={new URLSearchParams(location.search).get('discountCode') || ''}
+          initialDiscountCode={new URLSearchParams(location.search).get('discountCode') || subscriptionState.pendingPlan?.discountCode || ''}
         /> : null}
         {subscriptionStatus ? <div role="status" className="panel mt-5 p-4 text-sm">{subscriptionStatus}</div> : null}
       </AppShell>

@@ -5,6 +5,7 @@ import {
   calculateDiscount,
   calculateDiscountEndAt,
   applyRecurringDiscount,
+  applyScheduledDiscount,
   generateDiscountCode,
   getDiscountBillingPeriodError,
   getDiscountEligibilityError,
@@ -28,10 +29,14 @@ test('generates uppercase alphanumeric codes in the configured length', () => {
 
 test('validates discount percentages, redemption limits, and conflicting restrictions', () => {
   assert.equal(validateDiscountSettings(baseSettings).percentOff, 25);
+  assert.equal(validateDiscountSettings(baseSettings).maxSubjectCount, null);
+  assert.equal(validateDiscountSettings({ ...baseSettings, maxSubjectCount: 3 }).maxSubjectCount, 3);
   assert.equal(validateDiscountSettings({ ...baseSettings, maxRedemptions: null }).maxRedemptions, null);
   assert.throws(() => validateDiscountSettings({ ...baseSettings, percentOff: 0 }), /1 to 100/);
   assert.throws(() => validateDiscountSettings({ ...baseSettings, percentOff: 10.5 }), /whole number/);
   assert.throws(() => validateDiscountSettings({ ...baseSettings, maxRedemptions: 0 }), /positive whole number/);
+  assert.throws(() => validateDiscountSettings({ ...baseSettings, maxSubjectCount: 0 }), /subject limit/);
+  assert.throws(() => validateDiscountSettings({ ...baseSettings, maxSubjectCount: 21 }), /subject limit/);
   assert.throws(() => validateDiscountSettings({ ...baseSettings, expiresAt: '2026-09-30T00:00:00.000Z' }), /later than the start/);
   assert.throws(() => validateDiscountSettings({ ...baseSettings, restrictedEmail: 'bad-email' }), /valid email/);
   assert.throws(() => validateDiscountSettings({ ...baseSettings, restrictedEmail: 'person@example.com', restrictedAccountId: 'uid-1' }), /email or one account/);
@@ -95,18 +100,25 @@ test('enforces start and expiry bounds using the supplied server time', () => {
   assert.match(getDiscountEligibilityError({ code, uid: 'u1', email: 'a@b.com', now: new Date('2026-11-01T00:00:00Z') }), /expired/);
 });
 
-test('rejects active and grace-period paid subscriptions but accepts ended or downgraded subscriptions', () => {
+test('allows existing paid subscribers to use a code when the subscription selection is otherwise eligible', () => {
   const code = { ...validateDiscountSettings(baseSettings), active: true };
   const now = new Date('2026-10-05T12:00:00Z');
   const active = { planId: 'circle', status: 'active', renewalDate: new Date('2026-10-10T00:00:00Z') };
   const grace = { planId: 'personalized', status: 'past_due', graceEndsAt: new Date('2026-10-06T00:00:00Z') };
   const ended = { planId: 'circle', status: 'active', renewalDate: new Date('2026-10-04T00:00:00Z') };
   const free = { planId: 'free', status: 'active' };
-  assert.match(getDiscountEligibilityError({ code, uid: 'u1', email: 'a@b.com', now, subscription: active }), /current paid subscription/);
-  assert.match(getDiscountEligibilityError({ code, uid: 'u1', email: 'a@b.com', now, subscription: { ...active, cancelAtPeriodEnd: true } }), /current paid subscription/);
-  assert.match(getDiscountEligibilityError({ code, uid: 'u1', email: 'a@b.com', now, subscription: grace }), /current paid subscription/);
+  assert.equal(getDiscountEligibilityError({ code, uid: 'u1', email: 'a@b.com', now, subscription: active }), null);
+  assert.equal(getDiscountEligibilityError({ code, uid: 'u1', email: 'a@b.com', now, subscription: { ...active, cancelAtPeriodEnd: true } }), null);
+  assert.equal(getDiscountEligibilityError({ code, uid: 'u1', email: 'a@b.com', now, subscription: grace }), null);
   assert.equal(getDiscountEligibilityError({ code, uid: 'u1', email: 'a@b.com', now, subscription: ended }), null);
   assert.equal(getDiscountEligibilityError({ code, uid: 'u1', email: 'a@b.com', now, subscription: free }), null);
+});
+
+test('enforces a discount subject cap against the selected subscription subject count', () => {
+  const code = { ...validateDiscountSettings({ ...baseSettings, maxSubjectCount: 2 }), active: true };
+  const now = new Date('2026-10-05T12:00:00Z');
+  assert.equal(getDiscountEligibilityError({ code, planId: 'circle', subjectCount: 2, now }), null);
+  assert.match(getDiscountEligibilityError({ code, planId: 'circle', subjectCount: 3, now }), /up to 2 subjects/);
 });
 
 test('reserves concurrent uses against the maximum while unlimited codes have no remaining-use cap', () => {
@@ -136,6 +148,21 @@ test('recurring discounts apply only to the same saved plan selection', () => {
   assert.equal(applyRecurringDiscount(quote, benefit, quote).amount, 198.4);
   assert.equal(applyRecurringDiscount(quote, benefit, { ...quote, subjectCount: 3 }).amount, 248);
   assert.equal(applyRecurringDiscount(quote, null, quote), quote);
+});
+
+test('applies a previously reserved plan-change discount to its selected renewal quote', () => {
+  const quote = { planId: 'personalized', billingPeriod: 'monthly', subjectCount: 2, amount: 1598 };
+  const discounted = applyScheduledDiscount(quote, {
+    discountCode: 'ABCD123456',
+    discountPercent: 25,
+    discountBillingDuration: 'fixed_months',
+    discountDurationMonths: 3,
+    discountRedemptionReference: 'change-student-1',
+  });
+  assert.equal(discounted.originalAmount, 1598);
+  assert.equal(discounted.discountAmount, 399.5);
+  assert.equal(discounted.amount, 1198.5);
+  assert.equal(discounted.discountRedemptionReference, 'change-student-1');
 });
 
 test('fixed discounts expire from each customer activation date after the configured monthly cycles', () => {

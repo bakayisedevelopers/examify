@@ -59,6 +59,7 @@ const publicCodeQuote = ({ code, quote }) => {
     code: code.code,
     percentOff: code.percentOff,
     eligiblePlans: Array.isArray(code.eligiblePlans) ? code.eligiblePlans : ['circle', 'personalized'],
+    maxSubjectCount: code.maxSubjectCount ?? null,
     billingDuration: code.billingDuration || 'recurring',
     discountDurationMonths: code.discountDurationMonths ?? null,
     ...quote,
@@ -128,6 +129,7 @@ export const listDiscountCodes = onCall({ cpu: 'gcf_gen1' }, async (request) => 
         code: data.code || doc.id,
         percentOff: data.percentOff,
         maxRedemptions: data.maxRedemptions ?? null,
+        maxSubjectCount: data.maxSubjectCount ?? null,
         successfulRedemptions: uses.successfulRedemptions,
         reservedRedemptions: uses.reservedRedemptions,
         remainingUses: uses.remainingUses,
@@ -181,14 +183,31 @@ export const getDiscountQuoteForCheckout = async ({ db, code: rawCode, uid, emai
   const data = codeSnapshot.data();
   const billingPeriodError = getDiscountBillingPeriodError({ billingDuration: data.billingDuration, billingPeriod });
   if (billingPeriodError) throw new HttpsError('failed-precondition', billingPeriodError);
-  const subscriptionSnapshot = await subscriptionRef(db, studentId).get();
-  const currentSubscription = subscriptionSnapshot.exists ? subscriptionSnapshot.data() : null;
+  const subscriptionSnapshot = studentId ? await subscriptionRef(db, studentId).get() : null;
+  const pendingPlan = subscriptionSnapshot?.exists ? subscriptionSnapshot.data()?.pendingPlan : null;
+  let existingScheduledRedemptionReference = null;
+  if (pendingPlan?.discountCode === code
+    && pendingPlan?.planId === quote.planId
+    && pendingPlan?.billingPeriod === quote.billingPeriod
+    && Number(pendingPlan?.subjectCount) === quote.subjectCount
+    && pendingPlan?.discountRedemptionReference) {
+    const scheduledUse = await redemptionRef(db, code, pendingPlan.discountRedemptionReference).get();
+    const useData = scheduledUse.data();
+    if (scheduledUse.exists && useData?.status === 'scheduled' && useData.studentId === studentId) {
+      existingScheduledRedemptionReference = pendingPlan.discountRedemptionReference;
+    }
+  }
   const now = new Date();
-  const eligibilityError = getDiscountEligibilityError({ code: data, uid, email, planId, now, subscription: currentSubscription });
-  if (eligibilityError) throw new HttpsError('failed-precondition', eligibilityError);
-  const usage = getDiscountUseCounts(data);
-  if (!usage.available) throw new HttpsError('resource-exhausted', 'This discount code has no remaining uses.');
-  return publicCodeQuote({ code: { ...data, code }, quote });
+  if (!existingScheduledRedemptionReference) {
+    const eligibilityError = getDiscountEligibilityError({ code: data, uid, email, planId, subjectCount: quote.subjectCount, now });
+    if (eligibilityError) throw new HttpsError('failed-precondition', eligibilityError);
+    const usage = getDiscountUseCounts(data);
+    if (!usage.available) throw new HttpsError('resource-exhausted', 'This discount code has no remaining uses.');
+  }
+  return {
+    ...publicCodeQuote({ code: { ...data, code }, quote }),
+    ...(existingScheduledRedemptionReference ? { existingScheduledRedemptionReference } : {}),
+  };
 };
 
 export const validateDiscountCode = onCall({ cpu: 'gcf_gen1' }, async (request) => {
@@ -221,7 +240,7 @@ export const previewDiscountCode = onCall({ cpu: 'gcf_gen1' }, async (request) =
   const data = codeSnapshot.data();
   const billingPeriodError = getDiscountBillingPeriodError({ billingDuration: data.billingDuration, billingPeriod });
   if (billingPeriodError) throw new HttpsError('failed-precondition', billingPeriodError);
-  const availabilityError = getDiscountEligibilityError({ code: data, planId, now: new Date(), previewOnly: true });
+  const availabilityError = getDiscountEligibilityError({ code: data, planId, subjectCount: quote.subjectCount, now: new Date(), previewOnly: true });
   if (availabilityError) throw new HttpsError('failed-precondition', availabilityError);
   const usage = getDiscountUseCounts(data);
   if (!usage.available) throw new HttpsError('resource-exhausted', 'This discount code has no remaining uses.');
@@ -232,17 +251,14 @@ export const previewDiscountCode = onCall({ cpu: 'gcf_gen1' }, async (request) =
   };
 });
 
-export const reserveDiscountRedemption = async ({ db, code: rawCode, reference, studentId, payerId, email, quote }) => {
+export const reserveDiscountRedemption = async ({ db, code: rawCode, reference, studentId, payerId, email, quote, reservationStatus = 'reserved' }) => {
   const code = normalizeDiscountCode(rawCode);
   const codeRef = discountCodes(db).doc(code);
-  const subRef = subscriptionRef(db, studentId);
   const useRef = redemptionRef(db, code, reference);
   const result = await db.runTransaction(async (transaction) => {
     const nowDate = new Date();
     const now = admin.firestore.Timestamp.fromDate(nowDate);
-    const [codeSnapshot, subscriptionSnapshot, priorUse] = await Promise.all([
-      transaction.get(codeRef), transaction.get(subRef), transaction.get(useRef),
-    ]);
+    const [codeSnapshot, priorUse] = await Promise.all([transaction.get(codeRef), transaction.get(useRef)]);
     if (priorUse.exists) throw new HttpsError('already-exists', 'This checkout already has a discount reservation.');
     if (!codeSnapshot.exists) throw new HttpsError('not-found', 'This discount code was not found.');
     const data = codeSnapshot.data();
@@ -250,7 +266,7 @@ export const reserveDiscountRedemption = async ({ db, code: rawCode, reference, 
     if (billingPeriodError) throw new HttpsError('failed-precondition', billingPeriodError);
     const issue = getDiscountEligibilityError({
       code: data, uid: payerId, email, planId: quote.planId, now: nowDate,
-      subscription: subscriptionSnapshot.exists ? subscriptionSnapshot.data() : null,
+      subjectCount: quote.subjectCount,
     });
     if (issue) throw new HttpsError('failed-precondition', issue);
     const usage = getDiscountUseCounts(data);
@@ -275,7 +291,7 @@ export const reserveDiscountRedemption = async ({ db, code: rawCode, reference, 
       originalAmount: discount.originalAmount,
       discountAmount: discount.discountAmount,
       finalAmount: discount.finalAmount,
-      status: 'reserved',
+      status: reservationStatus,
       reservedAt: now,
       updatedAt: now,
     });
@@ -297,7 +313,7 @@ export const transitionDiscountRedemptionForPayment = async ({ db, code: rawCode
   const useRef = redemptionRef(db, code, reference);
   return db.runTransaction(async (transaction) => {
     const [codeSnapshot, useSnapshot] = await Promise.all([transaction.get(codeRef), transaction.get(useRef)]);
-    if (!codeSnapshot.exists || !useSnapshot.exists || useSnapshot.data()?.status !== 'reserved') return false;
+    if (!codeSnapshot.exists || !useSnapshot.exists || !['reserved', 'scheduled'].includes(useSnapshot.data()?.status)) return false;
     const transition = transitionRedemption(status);
     if (transition.status === 'reserved') return false;
     transaction.update(useRef, {

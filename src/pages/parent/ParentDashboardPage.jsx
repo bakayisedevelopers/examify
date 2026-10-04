@@ -225,7 +225,10 @@ export const ParentDashboardPage = () => {
         setSubscriptionStudent(null);
         await loadStudents();
       } else if (result.scheduledChange) {
-        setStatus(`${result.quote.planName} will start for ${student.displayName || 'the student'} on ${new Date(result.effectiveAt).toLocaleDateString()}.${result.manualPaymentRequired ? ' Payment will be required then.' : ''}`);
+        const discountNote = result.discount
+          ? ` A ${result.discount.percentOff}% discount (${result.discount.billingDuration === 'fixed_months' ? `first ${result.discount.discountDurationMonths} months` : result.discount.billingDuration === 'recurring' ? 'recurring' : 'first payment'}) is reserved for this change; the next payment is R${Number(result.discount.finalAmount).toLocaleString('en-ZA')}.`
+          : '';
+        setStatus(`${result.quote.planName} will start for ${student.displayName || 'the student'} on ${new Date(result.effectiveAt).toLocaleDateString()}.${discountNote}${result.manualPaymentRequired ? ' Payment will be required then.' : ''}`);
         setSubscriptionStudent(null);
         await loadStudents();
       } else if (result.pendingChangeCancelled) {
@@ -413,14 +416,15 @@ export const ParentDashboardPage = () => {
                     planId: selection.planId || subscriptionStudent.subscriptionPlanId,
                     billingPeriod: selection.billingPeriod || subscriptionStudent.subscriptionBillingPeriod || 'monthly',
                     subjectCount: selection.subjectCount || subscriptionStudent.subscriptionSubjectCount || 1,
+                    discountCode: selection.discountCode || '',
                   });
                 }}
               />
             </div>
             <SubscriptionPlanSelector
               studentId={subscriptionStudent.uid}
-              initialDiscountCode={new URLSearchParams(location.search).get('discountCode') || ''}
-              key={`${subscriptionStudent.pendingPlan?.planId || subscriptionStudent.subscriptionPlanId}-${subscriptionStudent.pendingPlan?.billingPeriod || subscriptionStudent.subscriptionBillingPeriod}-${subscriptionStudent.pendingPlan?.subjectCount || subscriptionStudent.subscriptionSubjectCount}`}
+              initialDiscountCode={new URLSearchParams(location.search).get('discountCode') || subscriptionStudent.pendingPlan?.discountCode || ''}
+              key={`${subscriptionStudent.pendingPlan?.planId || subscriptionStudent.subscriptionPlanId}-${subscriptionStudent.pendingPlan?.billingPeriod || subscriptionStudent.subscriptionBillingPeriod}-${subscriptionStudent.pendingPlan?.subjectCount || subscriptionStudent.subscriptionSubjectCount}-${subscriptionStudent.pendingPlan?.discountCode || ''}`}
               initialSelection={{
                 planId: subscriptionStudent.pendingPlan?.planId || subscriptionStudent.subscriptionPlanId,
                 billingPeriod: subscriptionStudent.pendingPlan?.billingPeriod || subscriptionStudent.subscriptionBillingPeriod,

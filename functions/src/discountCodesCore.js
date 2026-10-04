@@ -67,6 +67,15 @@ export const validateDiscountSettings = (settings) => {
     throw new Error('Maximum redemptions must be a positive whole number or unlimited.');
   }
 
+  const maxSubjectCount = settings.maxSubjectCount === null || settings.maxSubjectCount === ''
+    || settings.maxSubjectCount === undefined
+    ? null
+    : Number(settings.maxSubjectCount);
+  if (maxSubjectCount !== null
+    && (!Number.isSafeInteger(maxSubjectCount) || maxSubjectCount < 1 || maxSubjectCount > 20)) {
+    throw new Error('The subject limit must be a whole number from 1 to 20 or unlimited.');
+  }
+
   const restrictedEmail = String(settings.restrictedEmail ?? '').trim().toLowerCase() || null;
   const restrictedAccountId = String(settings.restrictedAccountId ?? '').trim() || null;
   if (restrictedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(restrictedEmail)) {
@@ -125,7 +134,7 @@ export const validateDiscountSettings = (settings) => {
   }
 
   return {
-    percentOff, maxRedemptions, restrictedEmail, restrictedAccountId, eligiblePlans: normalizedEligiblePlans, startsAt, expiresAt,
+    percentOff, maxRedemptions, maxSubjectCount, restrictedEmail, restrictedAccountId, eligiblePlans: normalizedEligiblePlans, startsAt, expiresAt,
     redemptionExpiryMode, redemptionWindowMonths, billingDuration, discountDurationMonths,
   };
 };
@@ -183,6 +192,23 @@ export const applyRecurringDiscount = (quote, benefit, selectedPlan = quote, at 
   };
 };
 
+export const applyScheduledDiscount = (quote, scheduledPlan) => {
+  const reference = scheduledPlan?.discountRedemptionReference;
+  const percentOff = Number(scheduledPlan?.discountPercent);
+  if (!reference || !Number.isInteger(percentOff) || percentOff < 1 || percentOff > 100) return quote;
+  const discount = calculateDiscount(quote.amount, percentOff);
+  return {
+    ...quote,
+    ...discount,
+    amount: discount.finalAmount,
+    discountPercent: percentOff,
+    discountCode: scheduledPlan.discountCode,
+    discountBillingDuration: scheduledPlan.discountBillingDuration || 'first_payment',
+    discountDurationMonths: scheduledPlan.discountDurationMonths ?? null,
+    discountRedemptionReference: reference,
+  };
+};
+
 export const getDiscountUseCounts = ({ successfulRedemptions = 0, reservedRedemptions = 0, maxRedemptions = null }) => {
   const successful = Math.max(0, Number(successfulRedemptions) || 0);
   const reserved = Math.max(0, Number(reservedRedemptions) || 0);
@@ -195,7 +221,7 @@ export const getDiscountUseCounts = ({ successfulRedemptions = 0, reservedRedemp
   };
 };
 
-export const getDiscountEligibilityError = ({ code, uid, email, planId, now = new Date(), subscription = null, previewOnly = false }) => {
+export const getDiscountEligibilityError = ({ code, uid, email, planId, subjectCount, now = new Date(), previewOnly = false }) => {
   if (!code || code.active !== true) return 'This discount code is not active.';
   const startsAt = toDate(code.startsAt);
   const expiresAt = code.expiresAt ? toDate(code.expiresAt) : null;
@@ -208,18 +234,17 @@ export const getDiscountEligibilityError = ({ code, uid, email, planId, now = ne
       return `This discount code is not available for ${planName} subscriptions.`;
     }
   }
+  const maxSubjectCount = code.maxSubjectCount === null || code.maxSubjectCount === undefined
+    ? null
+    : Number(code.maxSubjectCount);
+  if (maxSubjectCount !== null && Number(subjectCount) > maxSubjectCount) {
+    return `This discount is limited to subscriptions with up to ${maxSubjectCount} subject${maxSubjectCount === 1 ? '' : 's'}.`;
+  }
   if (!previewOnly) {
     if (code.restrictedEmail && String(email ?? '').trim().toLowerCase() !== String(code.restrictedEmail).trim().toLowerCase()) {
       return 'This discount code is not available for this email address.';
     }
     if (code.restrictedAccountId && uid !== code.restrictedAccountId) return 'This discount code is not available for this account.';
-    if (subscription?.planId && ['circle', 'personalized'].includes(subscription.planId)) {
-      const renewalDate = toDate(subscription.renewalDate);
-      const graceEndsAt = toDate(subscription.graceEndsAt);
-      const activePaid = subscription.status === 'active' && renewalDate && renewalDate > now;
-      const paidGrace = subscription.status === 'past_due' && graceEndsAt && graceEndsAt > now;
-      if (activePaid || paidGrace) return 'Discount codes are available after your current paid subscription ends.';
-    }
   }
   return null;
 };
