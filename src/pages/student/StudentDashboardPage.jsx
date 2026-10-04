@@ -13,7 +13,6 @@ import {
   getPeerMarkingAssignmentsForStudent,
   getStudentAccessState,
   getTodayExercises,
-  subscribeToSubjectUnderstandingSummary,
   subscribeToExerciseGenerationStatus,
 } from '../../services/firestoreService';
 import { loadStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
@@ -101,33 +100,6 @@ const ReadinessChecklist = ({ rows, studentName }) => {
   );
 };
 
-const SubjectUnderstandingSummary = ({ rows, isLoading }) => (
-  <section className="panel space-y-4 p-5">
-    <SectionHeader
-      eyebrow="Progress"
-      title="Subject understanding"
-      description="Each percentage averages the current 28-day understanding score for every topic with a score. Topics count equally."
-    />
-    {isLoading ? <p className="text-sm text-slate-500">Loading subject understanding scores…</p> : rows.length ? <div className="grid gap-3 sm:grid-cols-2">
-      {rows.map((row) => {
-        const percentage = row.understandingLevel === null ? null : Math.round(row.understandingLevel * 100);
-        return (
-          <div key={row.subject} className="rounded-xl border border-slate-200 bg-white p-4">
-            <div className="flex items-start justify-between gap-4">
-              <p className="font-semibold text-slate-900">{row.subject}</p>
-              {percentage === null ? <span className="text-sm font-medium text-slate-500">No scores yet</span> : <span className="text-2xl font-bold text-brand-700">{percentage}%</span>}
-            </div>
-            {percentage !== null ? <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100" role="progressbar" aria-label={`${row.subject} average understanding`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={percentage}>
-              <div className="h-full rounded-full bg-lime-500 transition-all" style={{ width: `${percentage}%` }} />
-            </div> : null}
-            <p className="mt-2 text-xs text-slate-500">{row.scoredTopicCount} topics have scores ({row.completedTopicCount} lesson-completed, {row.markedTopicCount ?? 0} marked only).</p>
-          </div>
-        );
-      })}
-    </div> : <p className="text-sm text-slate-500">No active subjects to show.</p>}
-  </section>
-);
-
 export const StudentDashboardPage = () => {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
@@ -142,8 +114,6 @@ export const StudentDashboardPage = () => {
   const [isLoadingExercises, setIsLoadingExercises] = useState(true);
   const [isLoadingPeerAssignments, setIsLoadingPeerAssignments] = useState(true);
   const [isCheckingAccess, setIsCheckingAccess] = useState(true);
-  const [subjectUnderstandingRows, setSubjectUnderstandingRows] = useState([]);
-  const [isLoadingSubjectUnderstanding, setIsLoadingSubjectUnderstanding] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
   const [readinessRows, setReadinessRows] = useState([]);
@@ -170,38 +140,6 @@ export const StudentDashboardPage = () => {
     }));
     return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
   }, [profile?.uid, availableSubjects]);
-
-  useEffect(() => {
-    if (!profile?.uid || !availableSubjects.length) {
-      setSubjectUnderstandingRows([]);
-      setIsLoadingSubjectUnderstanding(false);
-      return undefined;
-    }
-    let active = true;
-    const loadedSubjects = new Set();
-    setSubjectUnderstandingRows([]);
-    setIsLoadingSubjectUnderstanding(true);
-    const unsubscribes = availableSubjects.map((subject) => subscribeToSubjectUnderstandingSummary(
-      profile.uid,
-      subject,
-      (summary, error) => {
-        if (!active) return;
-        loadedSubjects.add(subject);
-        if (error) setLoadError((current) => current || error.message || `Could not load ${subject} understanding scores.`);
-        const nextSummary = summary || { subject, understandingLevel: null, scoredTopicCount: 0, completedTopicCount: 0, markedTopicCount: 0 };
-        setSubjectUnderstandingRows((current) => {
-          const bySubject = new Map(current.map((row) => [row.subject, row]));
-          bySubject.set(subject, nextSummary);
-          return availableSubjects.flatMap((item) => bySubject.has(item) ? [bySubject.get(item)] : []);
-        });
-        if (loadedSubjects.size === availableSubjects.length) setIsLoadingSubjectUnderstanding(false);
-      },
-    ));
-    return () => {
-      active = false;
-      unsubscribes.forEach((unsubscribe) => unsubscribe());
-    };
-  }, [availableSubjects, profile?.uid]);
 
   useEffect(() => {
     setActiveTab(searchParams.get('tab') === 'mark' ? 'mark' : 'exercises');
@@ -443,8 +381,6 @@ export const StudentDashboardPage = () => {
           Add a subject to your active plan before exercises can be assigned. <button type="button" className="ml-1 font-semibold text-brand-700 underline" onClick={() => navigate('/student/profile/subjects')}>Manage subjects</button>
         </div>
       ) : null}
-
-      <SubjectUnderstandingSummary rows={subjectUnderstandingRows} isLoading={isLoadingSubjectUnderstanding} />
 
       {Object.entries(generationStatuses).filter(([subject, status]) => {
         if (!status) return false;
