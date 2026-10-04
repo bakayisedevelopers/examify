@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { REGIONS, ROLES, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
 import { useAuth } from '../../hooks/useAuth';
 import { Logo } from '../../components/common/Logo';
@@ -8,7 +8,7 @@ import { normalizeWhatsAppNumber } from '../../utils/whatsapp';
 export const SignupPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { register } = useAuth();
+  const { register, profile, loading } = useAuth();
   const [creating, setCreating] = useState(false);
 
   const [form, setForm] = useState({
@@ -25,6 +25,26 @@ export const SignupPage = () => {
   const [acceptedPolicies, setAcceptedPolicies] = useState(false);
   const [status, setStatus] = useState('');
   const pendingDiscountCode = new URLSearchParams(location.search).get('discountCode')?.toUpperCase() || '';
+
+  if (loading) {
+    return <main className="mx-auto flex min-h-[calc(100vh-88px)] max-w-2xl items-center justify-center px-4 py-12 text-sm text-slate-300">Loading your account…</main>;
+  }
+
+  if (profile?.role) {
+    const selection = new URLSearchParams(location.search);
+    if (profile.role === ROLES.STUDENT) {
+      if (!['free', 'circle', 'personalized'].includes(selection.get('planId'))) {
+        selection.set('planId', ['circle', 'personalized'].includes(profile.subscriptionPlanId) ? profile.subscriptionPlanId : 'circle');
+      }
+      if (!selection.has('billingPeriod')) selection.set('billingPeriod', profile.subscriptionBillingPeriod || 'monthly');
+      if (!selection.has('subjectCount')) selection.set('subjectCount', String(profile.subscriptionSubjectCount || 1));
+      return <Navigate to={`/student/billing?${selection.toString()}`} replace />;
+    }
+    if (profile.role === ROLES.PARENT && pendingDiscountCode) {
+      return <Navigate to={`/parent?discountCode=${encodeURIComponent(pendingDiscountCode)}`} replace />;
+    }
+    return <Navigate to={profile.isTeacher ? '/teacher' : `/${profile.role}`} replace />;
+  }
 
   const handleChange = (key) => (event) =>
     setForm((current) => ({ ...current, [key]: event.target.value }));

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Copy, RefreshCw, Tag } from 'lucide-react';
+import { Copy, Link2, RefreshCw, Tag } from 'lucide-react';
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
 import { createDiscountCode, listDiscountCodes, setDiscountCodeActive } from '../../services/discountCodesService';
@@ -21,6 +21,15 @@ const defaultForm = () => ({
 
 const formatDate = (value) => value ? new Date(value).toLocaleString() : 'No expiry';
 const formatRemaining = (code) => code.remainingUses === null ? 'Unlimited' : `${code.remainingUses} of ${code.maxRedemptions}`;
+const buildShareLink = (code) => {
+  const params = new URLSearchParams({
+    planId: 'circle',
+    billingPeriod: 'monthly',
+    subjectCount: '1',
+    discountCode: code,
+  });
+  return `${window.location.origin}/signup?${params.toString()}`;
+};
 
 export const AdminDiscountCodesPage = () => {
   const { profile, logout } = useAuth();
@@ -95,6 +104,16 @@ export const AdminDiscountCodesPage = () => {
     }
   };
 
+  const copyShareLink = async (code) => {
+    const shareLink = buildShareLink(code);
+    try {
+      await navigator.clipboard.writeText(shareLink);
+      setStatus(`Copied the share link for ${code}.`);
+    } catch {
+      setStatus(`Copy failed. Share link: ${shareLink}`);
+    }
+  };
+
   return (
     <AppShell title="Discount codes" subtitle="Create and manage server-validated subscription discounts." role="admin" user={profile} onLogout={logout}>
       <section className="panel p-5 sm:p-6">
@@ -130,7 +149,7 @@ export const AdminDiscountCodesPage = () => {
             <tbody className="divide-y divide-slate-800">
               {codes.map((code) => (
                 <tr key={code.code}>
-                  <td className="px-5 py-4"><button type="button" className="inline-flex items-center gap-2 font-mono font-bold tracking-wider text-lime-300" onClick={() => copyCode(code.code)}>{code.code}<Copy className="h-3.5 w-3.5" /></button><p className="mt-1 text-xs text-slate-400">{code.percentOff}% off</p></td>
+                  <td className="px-5 py-4"><button type="button" className="inline-flex items-center gap-2 font-mono font-bold tracking-wider text-lime-300" onClick={() => copyCode(code.code)}>{code.code}<Copy className="h-3.5 w-3.5" /></button><p className="mt-1 text-xs text-slate-400">{code.percentOff}% off</p><button type="button" className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-lime-300 hover:text-lime-200" onClick={() => copyShareLink(code.code)}><Link2 className="h-3.5 w-3.5" />Copy share link</button></td>
                   <td className="px-5 py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${code.status === 'Active' ? 'bg-lime-400/10 text-lime-300' : 'bg-slate-700 text-slate-300'}`}>{code.status}</span></td>
                   <td className="px-5 py-4 text-slate-300">{code.restrictedEmail || (code.restrictedAccountId ? `Account ${code.restrictedAccountId}` : 'Any eligible account')}</td>
                   <td className="px-5 py-4 text-slate-300">{code.billingDuration === 'recurring' ? 'Recurring' : 'First payment'}</td>
