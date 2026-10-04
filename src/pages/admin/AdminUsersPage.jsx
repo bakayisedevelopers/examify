@@ -40,6 +40,7 @@ export const AdminUsersPage = () => {
   const [studentId, setStudentId] = useState('');
   const [tutorId, setTutorId] = useState('');
   const [status, setStatus] = useState('');
+  const [isAssigning, setIsAssigning] = useState(false);
   const selectedTutor = tutorOptions.find((tutor) => tutor.uid === tutorId);
 
   useEffect(() => {
@@ -81,12 +82,14 @@ export const AdminUsersPage = () => {
 
   const handleAssign = async (event) => {
     event.preventDefault();
+    if (isAssigning) return;
     if (!studentId || !tutorId || !selectedTutor?.subjects.includes(selectedSubject)
       || !assignmentData.tutors.some((tutor) => tutor.uid === tutorId)) {
       setStatus('Choose a student and tutor before assigning.');
       return;
     }
 
+    setIsAssigning(true);
     try {
       setStatus('Assigning student...');
       await assignStudentToTutor({ studentId, tutorId, subject: selectedSubject });
@@ -96,6 +99,8 @@ export const AdminUsersPage = () => {
       setStatus('Student assigned successfully.');
     } catch (error) {
       setStatus(error.message || 'Could not assign student.');
+    } finally {
+      setIsAssigning(false);
     }
   };
 
@@ -148,8 +153,8 @@ export const AdminUsersPage = () => {
             {!assignmentData.tutors.some((tutor) => tutor.uid === tutorId) && selectedSubject ? (
               <p className="text-sm text-amber-700">This tutor is not currently approved for {selectedSubject}.</p>
             ) : null}
-            <button type="submit" className="btn-primary w-full" disabled={!studentId || !tutorId || !selectedSubject || !assignmentData.tutors.some((tutor) => tutor.uid === tutorId)}>
-              Assign tutor / teacher
+            <button type="submit" className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-60" disabled={isAssigning || !studentId || !tutorId || !selectedSubject || !assignmentData.tutors.some((tutor) => tutor.uid === tutorId)}>
+              {isAssigning ? 'Assigning...' : 'Assign tutor / teacher'}
             </button>
             {!tutorsLoaded ? <p className="text-sm text-slate-500">Loading tutors...</p> : null}
             {tutorsLoaded && !tutorOptions.length ? <p className="text-sm text-slate-500">No tutors or teachers have approved subjects yet.</p> : null}

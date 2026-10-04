@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
+import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, BookOpen, ClipboardCheck, CreditCard, FileText, LogOut, Users, ShieldCheck, Menu, X, ChevronLeft, GraduationCap } from 'lucide-react';
 import { Logo } from './Logo';
 import { ROLES } from '../../lib/constants';
@@ -78,9 +78,7 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
   const identityLabel = effectiveRole === ROLES.STUDENT
     ? (subscriptionState?.subscriptionPlanName || 'Checking subscription')
     : ({ teacher: 'Teacher', tutor: 'Tutor', admin: 'Admin', parent: 'Parent' }[effectiveRole] || 'Account');
-  const location = useLocation();
   const navigate = useNavigate();
-  const isRoleHome = location.pathname === `/${effectiveRole}`;
 
   return (
     <div className="fixed inset-0 overflow-hidden bg-slate-950 text-slate-100 selection:bg-lime-400 selection:text-slate-950 lg:static lg:h-screen">
@@ -89,29 +87,23 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
         {/* Mobile Header */}
         <div className="panel z-30 grid flex-none grid-cols-[auto_1fr_auto] items-center gap-3 p-4 border-slate-800 bg-slate-900/95 lg:hidden">
           <div className="flex min-w-10 items-center justify-start">
-            {isRoleHome ? (
-              <Link to={homePath}>
-                <Logo showText={false} />
-              </Link>
-            ) : (
-              <button
-                type="button"
-                onClick={() => navigate(-1)}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-slate-300 transition hover:bg-slate-800"
-                aria-label="Go back"
-              >
-                <ChevronLeft className="h-6 w-6 stroke-[2.5]" />
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => navigate(-1)}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-lime-400 transition hover:bg-slate-800 hover:text-lime-300"
+              aria-label="Go back"
+            >
+              <ChevronLeft className="h-6 w-6 stroke-[2.5]" />
+            </button>
           </div>
           <div className="min-w-0 text-center">
             {mobileHeaderContent ?? (
-              <h1 className="truncate text-sm font-semibold text-white">{title}</h1>
+              <h1 className="truncate bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 bg-clip-text text-sm font-bold text-transparent">{title}</h1>
             )}
           </div>
           <button
             onClick={() => setIsMobileMenuOpen(true)}
-            className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-800"
+            className="rounded-lg p-2 text-lime-400 transition hover:bg-slate-800 hover:text-lime-300"
             aria-label="Open navigation"
           >
             <Menu className="h-6 w-6" />

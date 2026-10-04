@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
-import { ROLES, SUBJECTS } from '../../lib/constants';
-import { addStudentSubjects, getActiveSubjectsForStudent, getTutorMarksDocuments, removeUserSubject, updateUserSubjectAvailability } from '../../services/firestoreService';
+import { ROLES } from '../../lib/constants';
+import { addStudentSubjects, getActiveSubjectsForStudent, getGlobalSubjects, getTutorMarksDocuments, removeUserSubject, updateUserSubjectAvailability } from '../../services/firestoreService';
 import { deleteTutorMarksDocument, retryTutorMarksDocument, uploadTutorMarksDocument } from '../../services/storageService';
 import { getApprovedTutorSubjects } from '../../utils/tutorSubjects';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
@@ -33,6 +33,8 @@ export const ProfileSubjectsPage = ({ role }) => {
   const [documents, setDocuments] = useState([]);
   const [activeDocumentId, setActiveDocumentId] = useState('');
   const [activeStudentSubjects, setActiveStudentSubjects] = useState([]);
+  const [globalSubjects, setGlobalSubjects] = useState([]);
+  const [globalSubjectsLoading, setGlobalSubjectsLoading] = useState(role === ROLES.STUDENT);
   const tutorUploadFormRef = useRef(null);
   const loadStudentSubjects = useCallback(async () => {
     if (role !== ROLES.STUDENT || !profile?.uid) return;
@@ -42,7 +44,8 @@ export const ProfileSubjectsPage = ({ role }) => {
     if (isTutorRole) return getApprovedTutorSubjects(profile);
     return role === ROLES.STUDENT ? activeStudentSubjects : [];
   }, [activeStudentSubjects, isTutorRole, profile, role]);
-  const availableSubjects = SUBJECTS.filter((subject) => !currentSubjects.includes(subject));
+  const availableSubjects = globalSubjects.filter((subject) => !currentSubjects.includes(subject));
+  const selectableSubjects = availableSubjects.filter((subject) => !selectedSubjects.includes(subject));
   const subjectLimit = Number(subscriptionState?.subscriptionSubjectCount) || 0;
   const remainingSubjectSlots = Math.max(0, subjectLimit - currentSubjects.length - selectedSubjects.length);
   const tutorMarkBySubject = useMemo(() => new Map(
@@ -66,6 +69,24 @@ export const ProfileSubjectsPage = ({ role }) => {
   useEffect(() => {
     loadStudentSubjects().catch((error) => setStatus(error.message || 'Could not load your active subjects.'));
   }, [loadStudentSubjects]);
+
+  useEffect(() => {
+    if (role !== ROLES.STUDENT) return undefined;
+    let isActive = true;
+    setGlobalSubjectsLoading(true);
+    getGlobalSubjects().then((subjects) => {
+      if (isActive) setGlobalSubjects(subjects);
+    }).catch((error) => {
+      console.error('[Examifying][GlobalSubjects] load:error', error);
+      if (isActive) {
+        setGlobalSubjects([]);
+        setStatus(error.message || 'Could not load the global subject list.');
+      }
+    }).finally(() => {
+      if (isActive) setGlobalSubjectsLoading(false);
+    });
+    return () => { isActive = false; };
+  }, [role]);
 
   const handleAddSubjectToSelection = () => {
     if (!subjectToAdd || selectedSubjects.includes(subjectToAdd)) return;
@@ -257,7 +278,7 @@ export const ProfileSubjectsPage = ({ role }) => {
                     type="button"
                     onClick={() => handleToggleStudentAvailability(subject)}
                     disabled={saving}
-                    className={`mt-3 flex w-full items-center justify-between rounded-full p-1 text-xs font-semibold transition ${isStudentSubjectActive ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}
+                    className={`hidden mt-3 flex w-full items-center justify-between rounded-full p-1 text-xs font-semibold transition ${isStudentSubjectActive ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}
                   >
                     <span className="px-3">{isStudentSubjectActive ? 'Available' : 'Unavailable'}</span>
                     <span className={`h-6 w-6 rounded-full bg-white shadow-sm transition ${isStudentSubjectActive ? 'translate-x-0' : ''}`} />
@@ -280,12 +301,10 @@ export const ProfileSubjectsPage = ({ role }) => {
               className="input"
               value={subjectToAdd}
               onChange={(event) => setSubjectToAdd(event.target.value)}
-              disabled={!availableSubjects.length || remainingSubjectSlots === 0}
+              disabled={globalSubjectsLoading || !selectableSubjects.length || remainingSubjectSlots === 0}
             >
-              <option value="">Select a subject</option>
-              {availableSubjects
-                .filter((subject) => !selectedSubjects.includes(subject))
-                .map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+              <option value="">{globalSubjectsLoading ? 'Loading subjects...' : selectableSubjects.length ? 'Select a subject' : 'No additional global subjects available'}</option>
+              {selectableSubjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
             </select>
             <button type="button" className="btn-secondary" onClick={handleAddSubjectToSelection} disabled={!subjectToAdd || remainingSubjectSlots === 0}>
               Add to list

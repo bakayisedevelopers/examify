@@ -2034,6 +2034,14 @@ const isStructuredSuggestedTopic = (value) => {
   return parts.length === 2 && parts.every((part) => part && part.split(/\s+/).length <= 3 && !/[.!?;,:]/.test(part)) && String(value).length <= 180;
 };
 
+export const getGlobalSubjects = async () => {
+  if (!isFirebaseConfigured) return [];
+  ensureDb();
+  const snapshot = await getDocs(collection(db, collections.globalSubjects));
+  return [...new Set(snapshot.docs.map((subjectDocument) => subjectDocument.id.trim()).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
+};
+
 export const getGlobalTopicList = async ({ subject, grade } = {}) => {
   if (!subject || !grade) throw new Error('Choose a subject and grade before loading global topics.');
   if (!isFirebaseConfigured) return getHardcodedTopics({ subject, grade });
