@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import {
   ArrowRight,
   ArrowUpRight,
@@ -13,7 +14,7 @@ import {
   Sparkles,
   Users,
 } from 'lucide-react';
-import { Link, Navigate, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { SubscriptionPlanSelector } from '../components/billing/SubscriptionPlanSelector';
 
@@ -22,16 +23,52 @@ import dailyExerciseImg from '../assets/images/feature_daily_exercise_1790782345
 import peerMarkingImg from '../assets/images/feature_peer_marking_1790782355192.jpg';
 
 export const LandingPage = () => {
-  const { profile } = useAuth();
+  const { profile, loading: authLoading } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const pricingSectionRef = useRef(null);
+  const initialDiscountCode = new URLSearchParams(location.search).get('discountCode') || '';
+  const linkSelection = new URLSearchParams(location.search);
+  const signupSelection = new URLSearchParams(location.search);
+  if (initialDiscountCode) {
+    signupSelection.set('checkout', '1');
+    if (!signupSelection.has('planId')) signupSelection.set('planId', 'circle');
+    if (!signupSelection.has('billingPeriod')) signupSelection.set('billingPeriod', 'monthly');
+    if (!signupSelection.has('subjectCount')) signupSelection.set('subjectCount', '1');
+  }
+  const signupQuery = signupSelection.toString();
+  const signupPath = signupQuery ? `/signup?${signupQuery}` : '/signup';
+  const loginPath = location.search ? `/login${location.search}` : '/login';
+
+  useEffect(() => {
+    if (authLoading || profile?.role || !initialDiscountCode) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      pricingSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [authLoading, initialDiscountCode, profile?.role]);
 
   const continueFromPricing = ({ planId, billingPeriod, subjectCount, discountCode }) => {
     const params = new URLSearchParams({ planId, billingPeriod, subjectCount: String(subjectCount) });
     if (discountCode) params.set('discountCode', discountCode);
-    navigate(`/signup?${params.toString()}`);
+    if (profile?.role === 'student') {
+      navigate(`/student/billing?${params.toString()}`);
+    } else if (profile?.role === 'parent') {
+      navigate(`/parent?discountCode=${encodeURIComponent(discountCode || initialDiscountCode)}`);
+    } else {
+      params.set('checkout', '1');
+      navigate(`/signup?${params.toString()}`);
+    }
   };
 
   if (profile?.role) {
+    const selection = new URLSearchParams(location.search);
+    if (selection.has('discountCode') && profile.role === 'student') {
+      return <Navigate to={`/student/billing?${selection.toString()}`} replace />;
+    }
+    if (selection.has('discountCode') && profile.role === 'parent') {
+      return <Navigate to={`/parent?discountCode=${encodeURIComponent(selection.get('discountCode'))}`} replace />;
+    }
     const target = (profile.role === 'tutor' && profile.isTeacher) ? '/teacher' : `/${profile.role}`;
     return <Navigate to={target} replace />;
   }
@@ -69,14 +106,14 @@ export const LandingPage = () => {
 
             <div className="flex flex-wrap items-center gap-4 pt-2">
               <Link
-                to="/signup"
+                to={signupPath}
                 className="group relative inline-flex items-center gap-2.5 rounded-full bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 px-8 py-4 text-base font-extrabold text-slate-950 shadow-[0_0_35px_rgba(163,230,53,0.4)] transition-all duration-300 hover:scale-[1.03] hover:shadow-[0_0_50px_rgba(163,230,53,0.6)] active:scale-100"
               >
                 <span>Create student account</span>
                 <ArrowRight className="h-5 w-5 transition-transform duration-300 group-hover:translate-x-1" />
               </Link>
               <Link
-                to="/login"
+                to={loginPath}
                 className="inline-flex items-center gap-2 rounded-full border border-lime-400/30 bg-slate-900/70 px-6 py-4 text-sm font-semibold text-lime-300 backdrop-blur transition-all duration-200 hover:border-lime-400 hover:bg-lime-400/10 hover:text-white"
               >
                 <span>Log in</span>
@@ -377,9 +414,20 @@ export const LandingPage = () => {
         </div>
       </section>
 
-      <section className="border-y border-lime-500/20 bg-slate-900/40 py-20">
+      <section ref={pricingSectionRef} id="subscription-pricing" className="scroll-mt-6 border-y border-lime-500/20 bg-slate-900/40 py-20">
         <div className="mx-auto max-w-7xl px-4 lg:px-6">
-          <SubscriptionPlanSelector onContinue={continueFromPricing} mobileSwipe allowDiscountInput />
+          <SubscriptionPlanSelector
+            onContinue={continueFromPricing}
+            mobileSwipe
+            allowDiscountInput
+            initialDiscountCode={initialDiscountCode}
+            studentId={profile?.role === 'student' ? profile.uid : null}
+            initialSelection={{
+              planId: linkSelection.get('planId') || 'circle',
+              billingPeriod: linkSelection.get('billingPeriod') || 'monthly',
+              subjectCount: linkSelection.get('subjectCount') || 1,
+            }}
+          />
         </div>
       </section>
 
@@ -403,14 +451,14 @@ export const LandingPage = () => {
 
             <div className="pt-4 flex flex-wrap justify-center gap-4">
               <Link
-                to="/signup"
+                to={signupPath}
                 className="inline-flex items-center gap-2.5 rounded-full bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 px-8 py-3.5 text-base font-extrabold text-slate-950 shadow-[0_0_35px_rgba(163,230,53,0.5)] transition hover:scale-105 hover:shadow-[0_0_50px_rgba(163,230,53,0.7)]"
               >
                 <span>Get started with Examifying</span>
                 <ArrowRight className="h-5 w-5" />
               </Link>
               <Link
-                to="/login"
+                to={loginPath}
                 className="inline-flex items-center gap-2 rounded-full border border-lime-400/30 bg-slate-900/80 px-7 py-3.5 text-sm font-semibold text-lime-300 transition hover:border-lime-400 hover:bg-lime-400/10 hover:text-white"
               >
                 Sign in to your account

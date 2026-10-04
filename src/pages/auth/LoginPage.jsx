@@ -10,11 +10,15 @@ export const LoginPage = () => {
   const [form, setForm] = useState({ email: '', password: '' });
   const [status, setStatus] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const signupParams = new URLSearchParams(location.search);
+  if (signupParams.has('discountCode')) signupParams.set('checkout', '1');
+  const signupQuery = signupParams.toString();
+  const signupPath = signupQuery ? `/signup?${signupQuery}` : '/signup';
 
   const redirectByRole = (profile) => {
     const selection = new URLSearchParams(location.search);
     const planId = selection.get('planId');
-    if (profile.role === 'student' && ['free', 'circle', 'personalized'].includes(planId)) {
+    if (profile.role === 'student' && (['free', 'circle', 'personalized'].includes(planId) || selection.has('discountCode'))) {
       navigate(`/student/billing?${selection.toString()}`);
       return;
     }
@@ -75,7 +79,7 @@ export const LoginPage = () => {
         </button>
         {status ? <p className="text-sm text-rose-500">{status}</p> : null}
         <p className="text-sm text-slate-400 text-center">
-          Need an account? <Link to={`/signup${location.search}`} className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">Create one</Link>.
+          Need an account? <Link to={signupPath} className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">Create one</Link>.
         </p>
       </form>
     </main>

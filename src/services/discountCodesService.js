@@ -11,3 +11,4 @@ export const createDiscountCode = (settings) => callDiscountFunction('createDisc
 export const listDiscountCodes = () => callDiscountFunction('listDiscountCodes');
 export const setDiscountCodeActive = ({ code, active }) => callDiscountFunction('setDiscountCodeActive', { code, active });
 export const validateDiscountCode = (payload) => callDiscountFunction('validateDiscountCode', payload);
+export const previewDiscountCode = (payload) => callDiscountFunction('previewDiscountCode', payload);

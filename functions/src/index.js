@@ -13,6 +13,7 @@ export {
   listDiscountCodes,
   setDiscountCodeActive,
   validateDiscountCode,
+  previewDiscountCode,
   reconcileDiscountCodeReservations,
 } from './discountCodes.js';
 

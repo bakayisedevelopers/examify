@@ -7,6 +7,7 @@ import { calculateSubscriptionQuote } from './subscriptionPricing.js';
 import {
   calculateDiscount,
   generateDiscountCode,
+  getDiscountBillingPeriodError,
   getDiscountEligibilityError,
   getDiscountUseCounts,
   normalizeDiscountCode,
@@ -57,7 +58,8 @@ const publicCodeQuote = ({ code, quote }) => {
   return {
     code: code.code,
     percentOff: code.percentOff,
-    billingDuration: code.billingDuration,
+    billingDuration: code.billingDuration || 'recurring',
+    discountDurationMonths: code.discountDurationMonths ?? null,
     ...quote,
     originalAmount: discount.originalAmount,
     discountAmount: discount.discountAmount,
@@ -132,7 +134,10 @@ export const listDiscountCodes = onCall({ cpu: 'gcf_gen1' }, async (request) => 
         restrictedAccountId: data.restrictedAccountId || null,
         startsAt: data.startsAt?.toDate?.().toISOString?.() ?? null,
         expiresAt: data.expiresAt?.toDate?.().toISOString?.() ?? null,
-        billingDuration: data.billingDuration,
+        billingDuration: data.billingDuration || 'recurring',
+        discountDurationMonths: data.discountDurationMonths ?? null,
+        redemptionExpiryMode: data.redemptionExpiryMode || (data.expiresAt ? 'manual' : 'none'),
+        redemptionWindowMonths: data.redemptionWindowMonths ?? null,
         active: data.active === true,
         status: getCodeStatus(data, now),
         createdAt: data.createdAt?.toDate?.().toISOString?.() ?? null,
@@ -172,6 +177,8 @@ export const getDiscountQuoteForCheckout = async ({ db, code: rawCode, uid, emai
   const codeSnapshot = await discountCodes(db).doc(code).get();
   if (!codeSnapshot.exists) throw new HttpsError('not-found', 'This discount code was not found.');
   const data = codeSnapshot.data();
+  const billingPeriodError = getDiscountBillingPeriodError({ billingDuration: data.billingDuration, billingPeriod });
+  if (billingPeriodError) throw new HttpsError('failed-precondition', billingPeriodError);
   const subscriptionSnapshot = await subscriptionRef(db, studentId).get();
   const currentSubscription = subscriptionSnapshot.exists ? subscriptionSnapshot.data() : null;
   const now = new Date();
@@ -193,6 +200,36 @@ export const validateDiscountCode = onCall({ cpu: 'gcf_gen1' }, async (request) 
   return getDiscountQuoteForCheckout({ db, code, uid: payerId, email, studentId, planId, billingPeriod, subjectCount });
 });
 
+export const previewDiscountCode = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const { code: rawCode, planId, billingPeriod, subjectCount } = request.data ?? {};
+  const code = normalizeDiscountCode(rawCode);
+  if (!/^[A-Z0-9]{10}$/.test(code)) throw new HttpsError('invalid-argument', 'Enter a valid discount code.');
+
+  let quote;
+  try {
+    quote = calculateSubscriptionQuote({ planId, billingPeriod, subjectCount });
+  } catch (error) {
+    throw new HttpsError('invalid-argument', error.message);
+  }
+  if (quote.planId === 'free') throw new HttpsError('failed-precondition', 'Discount codes apply to paid subscriptions only.');
+
+  const db = getDb();
+  const codeSnapshot = await discountCodes(db).doc(code).get();
+  if (!codeSnapshot.exists) throw new HttpsError('not-found', 'This discount code was not found.');
+  const data = codeSnapshot.data();
+  const billingPeriodError = getDiscountBillingPeriodError({ billingDuration: data.billingDuration, billingPeriod });
+  if (billingPeriodError) throw new HttpsError('failed-precondition', billingPeriodError);
+  const availabilityError = getDiscountEligibilityError({ code: data, now: new Date(), previewOnly: true });
+  if (availabilityError) throw new HttpsError('failed-precondition', availabilityError);
+  const usage = getDiscountUseCounts(data);
+  if (!usage.available) throw new HttpsError('resource-exhausted', 'This discount code has no remaining uses.');
+
+  return {
+    ...publicCodeQuote({ code: { ...data, code }, quote }),
+    previewOnly: true,
+  };
+});
+
 export const reserveDiscountRedemption = async ({ db, code: rawCode, reference, studentId, payerId, email, quote }) => {
   const code = normalizeDiscountCode(rawCode);
   const codeRef = discountCodes(db).doc(code);
@@ -207,6 +244,8 @@ export const reserveDiscountRedemption = async ({ db, code: rawCode, reference, 
     if (priorUse.exists) throw new HttpsError('already-exists', 'This checkout already has a discount reservation.');
     if (!codeSnapshot.exists) throw new HttpsError('not-found', 'This discount code was not found.');
     const data = codeSnapshot.data();
+    const billingPeriodError = getDiscountBillingPeriodError({ billingDuration: data.billingDuration, billingPeriod: quote.billingPeriod });
+    if (billingPeriodError) throw new HttpsError('failed-precondition', billingPeriodError);
     const issue = getDiscountEligibilityError({
       code: data, uid: payerId, email, now: nowDate,
       subscription: subscriptionSnapshot.exists ? subscriptionSnapshot.data() : null,
@@ -229,7 +268,8 @@ export const reserveDiscountRedemption = async ({ db, code: rawCode, reference, 
       billingPeriod: quote.billingPeriod,
       subjectCount: quote.subjectCount,
       percentOff: data.percentOff,
-      billingDuration: data.billingDuration,
+      billingDuration: data.billingDuration || 'recurring',
+      discountDurationMonths: data.discountDurationMonths ?? null,
       originalAmount: discount.originalAmount,
       discountAmount: discount.discountAmount,
       finalAmount: discount.finalAmount,
@@ -240,7 +280,8 @@ export const reserveDiscountRedemption = async ({ db, code: rawCode, reference, 
     return {
       code,
       percentOff: data.percentOff,
-      billingDuration: data.billingDuration,
+      billingDuration: data.billingDuration || 'recurring',
+      discountDurationMonths: data.discountDurationMonths ?? null,
       ...discount,
     };
   });

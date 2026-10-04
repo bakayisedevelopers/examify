@@ -15,20 +15,20 @@ const defaultForm = () => ({
   restriction: 'none',
   restrictedValue: '',
   startsAt: localDateTimeValue(new Date()),
+  redemptionExpiryMode: 'none',
+  redemptionWindowMonths: '3',
+  redemptionCustomMonths: '12',
   expiresAt: '',
   billingDuration: 'first_payment',
+  discountDurationMonths: '3',
+  customDiscountDurationMonths: '12',
 });
 
 const formatDate = (value) => value ? new Date(value).toLocaleString() : 'No expiry';
 const formatRemaining = (code) => code.remainingUses === null ? 'Unlimited' : `${code.remainingUses} of ${code.maxRedemptions}`;
 const buildShareLink = (code) => {
-  const params = new URLSearchParams({
-    planId: 'circle',
-    billingPeriod: 'monthly',
-    subjectCount: '1',
-    discountCode: code,
-  });
-  return `${window.location.origin}/signup?${params.toString()}`;
+  const params = new URLSearchParams({ discountCode: code });
+  return `${window.location.origin}/?${params.toString()}`;
 };
 
 export const AdminDiscountCodesPage = () => {
@@ -68,8 +68,15 @@ export const AdminDiscountCodesPage = () => {
         restrictedEmail: form.restriction === 'email' ? form.restrictedValue.trim() : '',
         restrictedAccountId: form.restriction === 'account' ? form.restrictedValue.trim() : '',
         startsAt: new Date(form.startsAt).toISOString(),
-        expiresAt: form.expiresAt ? new Date(form.expiresAt).toISOString() : null,
+        redemptionExpiryMode: form.redemptionExpiryMode,
+        redemptionWindowMonths: form.redemptionExpiryMode === 'after_start'
+          ? Number(form.redemptionWindowMonths === 'custom' ? form.redemptionCustomMonths : form.redemptionWindowMonths)
+          : null,
+        expiresAt: form.redemptionExpiryMode === 'manual' && form.expiresAt ? new Date(form.expiresAt).toISOString() : null,
         billingDuration: form.billingDuration,
+        discountDurationMonths: form.billingDuration === 'fixed_months'
+          ? Number(form.discountDurationMonths === 'custom' ? form.customDiscountDurationMonths : form.discountDurationMonths)
+          : null,
       };
       const result = await createDiscountCode(payload);
       setForm(defaultForm());
@@ -131,8 +138,15 @@ export const AdminDiscountCodesPage = () => {
           <label className="block"><span className="label">Who can use it?</span><select className="input" value={form.restriction} onChange={updateForm('restriction')}><option value="none">Anyone eligible</option><option value="email">Specific email</option><option value="account">Specific account ID</option></select></label>
           {form.restriction !== 'none' ? <label className="block"><span className="label">{form.restriction === 'email' ? 'Restricted email address' : 'Restricted account ID'}</span><input className="input" type={form.restriction === 'email' ? 'email' : 'text'} required value={form.restrictedValue} onChange={updateForm('restrictedValue')} /></label> : null}
           <label className="block"><span className="label">Starts at</span><input className="input" type="datetime-local" required value={form.startsAt} onChange={updateForm('startsAt')} /></label>
-          <label className="block"><span className="label">Expires at (optional)</span><input className="input" type="datetime-local" value={form.expiresAt} onChange={updateForm('expiresAt')} /></label>
-          <label className="block md:col-span-2 xl:col-span-3"><span className="label">Billing duration</span><select className="input" value={form.billingDuration} onChange={updateForm('billingDuration')}><option value="first_payment">First payment only</option><option value="recurring">Initial payment and recurring renewals for the same plan selection</option></select><span className="mt-1 block text-xs text-slate-400">Recurring discounts use Examifying’s backend renewal flow. A 100% recurring discount renews the entitlement as a zero-cost cycle; other zero-cost first checkouts do not create a new Paystack card authorization.</span></label>
+          <div className="block"><label className="label" htmlFor="discount-redemption-expiry-mode">Code redemption window</label><select id="discount-redemption-expiry-mode" className="input" value={form.redemptionExpiryMode} onChange={updateForm('redemptionExpiryMode')}><option value="none">No expiry</option><option value="after_start">Expires after a period from the start date</option><option value="manual">Choose an expiry date</option></select>
+            {form.redemptionExpiryMode === 'after_start' ? <div className="mt-2 flex gap-2"><select className="input" value={form.redemptionWindowMonths} onChange={updateForm('redemptionWindowMonths')} aria-label="Code redemption window length"><option value="1">1 month</option><option value="2">2 months</option><option value="3">3 months</option><option value="6">6 months</option><option value="12">12 months</option><option value="custom">Custom</option></select>{form.redemptionWindowMonths === 'custom' ? <input className="input" type="number" min="1" max="120" step="1" required value={form.redemptionCustomMonths} onChange={updateForm('redemptionCustomMonths')} aria-label="Custom code redemption window in months" /> : null}</div> : null}
+            {form.redemptionExpiryMode === 'manual' ? <label className="mt-2 block"><span className="sr-only">Expires at</span><input className="input" type="datetime-local" required value={form.expiresAt} onChange={updateForm('expiresAt')} /></label> : null}
+            <span className="mt-1 block text-xs text-slate-400">This controls when the code can be redeemed. A timed window is calculated by the server from the start date.</span>
+          </div>
+          <div className="block md:col-span-2 xl:col-span-3"><label className="label" htmlFor="discount-billing-duration">Discount duration after redemption</label><select id="discount-billing-duration" className="input" value={form.billingDuration} onChange={updateForm('billingDuration')}><option value="first_payment">First payment only</option><option value="fixed_months">First set number of monthly billing periods</option><option value="recurring">Permanent recurring discount for the same plan selection</option></select>
+            {form.billingDuration === 'fixed_months' ? <div className="mt-2 flex max-w-xl gap-2"><select className="input" value={form.discountDurationMonths} onChange={updateForm('discountDurationMonths')} aria-label="Fixed discount duration"><option value="1">First 1 month</option><option value="2">First 2 months</option><option value="3">First 3 months</option><option value="6">First 6 months</option><option value="custom">Custom</option></select>{form.discountDurationMonths === 'custom' ? <input className="input" type="number" min="1" max="24" step="1" required value={form.customDiscountDurationMonths} onChange={updateForm('customDiscountDurationMonths')} aria-label="Custom discount duration in months" /> : null}</div> : null}
+            <span className="mt-1 block text-xs text-slate-400">First-payment discounts stop after checkout. Fixed discounts are available on monthly subscriptions only; they start with each customer’s successful activation and run for that many monthly billing periods. Permanent recurring discounts continue while the same plan selection renews. Recurring charges and zero-cost renewals use Examifying’s existing Paystack authorization flow.</span>
+          </div>
           <div className="md:col-span-2 xl:col-span-3"><button className="btn-primary" type="submit" disabled={isSaving}>{isSaving ? 'Creating…' : 'Generate code'}</button></div>
         </form>
       </section>
@@ -152,7 +166,7 @@ export const AdminDiscountCodesPage = () => {
                   <td className="px-5 py-4"><button type="button" className="inline-flex items-center gap-2 font-mono font-bold tracking-wider text-lime-300" onClick={() => copyCode(code.code)}>{code.code}<Copy className="h-3.5 w-3.5" /></button><p className="mt-1 text-xs text-slate-400">{code.percentOff}% off</p><button type="button" className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-lime-300 hover:text-lime-200" onClick={() => copyShareLink(code.code)}><Link2 className="h-3.5 w-3.5" />Copy share link</button></td>
                   <td className="px-5 py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${code.status === 'Active' ? 'bg-lime-400/10 text-lime-300' : 'bg-slate-700 text-slate-300'}`}>{code.status}</span></td>
                   <td className="px-5 py-4 text-slate-300">{code.restrictedEmail || (code.restrictedAccountId ? `Account ${code.restrictedAccountId}` : 'Any eligible account')}</td>
-                  <td className="px-5 py-4 text-slate-300">{code.billingDuration === 'recurring' ? 'Recurring' : 'First payment'}</td>
+                  <td className="px-5 py-4 text-slate-300">{code.billingDuration === 'fixed_months' ? `First ${code.discountDurationMonths} monthly periods` : code.billingDuration === 'first_payment' ? 'First payment' : 'Permanent recurring'}</td>
                   <td className="px-5 py-4 text-slate-300">{formatDate(code.startsAt)}<br /><span className="text-xs text-slate-500">{formatDate(code.expiresAt)}</span></td>
                   <td className="px-5 py-4 text-slate-300">{code.successfulRedemptions}{code.reservedRedemptions ? <span className="block text-xs text-amber-300">{code.reservedRedemptions} checkout(s) pending</span> : null}</td>
                   <td className="px-5 py-4 text-slate-300">{formatRemaining(code)}</td>

@@ -46,6 +46,10 @@ export const SignupPage = () => {
     return <Navigate to={profile.isTeacher ? '/teacher' : `/${profile.role}`} replace />;
   }
 
+  if (pendingDiscountCode && new URLSearchParams(location.search).get('checkout') !== '1') {
+    return <Navigate to={`/${location.search}`} replace />;
+  }
+
   const handleChange = (key) => (event) =>
     setForm((current) => ({ ...current, [key]: event.target.value }));
 
@@ -110,7 +114,9 @@ export const SignupPage = () => {
       const selection = new URLSearchParams(location.search);
       const planId = selection.get('planId');
       if (form.role === ROLES.STUDENT) {
-        const selectedPlanId = ['free', 'circle', 'personalized'].includes(planId) ? planId : 'free';
+        const selectedPlanId = ['free', 'circle', 'personalized'].includes(planId)
+          ? planId
+          : selection.has('discountCode') ? 'circle' : 'free';
         const billingPeriod = selection.get('billingPeriod') === 'yearly' ? 'yearly' : 'monthly';
         const subjectCount = selection.get('subjectCount') || '1';
         const discountCode = selection.get('discountCode');

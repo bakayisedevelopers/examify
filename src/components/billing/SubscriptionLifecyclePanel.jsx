@@ -112,8 +112,13 @@ export const SubscriptionLifecyclePanel = ({
           {paidPlan && !isPastDue && !currentState.cancelAtPeriodEnd ? (
             <p className="mt-1 text-sm text-slate-500">Next renewal: {formatDate(currentUntil)}</p>
           ) : null}
-          {paidPlan && currentState.discountBillingDuration === 'recurring' && currentState.discountPercent ? (
-            <p className="mt-1 text-sm text-lime-700">Recurring discount: {currentState.discountPercent}% ({currentState.discountCode}) · current cycle total {formatRand(currentState.amount)}</p>
+          {paidPlan && currentState.discountPercent && ['recurring', 'fixed_months'].includes(currentState.discountBillingDuration) ? (
+            <p className="mt-1 text-sm text-lime-700">
+              {currentState.discountBillingDuration === 'fixed_months'
+                ? `${currentState.discountPercent}% discount for the first ${currentState.discountDurationMonths} monthly billing periods (${currentState.discountCode}) · ends ${formatDate(currentState.discountEndsAt)}`
+                : `Permanent recurring discount: ${currentState.discountPercent}% (${currentState.discountCode})`}
+              {' '}· current cycle total {formatRand(currentState.amount)}
+            </p>
           ) : null}
         </div>
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
@@ -13,6 +13,7 @@ import { refreshStudentSubscriptionState, setStudentSubscriptionState } from '..
 export const ProfileBillingPage = ({ role }) => {
   const { profile, logout, refreshProfile } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [summary, setSummary] = useState(null);
   const [subscriptionStatus, setSubscriptionStatus] = useState('');
   const [isStartingSubscription, setIsStartingSubscription] = useState(false);
@@ -30,9 +31,14 @@ export const ProfileBillingPage = ({ role }) => {
       if (result.freeCheckout) {
         const refreshedProfile = await refreshProfile(profile.uid);
         await refreshStudentSubscriptionState(refreshedProfile || profile);
-        setSubscriptionStatus(result.discount?.billingDuration === 'recurring' && result.discount?.percentOff === 100
-          ? 'Subscription activated. This recurring 100% code will continue the same plan as zero-cost renewal cycles.'
-          : 'Subscription activated with the discount code. Automatic renewal requires a successful card payment and reusable authorization.');
+        const discount = result.discount;
+        if (discount?.billingDuration === 'recurring' && discount?.percentOff === 100) {
+          setSubscriptionStatus('Subscription activated. This permanent 100% code will continue the same plan as zero-cost renewal cycles.');
+        } else if (discount?.billingDuration === 'fixed_months' && discount?.percentOff === 100) {
+          setSubscriptionStatus(`Subscription activated. The 100% discount covers the first ${discount.discountDurationMonths} monthly billing periods; manual payment is needed after that period because no reusable card authorization was created.`);
+        } else {
+          setSubscriptionStatus('Subscription activated with the discount code. Automatic renewal requires a successful card payment and reusable authorization.');
+        }
       } else if (result.free) {
         const refreshedProfile = await refreshProfile(profile.uid);
         await refreshStudentSubscriptionState(refreshedProfile || profile);
@@ -106,6 +112,7 @@ export const ProfileBillingPage = ({ role }) => {
           }}
           onContinue={continueSubscription}
           isSubmitting={isStartingSubscription}
+          initialDiscountCode={new URLSearchParams(location.search).get('discountCode') || ''}
         /> : null}
         {subscriptionStatus ? <div role="status" className="panel mt-5 p-4 text-sm">{subscriptionStatus}</div> : null}
       </AppShell>

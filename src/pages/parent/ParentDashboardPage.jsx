@@ -71,6 +71,7 @@ export const ParentDashboardPage = () => {
   const [subscriptionStudent, setSubscriptionStudent] = useState(null);
   
   const lastVerifiedReferenceRef = useRef(null);
+  const handledDiscountLinkRef = useRef('');
 
   const loadStudents = async () => {
     if (!profile?.uid) return;
@@ -114,6 +115,17 @@ export const ParentDashboardPage = () => {
   useEffect(() => {
     loadStudents();
   }, [profile?.uid]);
+
+  useEffect(() => {
+    const code = new URLSearchParams(location.search).get('discountCode')?.trim().toUpperCase() || '';
+    if (!code || !students.length || handledDiscountLinkRef.current === code) return;
+    handledDiscountLinkRef.current = code;
+    if (students.length === 1) {
+      setSubscriptionStudent(students[0]);
+    } else {
+      setStatus(`Discount code ${code} is ready. Choose a student’s subscription below to apply it.`);
+    }
+  }, [location.search, students]);
 
   useEffect(() => {
     const runVerification = async () => {
@@ -201,8 +213,10 @@ export const ParentDashboardPage = () => {
 
       if (result.freeCheckout) {
         const renewalNote = result.discount?.billingDuration === 'recurring' && result.discount?.percentOff === 100
-          ? ' This code will continue the same plan as zero-cost renewal cycles.'
-          : ' Automatic renewal requires a successful card payment and reusable authorization.';
+          ? ' This permanent 100% code will continue the same plan as zero-cost renewal cycles.'
+          : result.discount?.billingDuration === 'fixed_months' && result.discount?.percentOff === 100
+            ? ` The 100% discount covers the first ${result.discount.discountDurationMonths} monthly billing periods; manual payment is needed after that period because no reusable card authorization was created.`
+            : ' Automatic renewal requires a successful card payment and reusable authorization.';
         setStatus(`${student.displayName || 'Student'} subscription activated with the discount code.${renewalNote}`);
         setSubscriptionStudent(null);
         await loadStudents();

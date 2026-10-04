@@ -96,6 +96,11 @@ const markUncertainAttempt = async ({ db, studentId, subscription, dueDate, atte
         discountPercent: attempt.discountPercent ?? null,
         discountCode: attempt.discountCode,
         discountBillingDuration: attempt.discountBillingDuration ?? 'recurring',
+        ...(attempt.discountBillingDuration === 'fixed_months' ? {
+          discountDurationMonths: attempt.discountDurationMonths ?? null,
+          discountEndsAt: attempt.discountEndsAt ?? null,
+          discountStartedAt: attempt.discountStartedAt ?? null,
+        } : {}),
       } : {}),
       currency: selectedPlan.currency ?? subscription.currency ?? 'ZAR',
       verificationPending: true,
@@ -105,7 +110,7 @@ const markUncertainAttempt = async ({ db, studentId, subscription, dueDate, atte
   ]);
 };
 
-const getAttemptQuote = (subscription) => {
+const getAttemptQuote = (subscription, at = subscription.renewalDate?.toDate?.() ?? new Date()) => {
   const attempt = subscription.renewalAttempt ?? {};
   const plan = attempt.planId
     ? attempt
@@ -121,8 +126,12 @@ const getAttemptQuote = (subscription) => {
     planId: attempt.planId,
     billingPeriod: attempt.billingPeriod,
     subjectCount: attempt.subjectCount,
+    billingDuration: attempt.discountBillingDuration || 'recurring',
+    discountDurationMonths: attempt.discountDurationMonths,
+    discountEndsAt: attempt.discountEndsAt,
+    activatedAt: attempt.discountStartedAt,
   } : subscription.discountBenefit;
-  return applyRecurringDiscount(baseQuote, benefit, plan);
+  return applyRecurringDiscount(baseQuote, benefit, plan, at);
 };
 
 export const processSubscriptionRenewals = onSchedule(
@@ -155,7 +164,7 @@ export const processSubscriptionRenewals = onSchedule(
         try {
           const authorizationSnapshot = await authorizationRef(db, studentId).get();
           const authorization = authorizationSnapshot.exists ? authorizationSnapshot.data() : null;
-          const quote = getAttemptQuote(subscription);
+          const quote = getAttemptQuote(subscription, dueDate);
           const result = await chargeAuthorizationForSubscription({
             studentId,
             payerId: subscription.renewalAttempt.payerId || authorization?.payerId || studentId,
@@ -237,14 +246,14 @@ export const processSubscriptionRenewals = onSchedule(
       }
 
       const selectedPlan = subscription.pendingPlan?.planId ? subscription.pendingPlan : subscription;
-      if (subscription.discountBillingDuration === 'recurring' && Number(subscription.discountPercent) === 100) {
+      if (['recurring', 'fixed_months'].includes(subscription.discountBillingDuration) && Number(subscription.discountPercent) === 100) {
         try {
           const baseQuote = calculateSubscriptionQuote({
             planId: selectedPlan.planId,
             billingPeriod: selectedPlan.billingPeriod,
             subjectCount: selectedPlan.subjectCount,
           });
-          const zeroQuote = applyRecurringDiscount(baseQuote, subscription.discountBenefit, selectedPlan);
+          const zeroQuote = applyRecurringDiscount(baseQuote, subscription.discountBenefit, selectedPlan, dueDate);
           if (zeroQuote.amount === 0 && zeroQuote.discountPercent === 100) {
             await applyZeroCostSubscriptionRenewal({ studentId, quote: zeroQuote, renewalDate: subscription.renewalDate });
             logger.info('Applied zero-cost recurring subscription renewal', { studentId, reference: `zero-renewal-${studentId}-${dueDate.getTime()}` });
@@ -288,7 +297,7 @@ export const processSubscriptionRenewals = onSchedule(
           subjectCount: subscription.pendingPlan?.subjectCount ?? subscription.subjectCount,
         });
         const selectedPlan = subscription.pendingPlan?.planId ? subscription.pendingPlan : subscription;
-        quote = applyRecurringDiscount(baseQuote, subscription.discountBenefit, selectedPlan);
+        quote = applyRecurringDiscount(baseQuote, subscription.discountBenefit, selectedPlan, dueDate);
       } catch (error) {
         logger.error('Subscription plan could not be priced for renewal', { studentId, error: error.message });
         await setManualPaymentRequired({ db, studentId, dueDate, reason: 'invalid_saved_plan' });

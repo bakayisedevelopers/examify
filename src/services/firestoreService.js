@@ -1137,6 +1137,12 @@ const getSubscriptionLifecycleFields = (subscription) => ({
   renewalVerificationPending: ['processing', 'unknown'].includes(subscription?.renewalAttempt?.status),
   nextRenewalAttemptAt: subscription?.nextRenewalAttemptAt ?? null,
   manualPaymentRequired: subscription?.manualPaymentRequired === true,
+  discountPercent: Number(subscription?.discountPercent) || 0,
+  discountCode: subscription?.discountCode ?? null,
+  discountBillingDuration: subscription?.discountBillingDuration ?? null,
+  discountDurationMonths: Number(subscription?.discountDurationMonths) || null,
+  discountEndsAt: subscription?.discountEndsAt ?? null,
+  amount: Number(subscription?.amount) || 0,
 });
 
 const resolveVerifiedSubscriptionState = async ({ studentId, subscription }) => {

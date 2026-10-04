@@ -5,7 +5,7 @@ import { getDb, admin } from './admin.js';
 import { getPaystackConfig } from './config.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
 import { getActiveSubjectLessonQuotaUpdates } from './lessonEntitlements.js';
-import { applyRecurringDiscount, calculateDiscount } from './discountCodesCore.js';
+import { applyRecurringDiscount, calculateDiscount, calculateDiscountEndAt } from './discountCodesCore.js';
 import { getDiscountQuoteForCheckout, reserveDiscountRedemption, transitionDiscountRedemptionForPayment } from './discountCodes.js';
 
 const studentSubscriptionRef = (db, studentId) => db.collection('users').doc(studentId).collection('subscriptions').doc('current');
@@ -112,6 +112,10 @@ const completeZeroCostDiscountCheckout = async ({ db, studentId, payerId, isPare
   const userRef = db.collection('users').doc(studentId);
   const codeRef = db.collection('discountCodes').doc(discount.code);
   const useRef = codeRef.collection('redemptions').doc(reference);
+  const discountEndsAt = discount.billingDuration === 'fixed_months'
+    ? admin.firestore.Timestamp.fromDate(discount.discountEndsAt?.toDate?.()
+      ?? calculateDiscountEndAt(now.toDate(), discount.discountDurationMonths, quote.billingCycleDays))
+    : null;
   const subscriptionForQuota = {
     ...quote,
     status: 'active',
@@ -142,19 +146,26 @@ const completeZeroCostDiscountCheckout = async ({ db, studentId, payerId, isPare
       : null;
     if (oldPendingRef) await transaction.get(oldPendingRef);
 
-    const recurringBenefit = discount.billingDuration === 'recurring' ? {
+    const carriesRenewalDiscount = ['recurring', 'fixed_months'].includes(discount.billingDuration);
+    const recurringBenefit = carriesRenewalDiscount ? {
       code: discount.code,
       percentOff: discount.percentOff,
       planId: quote.planId,
       billingPeriod: quote.billingPeriod,
       subjectCount: quote.subjectCount,
-      activatedAt: now,
+      activatedAt: discount.discountStartedAt || now,
+      billingDuration: discount.billingDuration,
+      ...(discount.billingDuration === 'fixed_months' ? {
+        discountDurationMonths: discount.discountDurationMonths,
+        discountEndsAt,
+      } : {}),
     } : admin.firestore.FieldValue.delete();
     transaction.set(paymentRef, {
       reference, studentId, payerId, parentId: isParent ? payerId : null, email,
       status: 'success', originalAmount: discount.originalAmount,
       discountAmount: discount.discountAmount, discountPercent: discount.percentOff,
       discountCode: discount.code, discountBillingDuration: discount.billingDuration,
+      ...(discount.billingDuration === 'fixed_months' ? { discountDurationMonths: discount.discountDurationMonths, discountEndsAt } : {}),
       currency: quote.currency, ...quote, amount: 0, product: 'Examifying subscription',
       paidAt: now, zeroCostCheckout: true, createdAt: now, updatedAt: now,
     }, { merge: true });
@@ -163,11 +174,14 @@ const completeZeroCostDiscountCheckout = async ({ db, studentId, payerId, isPare
       originalAmount: discount.originalAmount, discountAmount: discount.discountAmount,
       discountPercent: discount.percentOff, discountCode: discount.code,
       discountBillingDuration: discount.billingDuration,
-      ...(discount.billingDuration === 'recurring' ? { discountBenefit: recurringBenefit } : { discountBenefit: admin.firestore.FieldValue.delete() }),
+      ...(discount.billingDuration === 'fixed_months'
+        ? { discountDurationMonths: discount.discountDurationMonths, discountEndsAt }
+        : { discountDurationMonths: admin.firestore.FieldValue.delete(), discountEndsAt: admin.firestore.FieldValue.delete() }),
+      discountBenefit: recurringBenefit,
       latestReference: reference, activatedAt: now, entitlementWindowStartAt: now,
       renewedAt: now, renewalDate, cancelAtPeriodEnd: false,
-      manualPaymentRequired: !(discount.billingDuration === 'recurring' && discount.percentOff === 100),
-      autoRenew: discount.billingDuration === 'recurring' && discount.percentOff === 100,
+      manualPaymentRequired: !(carriesRenewalDiscount && discount.percentOff === 100),
+      autoRenew: carriesRenewalDiscount && discount.percentOff === 100,
       renewalAttemptCount: 0,
       graceEndsAt: admin.firestore.FieldValue.delete(), renewalAttempt: admin.firestore.FieldValue.delete(),
       renewalChargeLock: admin.firestore.FieldValue.delete(), pendingPlan: admin.firestore.FieldValue.delete(),
@@ -199,7 +213,8 @@ const completeZeroCostDiscountCheckout = async ({ db, studentId, payerId, isPare
 export const applyZeroCostSubscriptionRenewal = async ({ studentId, quote, renewalDate }) => {
   const db = getDb();
   const dueDate = renewalDate?.toDate?.() ?? (renewalDate instanceof Date ? renewalDate : null);
-  if (!dueDate || quote?.amount !== 0 || quote?.discountPercent !== 100 || quote?.discountBillingDuration !== 'recurring') {
+  if (!dueDate || quote?.amount !== 0 || quote?.discountPercent !== 100
+    || !['recurring', 'fixed_months'].includes(quote?.discountBillingDuration)) {
     throw new HttpsError('failed-precondition', 'The zero-cost recurring renewal is not eligible.');
   }
   const reference = `zero-renewal-${studentId}-${dueDate.getTime()}`;
@@ -223,24 +238,39 @@ export const applyZeroCostSubscriptionRenewal = async ({ studentId, quote, renew
     const currentDue = current.renewalDate?.toDate?.();
     const selectedPlan = current.pendingPlan?.planId ? current.pendingPlan : current;
     const benefit = current.discountBenefit;
+    const expectedQuote = applyRecurringDiscount(calculateSubscriptionQuote({
+      planId: selectedPlan.planId,
+      billingPeriod: selectedPlan.billingPeriod,
+      subjectCount: selectedPlan.subjectCount,
+    }), benefit, selectedPlan, dueDate);
     if (currentDue?.getTime() !== dueDate.getTime()
       || current.cancelAtPeriodEnd === true || current.pendingPlan?.planId === 'free'
       || benefit?.percentOff !== 100 || benefit?.planId !== selectedPlan.planId
       || benefit?.billingPeriod !== selectedPlan.billingPeriod
-      || Number(benefit?.subjectCount) !== Number(selectedPlan.subjectCount)) {
+      || Number(benefit?.subjectCount) !== Number(selectedPlan.subjectCount)
+      || expectedQuote.amount !== 0 || expectedQuote.discountBillingDuration !== quote.discountBillingDuration) {
       throw new HttpsError('aborted', 'The subscription changed before its free renewal could be applied.');
     }
     transaction.set(paymentRef, {
       reference, studentId, payerId: current.renewalAttempt?.payerId || studentId,
       status: 'success', recurring: true, zeroCostCheckout: true,
       originalAmount: quote.originalAmount, discountAmount: quote.discountAmount,
-      discountPercent: 100, discountCode: benefit.code, discountBillingDuration: 'recurring',
+      discountPercent: 100, discountCode: benefit.code, discountBillingDuration: benefit.billingDuration || 'recurring',
+      ...(benefit.billingDuration === 'fixed_months' ? {
+        discountDurationMonths: benefit.discountDurationMonths,
+        discountEndsAt: benefit.discountEndsAt,
+      } : {}),
       currency: quote.currency, ...quote, amount: 0,
       createdAt: now, paidAt: now, updatedAt: now,
     }, { merge: true });
     transaction.set(subRef, {
       ...quote, amount: 0, originalAmount: quote.originalAmount, discountAmount: quote.discountAmount,
-      discountPercent: 100, discountCode: benefit.code, discountBillingDuration: 'recurring',
+      discountPercent: 100, discountCode: benefit.code, discountBillingDuration: benefit.billingDuration || 'recurring',
+      ...(benefit.billingDuration === 'fixed_months' ? {
+        discountDurationMonths: benefit.discountDurationMonths,
+        discountEndsAt: benefit.discountEndsAt,
+      } : {}),
+      discountBenefit: quote.discountBenefit || benefit,
       latestReference: reference, status: 'active', autoRenew: true, manualPaymentRequired: false,
       renewalDate: nextRenewalDate, activatedAt: now, entitlementWindowStartAt: now, renewedAt: now,
       renewalAttemptCount: 0, renewalAttempt: admin.firestore.FieldValue.delete(),
@@ -352,14 +382,20 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
     }
     let rememberedDiscount = null;
     const savedBenefit = currentSubscription?.discountBenefit;
-    if (!discountCode && currentSubscription?.discountBillingDuration === 'recurring' && savedBenefit) {
-      const recurringQuote = applyRecurringDiscount(quote, savedBenefit, quote);
+    if (!discountCode && ['recurring', 'fixed_months'].includes(currentSubscription?.discountBillingDuration) && savedBenefit) {
+      const discountReferenceDate = currentSubscription?.renewalDate?.toDate?.() ?? new Date();
+      const recurringQuote = applyRecurringDiscount(quote, savedBenefit, quote, discountReferenceDate);
       if (recurringQuote.discountPercent) {
         const amountParts = calculateDiscount(quote.amount, Number(savedBenefit.percentOff));
         rememberedDiscount = {
           code: savedBenefit.code,
           percentOff: Number(savedBenefit.percentOff),
-          billingDuration: 'recurring',
+          billingDuration: savedBenefit.billingDuration || 'recurring',
+          ...(savedBenefit.billingDuration === 'fixed_months' ? {
+            discountDurationMonths: savedBenefit.discountDurationMonths,
+            discountEndsAt: savedBenefit.discountEndsAt,
+            discountStartedAt: savedBenefit.activatedAt,
+          } : {}),
           ...amountParts,
         };
       }
@@ -547,6 +583,11 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
         originalAmount: appliedDiscount.originalAmount, discountAmount: appliedDiscount.discountAmount,
         discountPercent: appliedDiscount.percentOff, discountCode: appliedDiscount.code,
         discountBillingDuration: appliedDiscount.billingDuration,
+        ...(appliedDiscount.billingDuration === 'fixed_months' ? {
+          discountDurationMonths: appliedDiscount.discountDurationMonths,
+          discountEndsAt: appliedDiscount.discountEndsAt || null,
+          discountStartedAt: appliedDiscount.discountStartedAt || null,
+        } : {}),
         currency: quote.currency, ...quote, amount: appliedDiscount.finalAmount,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
@@ -605,6 +646,11 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
         discountPercent: appliedDiscount.percentOff,
         discountCode: appliedDiscount.code,
         discountBillingDuration: appliedDiscount.billingDuration,
+        ...(appliedDiscount.billingDuration === 'fixed_months' ? {
+          discountDurationMonths: appliedDiscount.discountDurationMonths,
+          discountEndsAt: appliedDiscount.discountEndsAt || null,
+          discountStartedAt: appliedDiscount.discountStartedAt || null,
+        } : {}),
       } : {}),
       currency: 'ZAR',
       ...quote,
@@ -849,6 +895,11 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
     ? new Date(transaction.paid_at)
     : new Date();
   const activationTimestamp = succeeded ? admin.firestore.Timestamp.fromDate(activationDate) : null;
+  const discountEndsAt = payment.discountBillingDuration === 'fixed_months' && discount
+    ? (payment.discountEndsAt || (succeeded
+      ? admin.firestore.Timestamp.fromDate(calculateDiscountEndAt(activationDate, payment.discountDurationMonths, quote.billingCycleDays))
+      : null))
+    : null;
   const nextRenewalDate = succeeded
     ? admin.firestore.Timestamp.fromDate(new Date(activationDate.getTime() + quote.billingCycleDays * 24 * 60 * 60 * 1000))
     : null;
@@ -871,6 +922,11 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
       discountPercent: Number(payment.discountPercent),
       discountCode: payment.discountCode,
       discountBillingDuration: payment.discountBillingDuration,
+      ...(payment.discountBillingDuration === 'fixed_months' ? {
+        discountDurationMonths: payment.discountDurationMonths,
+        discountEndsAt,
+        discountStartedAt: payment.discountStartedAt || activationTimestamp,
+      } : {}),
     } : {}),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
@@ -932,25 +988,44 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
         discountPercent: Number(payment.discountPercent),
         discountCode: payment.discountCode,
         discountBillingDuration: payment.discountBillingDuration,
-        ...(payment.discountBillingDuration === 'recurring' ? {
+        ...(payment.discountBillingDuration === 'fixed_months' ? {
+          discountDurationMonths: payment.discountDurationMonths,
+          discountEndsAt,
+        } : {}),
+        ...(['recurring', 'fixed_months'].includes(payment.discountBillingDuration) ? {
           discountBenefit: {
             code: payment.discountCode,
             percentOff: Number(payment.discountPercent),
             planId: quote.planId,
             billingPeriod: quote.billingPeriod,
             subjectCount: quote.subjectCount,
-            activatedAt: activationTimestamp,
+            activatedAt: payment.discountStartedAt || activationTimestamp,
+            billingDuration: payment.discountBillingDuration,
+            ...(payment.discountBillingDuration === 'fixed_months' ? {
+              discountDurationMonths: payment.discountDurationMonths,
+              discountEndsAt,
+            } : {}),
           },
         } : { discountBenefit: admin.firestore.FieldValue.delete() }),
-      } : { discountBenefit: admin.firestore.FieldValue.delete() }),
+      } : {
+        discountBenefit: admin.firestore.FieldValue.delete(),
+        originalAmount: admin.firestore.FieldValue.delete(),
+        discountAmount: admin.firestore.FieldValue.delete(),
+        discountPercent: admin.firestore.FieldValue.delete(),
+        discountCode: admin.firestore.FieldValue.delete(),
+        discountBillingDuration: admin.firestore.FieldValue.delete(),
+        discountDurationMonths: admin.firestore.FieldValue.delete(),
+        discountEndsAt: admin.firestore.FieldValue.delete(),
+        discountStartedAt: admin.firestore.FieldValue.delete(),
+      }),
       latestReference: reference,
       activatedAt: activationTimestamp,
       entitlementWindowStartAt: activationTimestamp,
       renewedAt: activationTimestamp,
       renewalDate: nextRenewalDate,
-      autoRenew: reusableAuthorization || (payment.discountBillingDuration === 'recurring' && Number(payment.discountPercent) === 100),
+      autoRenew: reusableAuthorization || (['recurring', 'fixed_months'].includes(payment.discountBillingDuration) && Number(payment.discountPercent) === 100),
       cancelAtPeriodEnd: false,
-      manualPaymentRequired: !(reusableAuthorization || (payment.discountBillingDuration === 'recurring' && Number(payment.discountPercent) === 100)),
+      manualPaymentRequired: !(reusableAuthorization || (['recurring', 'fixed_months'].includes(payment.discountBillingDuration) && Number(payment.discountPercent) === 100)),
       renewalAttemptCount: 0,
       graceEndsAt: admin.firestore.FieldValue.delete(),
       renewalVerificationHoldUntil: admin.firestore.FieldValue.delete(),
@@ -1086,6 +1161,11 @@ export const chargeAuthorizationForSubscription = async ({
           discountPercent: subscriptionQuote.discountPercent,
           discountCode: subscriptionQuote.discountCode,
           discountBillingDuration: subscriptionQuote.discountBillingDuration,
+          ...(subscriptionQuote.discountBillingDuration === 'fixed_months' ? {
+            discountDurationMonths: subscriptionQuote.discountDurationMonths,
+            discountEndsAt: subscriptionQuote.discountEndsAt,
+            discountStartedAt: subscriptionQuote.discountBenefit?.activatedAt ?? null,
+          } : {}),
         } : {}),
         pendingPlanReference: canResumeAttempt
           ? (existingAttempt.pendingPlanReference ?? null)
@@ -1236,16 +1316,19 @@ export const chargeAuthorizationForSubscription = async ({
         cancellation: admin.firestore.FieldValue.delete(),
         lastChargeStatus: 'success',
         lastChargeAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
-        discountBenefit: subscriptionQuote.discountBillingDuration === 'recurring'
-          ? {
-            code: subscriptionQuote.discountCode,
-            percentOff: subscriptionQuote.discountPercent,
-            planId: subscriptionQuote.planId,
-            billingPeriod: subscriptionQuote.billingPeriod,
-            subjectCount: subscriptionQuote.subjectCount,
-            activatedAt: renewalActivationAt,
-          }
+        discountBenefit: subscriptionQuote.discountPercent
+          ? subscriptionQuote.discountBenefit
           : admin.firestore.FieldValue.delete(),
+        ...(!subscriptionQuote.discountPercent ? {
+          originalAmount: admin.firestore.FieldValue.delete(),
+          discountAmount: admin.firestore.FieldValue.delete(),
+          discountPercent: admin.firestore.FieldValue.delete(),
+          discountCode: admin.firestore.FieldValue.delete(),
+          discountBillingDuration: admin.firestore.FieldValue.delete(),
+          discountDurationMonths: admin.firestore.FieldValue.delete(),
+          discountEndsAt: admin.firestore.FieldValue.delete(),
+          discountStartedAt: admin.firestore.FieldValue.delete(),
+        } : {}),
       }, { merge: true });
       if (claim.pendingPlanReference) {
         batch.set(studentPaymentRef(db, studentId, claim.pendingPlanReference), {
@@ -1294,13 +1377,18 @@ export const chargeAuthorizationForSubscription = async ({
           subjectCount: subscriptionQuote.subjectCount,
           amount: subscriptionQuote.amount,
           currency: subscriptionQuote.currency,
-          ...(subscriptionQuote.discountPercent ? {
-            originalAmount: subscriptionQuote.originalAmount,
-            discountAmount: subscriptionQuote.discountAmount,
-            discountPercent: subscriptionQuote.discountPercent,
-            discountCode: subscriptionQuote.discountCode,
-            discountBillingDuration: subscriptionQuote.discountBillingDuration,
+        ...(subscriptionQuote.discountPercent ? {
+          originalAmount: subscriptionQuote.originalAmount,
+          discountAmount: subscriptionQuote.discountAmount,
+          discountPercent: subscriptionQuote.discountPercent,
+          discountCode: subscriptionQuote.discountCode,
+          discountBillingDuration: subscriptionQuote.discountBillingDuration,
+          ...(subscriptionQuote.discountBillingDuration === 'fixed_months' ? {
+            discountDurationMonths: subscriptionQuote.discountDurationMonths,
+            discountEndsAt: subscriptionQuote.discountEndsAt,
+            discountStartedAt: subscriptionQuote.discountBenefit?.activatedAt ?? null,
           } : {}),
+        } : {}),
           pendingPlanReference: claim.pendingPlanReference,
         },
         renewalChargeLock: admin.firestore.FieldValue.delete(),
@@ -1387,15 +1475,19 @@ export const chargeStoredAuthorization = onCall(async (request) => {
         planId: subscription.renewalAttempt.planId,
         billingPeriod: subscription.renewalAttempt.billingPeriod,
         subjectCount: subscription.renewalAttempt.subjectCount,
+        billingDuration: subscription.renewalAttempt.discountBillingDuration || 'recurring',
+        discountDurationMonths: subscription.renewalAttempt.discountDurationMonths,
+        discountEndsAt: subscription.renewalAttempt.discountEndsAt,
+        activatedAt: subscription.renewalAttempt.discountStartedAt,
       }
       : subscription.discountBenefit;
-    subscriptionQuote = applyRecurringDiscount(baseQuote, recurringBenefit, selectedPlan);
+    subscriptionQuote = applyRecurringDiscount(baseQuote, recurringBenefit, selectedPlan, dueDate);
   } catch {
     throw new HttpsError('failed-precondition', 'The saved subscription selection cannot be renewed.');
   }
 
   if (subscriptionQuote.amount === 0 && subscriptionQuote.discountPercent === 100
-    && subscriptionQuote.discountBillingDuration === 'recurring') {
+    && ['recurring', 'fixed_months'].includes(subscriptionQuote.discountBillingDuration)) {
     const zeroRenewal = await applyZeroCostSubscriptionRenewal({
       studentId, quote: subscriptionQuote, renewalDate: subscription.renewalDate,
     });

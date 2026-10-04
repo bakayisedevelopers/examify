@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  addCalendarMonths,
   calculateDiscount,
+  calculateDiscountEndAt,
   applyRecurringDiscount,
   generateDiscountCode,
+  getDiscountBillingPeriodError,
   getDiscountEligibilityError,
   getDiscountUseCounts,
   transitionRedemption,
@@ -34,6 +37,38 @@ test('validates discount percentages, redemption limits, and conflicting restric
   assert.throws(() => validateDiscountSettings({ ...baseSettings, restrictedEmail: 'person@example.com', restrictedAccountId: 'uid-1' }), /email or one account/);
 });
 
+test('keeps code redemption expiry separate and can calculate it from the start date', () => {
+  const startsAt = '2026-01-31T10:15:00.000Z';
+  const timedWindow = validateDiscountSettings({
+    ...baseSettings,
+    startsAt,
+    expiresAt: null,
+    redemptionExpiryMode: 'after_start',
+    redemptionWindowMonths: 1,
+  });
+  assert.equal(timedWindow.redemptionExpiryMode, 'after_start');
+  assert.equal(timedWindow.expiresAt.toISOString(), '2026-02-28T10:15:00.000Z');
+  assert.equal(addCalendarMonths(new Date('2026-10-31T10:15:00.000Z'), 3).toISOString(), '2027-01-31T10:15:00.000Z');
+  assert.equal(validateDiscountSettings({ ...baseSettings, expiresAt: null, redemptionExpiryMode: 'none' }).expiresAt, null);
+  assert.throws(() => validateDiscountSettings({ ...baseSettings, redemptionExpiryMode: 'after_start', redemptionWindowMonths: 0 }), /redemption window/);
+  assert.throws(() => validateDiscountSettings({ ...baseSettings, redemptionExpiryMode: 'none', expiresAt: baseSettings.expiresAt }), /Manual expiry dates/);
+});
+
+test('validates fixed discount periods separately from the redemption window', () => {
+  const fixed = validateDiscountSettings({
+    ...baseSettings,
+    billingDuration: 'fixed_months',
+    discountDurationMonths: 3,
+  });
+  assert.equal(fixed.billingDuration, 'fixed_months');
+  assert.equal(fixed.discountDurationMonths, 3);
+  assert.equal(validateDiscountSettings(baseSettings).discountDurationMonths, null);
+  assert.throws(() => validateDiscountSettings({ ...baseSettings, billingDuration: 'fixed_months', discountDurationMonths: 0 }), /fixed discount duration/);
+  assert.throws(() => validateDiscountSettings({ ...baseSettings, discountDurationMonths: 3 }), /only be set for fixed-month/);
+  assert.equal(getDiscountBillingPeriodError({ billingDuration: 'fixed_months', billingPeriod: 'yearly' }), 'Fixed-month discounts are available on monthly subscriptions only.');
+  assert.equal(getDiscountBillingPeriodError({ billingDuration: 'fixed_months', billingPeriod: 'monthly' }), null);
+});
+
 test('matches email restrictions case-insensitively and account restrictions by authenticated uid', () => {
   const now = new Date('2026-10-05T12:00:00.000Z');
   const emailCode = { ...validateDiscountSettings({ ...baseSettings, restrictedEmail: 'Person@Example.com' }), active: true };
@@ -43,6 +78,14 @@ test('matches email restrictions case-insensitively and account restrictions by 
   const accountCode = { ...validateDiscountSettings({ ...baseSettings, restrictedAccountId: 'u1' }), active: true };
   assert.equal(getDiscountEligibilityError({ code: accountCode, uid: 'u1', email: 'a@b.com', now }), null);
   assert.match(getDiscountEligibilityError({ code: accountCode, uid: 'u2', email: 'a@b.com', now }), /account/);
+});
+
+test('public price previews defer identity checks but still enforce the code redemption window', () => {
+  const now = new Date('2026-10-05T12:00:00.000Z');
+  const code = { ...validateDiscountSettings({ ...baseSettings, restrictedEmail: 'person@example.com' }), active: true };
+  assert.equal(getDiscountEligibilityError({ code, now, previewOnly: true }), null);
+  assert.match(getDiscountEligibilityError({ code, now, email: 'other@example.com' }), /email address/);
+  assert.match(getDiscountEligibilityError({ code, now: new Date('2026-11-01T00:00:00.000Z'), previewOnly: true }), /expired/);
 });
 
 test('enforces start and expiry bounds using the supplied server time', () => {
@@ -93,4 +136,20 @@ test('recurring discounts apply only to the same saved plan selection', () => {
   assert.equal(applyRecurringDiscount(quote, benefit, quote).amount, 198.4);
   assert.equal(applyRecurringDiscount(quote, benefit, { ...quote, subjectCount: 3 }).amount, 248);
   assert.equal(applyRecurringDiscount(quote, null, quote), quote);
+});
+
+test('fixed discounts expire from each customer activation date after the configured monthly cycles', () => {
+  const quote = { planId: 'circle', billingPeriod: 'monthly', subjectCount: 1, amount: 199 };
+  const activatedAt = new Date('2026-10-04T12:00:00.000Z');
+  const discountEndsAt = calculateDiscountEndAt(activatedAt, 3, 30);
+  const laterCustomerEndsAt = calculateDiscountEndAt(new Date('2026-10-14T12:00:00.000Z'), 3, 30);
+  const benefit = {
+    code: 'ABCD123456', percentOff: 50, planId: 'circle', billingPeriod: 'monthly', subjectCount: 1,
+    billingDuration: 'fixed_months', discountDurationMonths: 3, discountEndsAt, activatedAt,
+  };
+  assert.equal(discountEndsAt.toISOString(), '2027-01-02T12:00:00.000Z');
+  assert.equal(laterCustomerEndsAt.toISOString(), '2027-01-12T12:00:00.000Z');
+  assert.equal(applyRecurringDiscount(quote, benefit, quote, new Date('2026-12-03T12:00:00.000Z')).amount, 99.5);
+  assert.equal(applyRecurringDiscount(quote, benefit, quote, discountEndsAt).amount, 199);
+  assert.equal(applyRecurringDiscount(quote, benefit, { ...quote, subjectCount: 2 }, new Date('2026-11-01T00:00:00.000Z')).amount, 199);
 });

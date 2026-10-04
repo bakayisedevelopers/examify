@@ -2,7 +2,9 @@ import { randomInt } from 'node:crypto';
 
 export const DISCOUNT_CODE_LENGTH = 10;
 const CODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-export const DISCOUNT_BILLING_DURATIONS = ['first_payment', 'recurring'];
+export const DISCOUNT_BILLING_DURATIONS = ['first_payment', 'fixed_months', 'recurring'];
+export const MAX_FIXED_DISCOUNT_MONTHS = 24;
+export const MAX_REDEMPTION_WINDOW_MONTHS = 120;
 
 export const normalizeDiscountCode = (value) => String(value ?? '').trim().toUpperCase();
 
@@ -20,6 +22,35 @@ const toDate = (value) => {
   }
   return null;
 };
+
+export const addCalendarMonths = (value, months) => {
+  const date = toDate(value);
+  const count = Number(months);
+  if (!date || !Number.isInteger(count) || count < 1) throw new Error('A valid date and positive month count are required.');
+  const target = new Date(date);
+  const originalDay = target.getUTCDate();
+  target.setUTCDate(1);
+  target.setUTCMonth(target.getUTCMonth() + count);
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  target.setUTCDate(Math.min(originalDay, lastDay));
+  return target;
+};
+
+export const calculateDiscountEndAt = (startedAt, durationMonths, billingCycleDays = 30) => {
+  const start = toDate(startedAt);
+  const months = Number(durationMonths);
+  const daysPerCycle = Number(billingCycleDays);
+  if (!start || !Number.isInteger(months) || months < 1 || !Number.isFinite(daysPerCycle) || daysPerCycle <= 0) {
+    throw new Error('A valid subscription start and discount duration are required.');
+  }
+  return new Date(start.getTime() + months * daysPerCycle * 24 * 60 * 60 * 1000);
+};
+
+export const getDiscountBillingPeriodError = ({ billingDuration, billingPeriod }) => (
+  billingDuration === 'fixed_months' && billingPeriod !== 'monthly'
+    ? 'Fixed-month discounts are available on monthly subscriptions only.'
+    : null
+);
 
 export const validateDiscountSettings = (settings) => {
   const percentOff = Number(settings.percentOff);
@@ -45,17 +76,47 @@ export const validateDiscountSettings = (settings) => {
   }
 
   const startsAt = toDate(settings.startsAt);
-  const expiresAt = settings.expiresAt ? toDate(settings.expiresAt) : null;
+  const redemptionExpiryMode = settings.redemptionExpiryMode
+    || (settings.expiresAt ? 'manual' : 'none');
+  if (!['none', 'manual', 'after_start'].includes(redemptionExpiryMode)) {
+    throw new Error('Choose no expiry, a manual expiry date, or a period after the start date.');
+  }
+  const redemptionWindowMonths = redemptionExpiryMode === 'after_start'
+    ? Number(settings.redemptionWindowMonths)
+    : null;
+  if (redemptionExpiryMode === 'after_start'
+    && (!Number.isInteger(redemptionWindowMonths) || redemptionWindowMonths < 1 || redemptionWindowMonths > MAX_REDEMPTION_WINDOW_MONTHS)) {
+    throw new Error(`The code redemption window must be from 1 to ${MAX_REDEMPTION_WINDOW_MONTHS} months.`);
+  }
+  if (redemptionExpiryMode !== 'manual' && settings.expiresAt) {
+    throw new Error('Manual expiry dates can only be used with the manual expiry option.');
+  }
+  let expiresAt = redemptionExpiryMode === 'manual' && settings.expiresAt ? toDate(settings.expiresAt) : null;
   if (!startsAt) throw new Error('A valid start date and time are required.');
-  if (settings.expiresAt && !expiresAt) throw new Error('Enter a valid expiry date and time.');
+  if (redemptionExpiryMode === 'manual' && settings.expiresAt && !expiresAt) throw new Error('Enter a valid expiry date and time.');
+  if (redemptionExpiryMode === 'after_start') expiresAt = addCalendarMonths(startsAt, redemptionWindowMonths);
   if (expiresAt && expiresAt <= startsAt) throw new Error('Expiry must be later than the start date.');
 
   const billingDuration = settings.billingDuration;
   if (!DISCOUNT_BILLING_DURATIONS.includes(billingDuration)) {
-    throw new Error('Choose whether the discount applies to the first payment or recurring payments.');
+    throw new Error('Choose whether the discount applies to the first payment, a fixed number of months, or recurring payments.');
+  }
+  const discountDurationMonths = billingDuration === 'fixed_months'
+    ? Number(settings.discountDurationMonths)
+    : null;
+  if (billingDuration === 'fixed_months'
+    && (!Number.isInteger(discountDurationMonths) || discountDurationMonths < 1 || discountDurationMonths > MAX_FIXED_DISCOUNT_MONTHS)) {
+    throw new Error(`A fixed discount duration must be from 1 to ${MAX_FIXED_DISCOUNT_MONTHS} months.`);
+  }
+  if (billingDuration !== 'fixed_months' && settings.discountDurationMonths !== undefined
+    && settings.discountDurationMonths !== null && settings.discountDurationMonths !== '') {
+    throw new Error('A fixed discount month count can only be set for fixed-month discounts.');
   }
 
-  return { percentOff, maxRedemptions, restrictedEmail, restrictedAccountId, startsAt, expiresAt, billingDuration };
+  return {
+    percentOff, maxRedemptions, restrictedEmail, restrictedAccountId, startsAt, expiresAt,
+    redemptionExpiryMode, redemptionWindowMonths, billingDuration, discountDurationMonths,
+  };
 };
 
 export const calculateDiscount = (baseAmount, percentOff) => {
@@ -70,8 +131,16 @@ export const calculateDiscount = (baseAmount, percentOff) => {
   };
 };
 
-export const applyRecurringDiscount = (quote, benefit, selectedPlan = quote) => {
+export const applyRecurringDiscount = (quote, benefit, selectedPlan = quote, at = new Date()) => {
+  const billingDuration = benefit?.billingDuration || 'recurring';
+  const discountEndsAt = toDate(benefit?.discountEndsAt);
+  const fixedDurationActive = billingDuration === 'fixed_months'
+    && discountEndsAt
+    && toDate(at)
+    && toDate(at) < discountEndsAt;
+  const durationActive = billingDuration === 'recurring' || fixedDurationActive;
   const matches = benefit
+    && durationActive
     && benefit.planId === selectedPlan.planId
     && benefit.billingPeriod === selectedPlan.billingPeriod
     && Number(benefit.subjectCount) === Number(selectedPlan.subjectCount)
@@ -87,7 +156,19 @@ export const applyRecurringDiscount = (quote, benefit, selectedPlan = quote) => 
     discountAmount: discount.discountAmount,
     discountPercent: Number(benefit.percentOff),
     discountCode: benefit.code,
-    discountBillingDuration: 'recurring',
+    discountBillingDuration: billingDuration,
+    discountBenefit: {
+      ...benefit,
+      billingDuration,
+      ...(billingDuration === 'fixed_months' ? {
+        discountDurationMonths: Number(benefit.discountDurationMonths),
+        discountEndsAt: benefit.discountEndsAt,
+      } : {}),
+    },
+    ...(billingDuration === 'fixed_months' ? {
+      discountDurationMonths: Number(benefit.discountDurationMonths),
+      discountEndsAt: benefit.discountEndsAt,
+    } : {}),
   };
 };
 
@@ -103,22 +184,24 @@ export const getDiscountUseCounts = ({ successfulRedemptions = 0, reservedRedemp
   };
 };
 
-export const getDiscountEligibilityError = ({ code, uid, email, now = new Date(), subscription = null }) => {
+export const getDiscountEligibilityError = ({ code, uid, email, now = new Date(), subscription = null, previewOnly = false }) => {
   if (!code || code.active !== true) return 'This discount code is not active.';
   const startsAt = toDate(code.startsAt);
   const expiresAt = code.expiresAt ? toDate(code.expiresAt) : null;
   if (!startsAt || now < startsAt) return 'This discount code is not available yet.';
   if (expiresAt && now >= expiresAt) return 'This discount code has expired.';
-  if (code.restrictedEmail && String(email ?? '').trim().toLowerCase() !== String(code.restrictedEmail).trim().toLowerCase()) {
-    return 'This discount code is not available for this email address.';
-  }
-  if (code.restrictedAccountId && uid !== code.restrictedAccountId) return 'This discount code is not available for this account.';
-  if (subscription?.planId && ['circle', 'personalized'].includes(subscription.planId)) {
-    const renewalDate = toDate(subscription.renewalDate);
-    const graceEndsAt = toDate(subscription.graceEndsAt);
-    const activePaid = subscription.status === 'active' && renewalDate && renewalDate > now;
-    const paidGrace = subscription.status === 'past_due' && graceEndsAt && graceEndsAt > now;
-    if (activePaid || paidGrace) return 'Discount codes are available after your current paid subscription ends.';
+  if (!previewOnly) {
+    if (code.restrictedEmail && String(email ?? '').trim().toLowerCase() !== String(code.restrictedEmail).trim().toLowerCase()) {
+      return 'This discount code is not available for this email address.';
+    }
+    if (code.restrictedAccountId && uid !== code.restrictedAccountId) return 'This discount code is not available for this account.';
+    if (subscription?.planId && ['circle', 'personalized'].includes(subscription.planId)) {
+      const renewalDate = toDate(subscription.renewalDate);
+      const graceEndsAt = toDate(subscription.graceEndsAt);
+      const activePaid = subscription.status === 'active' && renewalDate && renewalDate > now;
+      const paidGrace = subscription.status === 'past_due' && graceEndsAt && graceEndsAt > now;
+      if (activePaid || paidGrace) return 'Discount codes are available after your current paid subscription ends.';
+    }
   }
   return null;
 };
