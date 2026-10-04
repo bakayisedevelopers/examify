@@ -12,6 +12,7 @@ const localDateTimeValue = (date) => {
 const defaultForm = () => ({
   percentOff: '10',
   maxRedemptions: '1',
+  planApplicability: 'both',
   restriction: 'none',
   restrictedValue: '',
   startsAt: localDateTimeValue(new Date()),
@@ -65,6 +66,7 @@ export const AdminDiscountCodesPage = () => {
       const payload = {
         percentOff: Number(form.percentOff),
         maxRedemptions: form.maxRedemptions.trim() ? Number(form.maxRedemptions) : null,
+        eligiblePlans: form.planApplicability === 'both' ? ['circle', 'personalized'] : [form.planApplicability],
         restrictedEmail: form.restriction === 'email' ? form.restrictedValue.trim() : '',
         restrictedAccountId: form.restriction === 'account' ? form.restrictedValue.trim() : '',
         startsAt: new Date(form.startsAt).toISOString(),
@@ -135,6 +137,7 @@ export const AdminDiscountCodesPage = () => {
         <form onSubmit={handleCreate} className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           <label className="block"><span className="label">Discount percentage</span><div className="relative"><input className="input pr-10" type="number" min="1" max="100" step="1" required value={form.percentOff} onChange={updateForm('percentOff')} /><span className="absolute right-3 top-3 text-slate-400">%</span></div></label>
           <label className="block"><span className="label">Maximum successful redemptions</span><input className="input" type="number" min="1" step="1" value={form.maxRedemptions} onChange={updateForm('maxRedemptions')} placeholder="Leave blank for unlimited" /><span className="mt-1 block text-xs text-slate-400">In-progress checkouts reserve capacity but do not count as successful.</span></label>
+          <label className="block"><span className="label">Eligible subscription plan</span><select className="input" value={form.planApplicability} onChange={updateForm('planApplicability')}><option value="both">Circle and Personalized</option><option value="circle">Circle only</option><option value="personalized">Personalized only</option></select><span className="mt-1 block text-xs text-slate-400">Customers can use this code only with the selected plan.</span></label>
           <label className="block"><span className="label">Who can use it?</span><select className="input" value={form.restriction} onChange={updateForm('restriction')}><option value="none">Anyone eligible</option><option value="email">Specific email</option><option value="account">Specific account ID</option></select></label>
           {form.restriction !== 'none' ? <label className="block"><span className="label">{form.restriction === 'email' ? 'Restricted email address' : 'Restricted account ID'}</span><input className="input" type={form.restriction === 'email' ? 'email' : 'text'} required value={form.restrictedValue} onChange={updateForm('restrictedValue')} /></label> : null}
           <label className="block"><span className="label">Starts at</span><input className="input" type="datetime-local" required value={form.startsAt} onChange={updateForm('startsAt')} /></label>
@@ -158,13 +161,14 @@ export const AdminDiscountCodesPage = () => {
         </div>
         {status ? <p role="status" className="border-b border-slate-800 px-5 py-3 text-sm text-lime-200">{status}</p> : null}
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1050px] text-left text-sm">
-            <thead className="bg-slate-900/70 text-xs uppercase tracking-wide text-slate-400"><tr><th className="px-5 py-3">Code / discount</th><th className="px-5 py-3">Status</th><th className="px-5 py-3">Eligibility</th><th className="px-5 py-3">Billing duration</th><th className="px-5 py-3">Starts / expires</th><th className="px-5 py-3">Redemptions</th><th className="px-5 py-3">Remaining</th><th className="px-5 py-3">Action</th></tr></thead>
+          <table className="w-full min-w-[1180px] text-left text-sm">
+            <thead className="bg-slate-900/70 text-xs uppercase tracking-wide text-slate-400"><tr><th className="px-5 py-3">Code / discount</th><th className="px-5 py-3">Status</th><th className="px-5 py-3">Subscription plan</th><th className="px-5 py-3">Account eligibility</th><th className="px-5 py-3">Billing duration</th><th className="px-5 py-3">Starts / expires</th><th className="px-5 py-3">Redemptions</th><th className="px-5 py-3">Remaining</th><th className="px-5 py-3">Action</th></tr></thead>
             <tbody className="divide-y divide-slate-800">
               {codes.map((code) => (
                 <tr key={code.code}>
                   <td className="px-5 py-4"><button type="button" className="inline-flex items-center gap-2 font-mono font-bold tracking-wider text-lime-300" onClick={() => copyCode(code.code)}>{code.code}<Copy className="h-3.5 w-3.5" /></button><p className="mt-1 text-xs text-slate-400">{code.percentOff}% off</p><button type="button" className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-lime-300 hover:text-lime-200" onClick={() => copyShareLink(code.code)}><Link2 className="h-3.5 w-3.5" />Copy share link</button></td>
                   <td className="px-5 py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${code.status === 'Active' ? 'bg-lime-400/10 text-lime-300' : 'bg-slate-700 text-slate-300'}`}>{code.status}</span></td>
+                  <td className="px-5 py-4 text-slate-300">{(code.eligiblePlans || ['circle', 'personalized']).length === 2 ? 'Circle and Personalized' : (code.eligiblePlans || ['circle', 'personalized'])[0] === 'circle' ? 'Circle only' : 'Personalized only'}</td>
                   <td className="px-5 py-4 text-slate-300">{code.restrictedEmail || (code.restrictedAccountId ? `Account ${code.restrictedAccountId}` : 'Any eligible account')}</td>
                   <td className="px-5 py-4 text-slate-300">{code.billingDuration === 'fixed_months' ? `First ${code.discountDurationMonths} monthly periods` : code.billingDuration === 'first_payment' ? 'First payment' : 'Permanent recurring'}</td>
                   <td className="px-5 py-4 text-slate-300">{formatDate(code.startsAt)}<br /><span className="text-xs text-slate-500">{formatDate(code.expiresAt)}</span></td>
@@ -173,8 +177,8 @@ export const AdminDiscountCodesPage = () => {
                   <td className="px-5 py-4"><button type="button" className="btn-secondary whitespace-nowrap" disabled={workingCode === code.code || code.status === 'Expired' || code.status === 'Exhausted'} onClick={() => toggleCode(code)}>{workingCode === code.code ? 'Saving…' : code.active ? 'Deactivate' : 'Activate'}</button></td>
                 </tr>
               ))}
-              {!isLoading && codes.length === 0 ? <tr><td colSpan="8" className="px-5 py-10 text-center text-slate-400">No discount codes created yet.</td></tr> : null}
-              {isLoading ? <tr><td colSpan="8" className="px-5 py-10 text-center text-slate-400">Loading discount codes…</td></tr> : null}
+              {!isLoading && codes.length === 0 ? <tr><td colSpan="9" className="px-5 py-10 text-center text-slate-400">No discount codes created yet.</td></tr> : null}
+              {isLoading ? <tr><td colSpan="9" className="px-5 py-10 text-center text-slate-400">Loading discount codes…</td></tr> : null}
             </tbody>
           </table>
         </div>

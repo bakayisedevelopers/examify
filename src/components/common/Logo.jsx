@@ -1,8 +1,6 @@
 export const Logo = ({ className = '', showText = true }) => (
   <div className={`inline-flex items-center gap-3 ${className}`}>
-    <div className="relative flex h-10 w-10 sm:h-11 sm:w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-lime-400 to-lime-500 text-base sm:text-lg font-black text-slate-950 shadow-lg shadow-lime-500/25 ring-2 ring-lime-400/40">
-      <span className="tracking-tight font-extrabold text-slate-950">Ex</span>
-    </div>
+    <img src="/logo.png" alt={showText ? '' : 'Examifying'} className="h-10 w-10 shrink-0 object-contain drop-shadow-lg sm:h-11 sm:w-11" />
     {showText ? (
       <div>
         <div className="flex items-center gap-2">

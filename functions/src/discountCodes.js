@@ -58,6 +58,7 @@ const publicCodeQuote = ({ code, quote }) => {
   return {
     code: code.code,
     percentOff: code.percentOff,
+    eligiblePlans: Array.isArray(code.eligiblePlans) ? code.eligiblePlans : ['circle', 'personalized'],
     billingDuration: code.billingDuration || 'recurring',
     discountDurationMonths: code.discountDurationMonths ?? null,
     ...quote,
@@ -132,6 +133,7 @@ export const listDiscountCodes = onCall({ cpu: 'gcf_gen1' }, async (request) => 
         remainingUses: uses.remainingUses,
         restrictedEmail: data.restrictedEmail || null,
         restrictedAccountId: data.restrictedAccountId || null,
+        eligiblePlans: Array.isArray(data.eligiblePlans) ? data.eligiblePlans : ['circle', 'personalized'],
         startsAt: data.startsAt?.toDate?.().toISOString?.() ?? null,
         expiresAt: data.expiresAt?.toDate?.().toISOString?.() ?? null,
         billingDuration: data.billingDuration || 'recurring',
@@ -182,7 +184,7 @@ export const getDiscountQuoteForCheckout = async ({ db, code: rawCode, uid, emai
   const subscriptionSnapshot = await subscriptionRef(db, studentId).get();
   const currentSubscription = subscriptionSnapshot.exists ? subscriptionSnapshot.data() : null;
   const now = new Date();
-  const eligibilityError = getDiscountEligibilityError({ code: data, uid, email, now, subscription: currentSubscription });
+  const eligibilityError = getDiscountEligibilityError({ code: data, uid, email, planId, now, subscription: currentSubscription });
   if (eligibilityError) throw new HttpsError('failed-precondition', eligibilityError);
   const usage = getDiscountUseCounts(data);
   if (!usage.available) throw new HttpsError('resource-exhausted', 'This discount code has no remaining uses.');
@@ -219,7 +221,7 @@ export const previewDiscountCode = onCall({ cpu: 'gcf_gen1' }, async (request) =
   const data = codeSnapshot.data();
   const billingPeriodError = getDiscountBillingPeriodError({ billingDuration: data.billingDuration, billingPeriod });
   if (billingPeriodError) throw new HttpsError('failed-precondition', billingPeriodError);
-  const availabilityError = getDiscountEligibilityError({ code: data, now: new Date(), previewOnly: true });
+  const availabilityError = getDiscountEligibilityError({ code: data, planId, now: new Date(), previewOnly: true });
   if (availabilityError) throw new HttpsError('failed-precondition', availabilityError);
   const usage = getDiscountUseCounts(data);
   if (!usage.available) throw new HttpsError('resource-exhausted', 'This discount code has no remaining uses.');
@@ -247,7 +249,7 @@ export const reserveDiscountRedemption = async ({ db, code: rawCode, reference, 
     const billingPeriodError = getDiscountBillingPeriodError({ billingDuration: data.billingDuration, billingPeriod: quote.billingPeriod });
     if (billingPeriodError) throw new HttpsError('failed-precondition', billingPeriodError);
     const issue = getDiscountEligibilityError({
-      code: data, uid: payerId, email, now: nowDate,
+      code: data, uid: payerId, email, planId: quote.planId, now: nowDate,
       subscription: subscriptionSnapshot.exists ? subscriptionSnapshot.data() : null,
     });
     if (issue) throw new HttpsError('failed-precondition', issue);

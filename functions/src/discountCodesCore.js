@@ -3,6 +3,7 @@ import { randomInt } from 'node:crypto';
 export const DISCOUNT_CODE_LENGTH = 10;
 const CODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 export const DISCOUNT_BILLING_DURATIONS = ['first_payment', 'fixed_months', 'recurring'];
+export const DISCOUNT_PLAN_IDS = ['circle', 'personalized'];
 export const MAX_FIXED_DISCOUNT_MONTHS = 24;
 export const MAX_REDEMPTION_WINDOW_MONTHS = 120;
 
@@ -75,6 +76,16 @@ export const validateDiscountSettings = (settings) => {
     throw new Error('Restrict a code to one email or one account, not both.');
   }
 
+  const eligiblePlans = settings.eligiblePlans === undefined
+    ? [...DISCOUNT_PLAN_IDS]
+    : settings.eligiblePlans;
+  if (!Array.isArray(eligiblePlans)
+    || eligiblePlans.length === 0
+    || eligiblePlans.some((planId) => !DISCOUNT_PLAN_IDS.includes(planId))) {
+    throw new Error('Choose Circle, Personalized, or both subscription plans for this code.');
+  }
+  const normalizedEligiblePlans = [...new Set(eligiblePlans)];
+
   const startsAt = toDate(settings.startsAt);
   const redemptionExpiryMode = settings.redemptionExpiryMode
     || (settings.expiresAt ? 'manual' : 'none');
@@ -114,7 +125,7 @@ export const validateDiscountSettings = (settings) => {
   }
 
   return {
-    percentOff, maxRedemptions, restrictedEmail, restrictedAccountId, startsAt, expiresAt,
+    percentOff, maxRedemptions, restrictedEmail, restrictedAccountId, eligiblePlans: normalizedEligiblePlans, startsAt, expiresAt,
     redemptionExpiryMode, redemptionWindowMonths, billingDuration, discountDurationMonths,
   };
 };
@@ -184,12 +195,19 @@ export const getDiscountUseCounts = ({ successfulRedemptions = 0, reservedRedemp
   };
 };
 
-export const getDiscountEligibilityError = ({ code, uid, email, now = new Date(), subscription = null, previewOnly = false }) => {
+export const getDiscountEligibilityError = ({ code, uid, email, planId, now = new Date(), subscription = null, previewOnly = false }) => {
   if (!code || code.active !== true) return 'This discount code is not active.';
   const startsAt = toDate(code.startsAt);
   const expiresAt = code.expiresAt ? toDate(code.expiresAt) : null;
   if (!startsAt || now < startsAt) return 'This discount code is not available yet.';
   if (expiresAt && now >= expiresAt) return 'This discount code has expired.';
+  if (planId && DISCOUNT_PLAN_IDS.includes(planId)) {
+    const eligiblePlans = code.eligiblePlans === undefined ? DISCOUNT_PLAN_IDS : code.eligiblePlans;
+    if (!Array.isArray(eligiblePlans) || !eligiblePlans.includes(planId)) {
+      const planName = planId === 'circle' ? 'Circle' : 'Personalized';
+      return `This discount code is not available for ${planName} subscriptions.`;
+    }
+  }
   if (!previewOnly) {
     if (code.restrictedEmail && String(email ?? '').trim().toLowerCase() !== String(code.restrictedEmail).trim().toLowerCase()) {
       return 'This discount code is not available for this email address.';

@@ -475,9 +475,7 @@ export const LandingPage = () => {
         <div className="relative mx-auto max-w-7xl px-4 py-14 lg:px-6 grid gap-10 md:grid-cols-4">
           <div className="md:col-span-2 space-y-3">
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-lime-400 to-lime-500 font-black text-slate-950 shadow-md shadow-lime-400/30">
-                Ex
-              </div>
+              <img src="/logo.png" alt="" className="h-10 w-10 shrink-0 object-contain drop-shadow-md" />
               <div>
                 <span className="text-xl font-black tracking-tight text-white flex items-center gap-2">
                   Examifying
