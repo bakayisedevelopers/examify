@@ -73,26 +73,26 @@ export const TutorPeerMarkingScoreEditor = ({ tutorId, studentId, assignment, on
   };
 
   return (
-    <div className="space-y-4 rounded-lg bg-slate-50 p-4">
+    <div className="space-y-4 rounded-lg border border-slate-700/70 bg-slate-900/75 p-4 text-slate-200">
       <div>
         <p className="font-semibold text-slate-800">Score each topic from the question marks</p>
         <p className="mt-1 text-xs text-slate-500">Enter marks earned for each question. Each question score is saved as earned ÷ that question’s available marks, linked to the peer-marking assignment and topic.</p>
       </div>
       {topics.map((topic) => (
-        <section key={topic} className="space-y-2 rounded-md border border-slate-200 bg-white p-3">
-          <h4 className="text-sm font-semibold text-slate-800">{topic}</h4>
+        <section key={topic} className="space-y-2 rounded-md border border-slate-700/70 bg-slate-950/60 p-3">
+          <h4 className="text-sm font-semibold text-slate-200">{topic}</h4>
           {questionsByTopic[topic].map((question, index) => {
             const available = marks[`${topic}:${index}`]?.totalMarks ?? (question.totalMarks > 0 ? String(question.totalMarks) : '');
             const hasPaperTotal = question.totalMarks > 0;
             return (
               <div key={`${question.questionReference}-${index}`} className="grid gap-2 sm:grid-cols-[1fr_7rem_7rem] sm:items-end">
-                <p className="text-sm text-slate-700">{question.questionReference}{question.pageNumber > 0 ? ` · page ${question.pageNumber}` : ''}</p>
-                <label className="grid gap-1 text-xs font-semibold text-slate-600">Marks earned
+                <p className="text-sm text-slate-200">{question.questionReference}{question.pageNumber > 0 ? ` · page ${question.pageNumber}` : ''}</p>
+                <label className="grid gap-1 text-xs font-semibold text-slate-300">Marks earned
                   <input type="number" min="0" max={available || undefined} step="0.5" className="input py-2"
                     value={marks[`${topic}:${index}`]?.earnedMarks ?? ''}
                     onChange={(event) => setQuestionMark(topic, index, { earnedMarks: event.target.value })} />
                 </label>
-                <label className="grid gap-1 text-xs font-semibold text-slate-600">Available marks
+                <label className="grid gap-1 text-xs font-semibold text-slate-300">Available marks
                   <input type="number" min="0.5" step="0.5" className="input py-2" value={available} readOnly={hasPaperTotal}
                     onChange={(event) => setQuestionMark(topic, index, { totalMarks: event.target.value })} />
                 </label>

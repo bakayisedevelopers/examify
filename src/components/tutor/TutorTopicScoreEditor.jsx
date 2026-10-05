@@ -79,7 +79,7 @@ export const TutorTopicScoreEditor = ({
   };
 
   return (
-    <div className="space-y-3 rounded-md bg-slate-50 p-3">
+    <div className="space-y-3 rounded-md border border-slate-700/70 bg-slate-900/75 p-3 text-slate-200">
       <div>
         <p className="text-sm font-semibold text-slate-700">{topic} · topic marks</p>
         <p className="mt-1 text-xs text-slate-500">For each question, its score is marks earned ÷ that question’s available marks. Each question score is saved under this topic and linked to this exercise.</p>
@@ -89,9 +89,9 @@ export const TutorTopicScoreEditor = ({
           const available = marks[index]?.totalMarks ?? (question.totalMarks > 0 ? String(question.totalMarks) : '');
           const hasPaperTotal = question.totalMarks > 0;
           return (
-            <div key={`${question.questionReference}-${index}`} className="grid gap-2 rounded-md border border-slate-200 bg-white p-3 sm:grid-cols-[1fr_7rem_7rem] sm:items-end">
-              <p className="text-sm font-medium text-slate-700">{question.questionReference}{question.pageNumber > 0 ? ` · page ${question.pageNumber}` : ''}</p>
-              <label className="grid gap-1 text-xs font-semibold text-slate-600">
+            <div key={`${question.questionReference}-${index}`} className="grid gap-2 rounded-md border border-slate-700/70 bg-slate-950/60 p-3 sm:grid-cols-[1fr_7rem_7rem] sm:items-end">
+              <p className="text-sm font-medium text-slate-200">{question.questionReference}{question.pageNumber > 0 ? ` · page ${question.pageNumber}` : ''}</p>
+              <label className="grid gap-1 text-xs font-semibold text-slate-300">
                 Marks earned
                 <input
                   type="number"
@@ -104,7 +104,7 @@ export const TutorTopicScoreEditor = ({
                   aria-label={`${topic}, ${question.questionReference}, marks earned`}
                 />
               </label>
-              <label className="grid gap-1 text-xs font-semibold text-slate-600">
+              <label className="grid gap-1 text-xs font-semibold text-slate-300">
                 Available marks
                 <input
                   type="number"
@@ -126,7 +126,7 @@ export const TutorTopicScoreEditor = ({
           {saving ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Save className="h-4 w-4" aria-hidden="true" />}
           {saving ? 'Saving...' : 'Save topic marks'}
         </button>
-        {calculatedScore !== null ? <p className="text-sm font-semibold text-slate-700">Calculated understanding: {Math.round(calculatedScore * 100)}%</p> : null}
+        {calculatedScore !== null ? <p className="text-sm font-semibold text-slate-200">Calculated understanding: {Math.round(calculatedScore * 100)}%</p> : null}
         {value !== undefined && value !== null && Number(value) <= 1 ? <p className="text-xs text-slate-500">Current 28-day average: {Math.round(Number(value) * 100)}%</p> : null}
       </div>
       {message ? <p role="status" className="text-xs text-slate-600">{message}</p> : null}

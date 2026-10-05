@@ -230,7 +230,7 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
     const scoreResults = [];
     scoreEntries.forEach((entry, index) => {
       const [topicSnapshot, recentScores, ...existingScores] = topicReads[index];
-      const topicData = topicSnapshot.exists() ? topicSnapshot.data() : {};
+      const topicData = topicSnapshot.exists ? topicSnapshot.data() : {};
       const topicIsDone = topicData.topicStatus === 'done'
         || topicData.attendanceStatus === 'attended'
         || Boolean(topicData.firstCompletedAt);
@@ -238,7 +238,7 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
       const questionScores = entry.questionMarks.map((mark, questionIndex) => {
         const score = scoreForQuestion(mark);
         const existingScore = existingScores[questionIndex];
-        if (existingScore.exists()) {
+        if (existingScore.exists) {
           const existing = existingScore.data();
           if (Number(existing.score) !== score || Number(existing.earnedMarks) !== mark.earnedMarks || Number(existing.totalMarks) !== mark.totalMarks) {
             throw new HttpsError('already-exists', 'This marking question score event already exists with different marks.');
@@ -259,7 +259,7 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
       });
       const rollup = makeTopicRollup(recentScores, now, additionalScores);
       transaction.set(entry.topicRef, {
-        ...(!topicSnapshot.exists() ? {
+        ...(!topicSnapshot.exists ? {
           canonicalTopicKey: entry.canonicalTopicKey,
           topicName: entry.topicName,
           createdAt: now,
@@ -319,7 +319,7 @@ export const saveTutorExerciseScore = onCall({ cpu: 'gcf_gen1' }, async (request
       ...scoreRefs.map((scoreRef) => transaction.get(scoreRef)),
     ]);
     requireEpisodeAccess({ episode: currentEpisode.data(), uid, isAdmin: actor.role === 'admin' });
-    if (!exerciseSnapshot.exists()) throw new HttpsError('not-found', 'Exercise not found.');
+    if (!exerciseSnapshot.exists) throw new HttpsError('not-found', 'Exercise not found.');
     const exercise = exerciseSnapshot.data();
     if (exercise.studentId && exercise.studentId !== studentId) throw new HttpsError('permission-denied', 'This exercise belongs to another student.');
     if (normalizeSubject(exercise.subject) !== normalizeSubject(subject)) throw new HttpsError('failed-precondition', 'The exercise subject does not match.');
@@ -338,12 +338,12 @@ export const saveTutorExerciseScore = onCall({ cpu: 'gcf_gen1' }, async (request
       throw new HttpsError('failed-precondition', 'The selected topic is not part of this exercise.');
     }
     ensureQuestionMarksMatchIndexedQuestions({ questionMarks: normalizedQuestionMarks, indexedQuestions: exercise.questionLinks ?? [], topic });
-    if (!topicSnapshot.exists()) throw new HttpsError('failed-precondition', 'Complete a lesson on this topic before recording an exercise score.');
+    if (!topicSnapshot.exists) throw new HttpsError('failed-precondition', 'Complete a lesson on this topic before recording an exercise score.');
     const additionalScores = [];
     normalizedQuestionMarks.forEach((mark, index) => {
       const questionScore = scoreForQuestion(mark);
       const existingScore = existingScores[index];
-      if (existingScore.exists()) {
+      if (existingScore.exists) {
         const existing = existingScore.data();
         if (Number(existing.score) !== questionScore || Number(existing.earnedMarks) !== mark.earnedMarks || Number(existing.totalMarks) !== mark.totalMarks) {
           throw new HttpsError('already-exists', 'This exercise question score event is immutable.');
