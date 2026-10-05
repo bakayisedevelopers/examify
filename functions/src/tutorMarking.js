@@ -373,6 +373,113 @@ export const saveTutorExerciseScore = onCall({ cpu: 'gcf_gen1' }, async (request
   return { topic: String(topic).trim(), understandingLevel: average, exerciseId, score };
 });
 
+export const removeCompletedTopicFromLesson = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const uid = request.auth?.uid;
+  const { studentId, subjectInstanceId, lessonId, subject, topic } = request.data ?? {};
+  const topicName = String(topic ?? '').trim();
+  const topicKey = normalizeTopicKey(topicName);
+  if (!studentId || !subjectInstanceId || !lessonId || !subject || !topicKey) {
+    throw new HttpsError('invalid-argument', 'Student, subject, completed lesson, and topic are required.');
+  }
+
+  const db = getDb();
+  const actor = await requireActor(db, uid);
+  const isAdmin = actor.role === 'admin';
+  const episodeRef = db.collection('users').doc(studentId).collection('subjects').doc(subjectInstanceId);
+  const lessonRef = episodeRef.collection('lessons').doc(lessonId);
+  const topicRef = episodeRef.collection('topics').doc(topicKey);
+  const lessonScoreRef = topicRef.collection('understandingScores').doc(`Lesson-${lessonId}`);
+  const now = admin.firestore.Timestamp.now();
+  let result;
+
+  await db.runTransaction(async (transaction) => {
+    const completedLessonsQuery = episodeRef.collection('lessons').where('status', '==', 'completed');
+    const recentScoresQuery = recentTopicScoresQuery(topicRef, now);
+    const [episodeSnapshot, lessonSnapshot, topicSnapshot, lessonScoreSnapshot, completedLessonsSnapshot, recentScoresSnapshot] = await Promise.all([
+      transaction.get(episodeRef),
+      transaction.get(lessonRef),
+      transaction.get(topicRef),
+      transaction.get(lessonScoreRef),
+      transaction.get(completedLessonsQuery),
+      transaction.get(recentScoresQuery),
+    ]);
+    const episode = episodeSnapshot.exists ? episodeSnapshot.data() : null;
+    requireEpisodeAccess({ episode, uid, isAdmin, allowedRoles: ['co-owner'] });
+    if (normalizeSubject(episode.subjectKey) !== normalizeSubject(subject)) {
+      throw new HttpsError('failed-precondition', 'The lesson subject does not match the active student subject.');
+    }
+    if (!lessonSnapshot.exists) throw new HttpsError('not-found', 'Completed lesson not found.');
+    const lesson = lessonSnapshot.data();
+    if (lesson.status !== 'completed') throw new HttpsError('failed-precondition', 'Only a completed lesson topic can be removed.');
+    const lessonTopics = [...new Set([
+      ...(Array.isArray(lesson.topics) ? lesson.topics : []),
+      lesson.topic,
+      ...(Array.isArray(lesson.topicUnderstandingScores) ? lesson.topicUnderstandingScores.map((entry) => entry?.topic) : []),
+    ].map((value) => String(value ?? '').trim()).filter(Boolean))];
+    if (!lessonTopics.some((value) => normalizeTopicKey(value) === topicKey)) {
+      throw new HttpsError('not-found', 'This topic is not part of the selected lesson.');
+    }
+
+    const remainingTopics = lessonTopics.filter((value) => normalizeTopicKey(value) !== topicKey);
+    const storedTopicScores = Array.isArray(lesson.topicUnderstandingScores) ? lesson.topicUnderstandingScores : null;
+    const remainingTopicScores = storedTopicScores?.filter((entry) => normalizeTopicKey(entry?.topic) !== topicKey);
+    const deleteField = admin.firestore.FieldValue.delete();
+    const lessonChanges = remainingTopics.length
+      ? {
+        topics: remainingTopics,
+        topic: remainingTopics[0],
+        ...(storedTopicScores ? { topicUnderstandingScores: remainingTopicScores } : {}),
+        updatedAt: now,
+      }
+      : {
+        topics: deleteField,
+        topic: deleteField,
+        topicUnderstandingScores: deleteField,
+        understandingLevel: deleteField,
+        completedOn: deleteField,
+        status: 'incomplete',
+        updatedAt: now,
+      };
+    transaction.update(lessonRef, lessonChanges);
+    if (lessonScoreSnapshot.exists) transaction.delete(lessonScoreRef);
+
+    const anotherCompletedLessonHasTopic = completedLessonsSnapshot.docs.some((item) => {
+      if (item.id === lessonId) return false;
+      const data = item.data();
+      return [...new Set([
+        ...(Array.isArray(data.topics) ? data.topics : []),
+        data.topic,
+        ...(Array.isArray(data.topicUnderstandingScores) ? data.topicUnderstandingScores.map((entry) => entry?.topic) : []),
+      ].map((value) => String(value ?? '').trim()).filter(Boolean))]
+        .some((value) => normalizeTopicKey(value) === topicKey);
+    });
+    if (topicSnapshot.exists) {
+      const otherScores = {
+        docs: recentScoresSnapshot.docs.filter((item) => item.id !== lessonScoreRef.id),
+      };
+      transaction.update(topicRef, {
+        ...makeTopicRollup(otherScores, now),
+        topicStatus: anotherCompletedLessonHasTopic ? 'done' : 'removed',
+        attendanceStatus: anotherCompletedLessonHasTopic ? 'attended' : 'not-attended',
+        ...(!anotherCompletedLessonHasTopic ? {
+          firstCompletedAt: deleteField,
+          lastCoveredAt: deleteField,
+        } : {}),
+        updatedAt: now,
+      });
+    }
+
+    result = {
+      removedTopic: topicName,
+      remainingTopics,
+      lessonStatus: remainingTopics.length ? 'completed' : 'incomplete',
+      topicRemainsCompleted: anotherCompletedLessonHasTopic,
+    };
+  });
+
+  return result;
+});
+
 export const refreshTopicUnderstandingAverages = onCall({ timeoutSeconds: 540, memory: '1GiB', cpu: 1 }, async (request) => {
   const uid = request.auth?.uid;
   const episodes = request.data?.episodes;

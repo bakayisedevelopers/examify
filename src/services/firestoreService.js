@@ -30,6 +30,7 @@ import {
   getEligibleExerciseTopics,
   getExerciseGenerationMode,
   fillMissingPlannedQuestionsFromIndexes,
+  fillTopicSlotsToQuestionCount,
   getGenerationWeekForTrigger,
   getRegenerationState,
   getSevenDayWindow,
@@ -107,6 +108,7 @@ const lessonRefFor = (lesson) => {
 };
 
 const GENERATION_HISTORY_LIMIT = 40;
+const MAX_EXACT_PLAN_CORRECTION_ATTEMPTS = 2;
 const EXERCISE_REGENERATION_LOCK_TIMEOUT_MS = 20 * 60 * 1000;
 const localDateKey = (date = new Date()) => [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
 const exerciseAccessWindow = (assignmentDate) => ({
@@ -459,6 +461,8 @@ const getTopicSummary = (completedLessons = []) => {
     getLessonTopicEntries(lesson, lessonIndex).forEach((entry) => {
       const current = topicMap.get(entry.topic) ?? {
         topic: entry.topic,
+        topicStatus: 'done',
+        attendanceStatus: 'attended',
         understandingLevel: entry.understandingLevel,
         reportSnippet: entry.reportSnippet,
         completedOn: entry.completedOn,
@@ -493,7 +497,14 @@ const dateValueForSummary = (value) => {
 const getTopicSummariesFromDocuments = (topicDocuments = []) => topicDocuments
   .map((item, index) => {
     const topic = String(item.topicName || item.canonicalTopicKey || item.id || '').trim();
-    const topicStatus = item.topicStatus === 'marked' || item.attendanceStatus === 'not-attended' ? 'marked' : 'done';
+    if (['planned', 'pending', 'missed', 'cancelled', 'removed'].includes(item.topicStatus)
+      || ['pending', 'missed', 'cancelled', 'removed'].includes(item.attendanceStatus)) return null;
+    const topicStatus = item.topicStatus === 'marked' || item.attendanceStatus === 'not-attended'
+      ? 'marked'
+      : item.topicStatus === 'done' || item.attendanceStatus === 'attended' || item.firstCompletedAt || item.lastCoveredAt
+        ? 'done'
+        : null;
+    if (!topicStatus) return null;
     const attendanceStatus = topicStatus === 'marked' ? 'not-attended' : 'attended';
     const completedAt = topicStatus === 'marked'
       ? item.firstMarkedAt ?? item.scoreUpdatedAt ?? item.createdAt ?? null
@@ -513,7 +524,7 @@ const getTopicSummariesFromDocuments = (topicDocuments = []) => topicDocuments
       firstSeenIndex: index,
     };
   })
-  .filter((item) => item.topic)
+  .filter((item) => item?.topic)
   .sort((left, right) => {
     const dateDifference = new Date(left.completedOn || 0) - new Date(right.completedOn || 0);
     return dateDifference || left.firstSeenIndex - right.firstSeenIndex;
@@ -913,12 +924,13 @@ const buildAssignmentDates = ({ mode, assignmentHistory = [] }) => {
   );
 };
 
-const buildAiQuestionPlan = ({ topicSummaries = [], assignmentDates = [], generationNumber = 1, dailyExerciseCaps = {} }) => {
-  const maxQuestionsPerExercise = Math.min(MAX_QUESTIONS_PER_EXERCISE, topicSummaries.length);
-  const topicUsageCounts = new Map();
-  const markedTopicUsageLimits = Object.fromEntries(topicSummaries
-    .filter((item) => item.topicStatus === 'marked')
-    .map((item) => [item.topic, 2]));
+const buildAiQuestionPlan = ({ topicSummaries = [], requiredQuestionCount, completedTopicCount, assignmentDates = [], generationNumber = 1, dailyExerciseCaps = {} }) => {
+  const requestedQuestionCount = Number.isFinite(Number(requiredQuestionCount))
+    ? Number(requiredQuestionCount) : topicSummaries.length;
+  const maxQuestionsPerExercise = Math.min(
+    MAX_QUESTIONS_PER_EXERCISE,
+    Math.max(0, requestedQuestionCount),
+  );
   const getExerciseCount = (assignmentDate) => Math.max(0, Math.min(
     MAX_EXERCISES_PER_DATE,
     Number.isFinite(Number(dailyExerciseCaps[assignmentDate])) ? Number(dailyExerciseCaps[assignmentDate]) : 1,
@@ -926,14 +938,13 @@ const buildAiQuestionPlan = ({ topicSummaries = [], assignmentDates = [], genera
   const perDayTopics = assignmentDates.map((assignmentDate, dayIndex) => {
     const exerciseCount = getExerciseCount(assignmentDate);
     const requestedCount = exerciseCount ? maxQuestionsPerExercise : 0;
-    const topics = selectTopicsForExerciseDay({
+    const distinctTopics = selectTopicsForExerciseDay({
       topicSummaries,
-      maxTopicsPerDay: requestedCount,
+      maxTopicsPerDay: Math.min(requestedCount, topicSummaries.length),
       dayIndex,
       generationNumber,
-      topicUsageCounts,
-      markedTopicUsageLimit: 2,
     });
+    const topics = fillTopicSlotsToQuestionCount(distinctTopics, requestedCount);
     return {
       assignmentDate,
       exerciseCount: exerciseCount && topics.length ? 1 : 0,
@@ -948,19 +959,21 @@ const buildAiQuestionPlan = ({ topicSummaries = [], assignmentDates = [], genera
     perDayTopics,
     rules: {
       titleFormat: 'question-references-only',
-      distinctTopicsPerDay: true,
+      distinctTopicsPerDayWhenMetadataAllows: true,
+      repeatsTopicSlotsWhenMetadataIsLimited: true,
       oneExerciseDocumentPerDate: true,
       maxExercisesPerDay: MAX_EXERCISES_PER_DATE,
       maxQuestionsPerExercise,
       exactQuestionCountPerExercise: true,
+      requiredQuestionCountUsesAllCompletedTopics: true,
+      completedTopicCountForQuestionCount: Number(completedTopicCount) || topicSummaries.length,
+      analyzedTopicCountAvailableForQuestionSelection: topicSummaries.length,
       requiredExerciseDocumentsByDate: Object.fromEntries(perDayTopics.map((day) => [day.assignmentDate, day.exerciseCount])),
       requiredQuestionsByDate: Object.fromEntries(perDayTopics.map((day) => [day.assignmentDate, day.requiredCount])),
       topicEligibility: {
-        doneTopicsAlwaysEligible: true,
-        markedOnlyMinimumAverage: 0.7,
-        markedTopicUsageLimits,
+        completedLessonTopicsOnly: true,
+        analyzedQuestionIndexRequired: true,
       },
-      markedTopicUsageLimits,
       weightedTowardHigherUnderstandingFromFourthTopic: topicSummaries.length > 3,
     },
   };
@@ -982,22 +995,6 @@ const validateExactRecommendationPlan = ({ recommendations = [], questionPlan = 
   if (inconsistentDay) {
     return { valid: false, reason: `The exercise and question counts do not match the topic slots for ${inconsistentDay[0]}.` };
   }
-  const markedTopicUsageLimits = new Map(Object.entries(questionPlan.rules?.markedTopicUsageLimits ?? {})
-    .map(([topic, limit]) => [normalizeTopicKey(topic), Number(limit)]));
-  const markedTopicUsageCounts = new Map();
-  for (const day of questionPlan.perDayTopics ?? []) {
-    for (const topic of day.topics ?? []) {
-      const key = normalizeTopicKey(topic);
-      const limit = markedTopicUsageLimits.get(key);
-      if (limit === undefined) continue;
-      const uses = (markedTopicUsageCounts.get(key) ?? 0) + 1;
-      if (uses > limit) {
-        return { valid: false, reason: `The plan uses marked-only topic ${topic} more than ${limit} times in this seven-day generation.` };
-      }
-      markedTopicUsageCounts.set(key, uses);
-    }
-  }
-
   for (const recommendation of recommendations) {
     const assignmentDate = String(recommendation?.assignmentDate || '');
     if (!expectedByDate.has(assignmentDate) || !Array.isArray(recommendation?.questions)) {
@@ -1526,6 +1523,18 @@ export const getStudentTopicScoresForTutor = async ({ tutorId, studentId, subjec
       || !Number.isFinite(Number(item.data().understandingLevel))
       || Number(item.data().understandingLevel) < 0 || Number(item.data().understandingLevel) > 1
       ? null : Number(item.data().understandingLevel)]));
+};
+
+export const removeCompletedTopicFromLesson = async ({ studentId, subjectInstanceId, lessonId, subject = DEFAULT_SUBJECT, topic }) => {
+  if (!studentId || !subjectInstanceId || !lessonId || !String(topic ?? '').trim()) {
+    throw new Error('Choose the completed lesson topic to remove.');
+  }
+  if (!isFirebaseConfigured || !functions) {
+    throw new Error('Connect to Firebase to remove a completed lesson topic.');
+  }
+  const callable = httpsCallable(functions, 'removeCompletedTopicFromLesson');
+  const response = await callable({ studentId, subjectInstanceId, lessonId, subject, topic: String(topic).trim() });
+  return response.data;
 };
 
 export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT, topic, exerciseId, peerAssignmentId, questionMarks = [] }) => {
@@ -2077,13 +2086,22 @@ export const getGlobalTopicList = async ({ subject, grade } = {}) => {
   return [...new Set(values.map((value) => String(value ?? '').trim()).filter((value) => value.split('|').length === 2))];
 };
 
-export const getGlobalTopicOptionGroups = async ({ subject, grade, studentIds = [], extractedTopics = [] } = {}) => {
+export const getGlobalTopicOptionGroups = async ({ subject, grade, studentIds = [], questionPapers } = {}) => {
   if (!subject || !grade) throw new Error('Choose a subject and grade before loading topics.');
   if (!isFirebaseConfigured) {
     return { extracted: [], manual: [], all: [] };
   }
 
   ensureDb();
+  const analyzedPapers = (Array.isArray(questionPapers) ? questionPapers : await getQuestionPapers({ subject, grade }))
+    .filter(isAnalyzedQuestionPaper);
+  const analyzedTopics = analyzedPapers.flatMap((paper) => [
+    ...(paper.topics ?? []),
+    ...(Array.isArray(paper.questions) ? paper.questions.flatMap((question) => [
+      question.topic,
+      ...(Array.isArray(question.topics) ? question.topics : []),
+    ]) : []),
+  ]).map((topic) => String(topic ?? '').trim()).filter(Boolean);
   let topics = await getGlobalTopicList({ subject, grade });
   if (!topics.length) {
     if (!functions) throw new Error('Firebase Functions are not configured to initialize global topics.');
@@ -2092,19 +2110,22 @@ export const getGlobalTopicOptionGroups = async ({ subject, grade, studentIds = 
       subject,
       grade,
       studentIds,
-      seedTopics: [...new Set(extractedTopics
-        .map((topic) => String(topic ?? '').trim())
+      seedTopics: [...new Set(analyzedTopics
         .filter((topic) => topic.split('|').length === 2))],
     });
     topics = Array.isArray(response.data?.topics) ? response.data.topics : [];
   }
 
   const byKey = new Map(topics.map((topic) => [normalizeCatalogTopicKey(topic), topic]));
-  const extracted = [...new Set(extractedTopics
+  const topicsWithAnalyzedQuestions = topics.filter((topic) => analyzedPapers.some((paper) =>
+    summarizePaperQuestions(paper, [topic]).length > 0));
+  const analyzedTopicKeys = new Set(topicsWithAnalyzedQuestions.map(normalizeCatalogTopicKey));
+  const extracted = [...new Set(analyzedTopics
     .map((topic) => byKey.get(normalizeCatalogTopicKey(topic)))
-    .filter(Boolean))].sort((left, right) => left.localeCompare(right));
+    .filter((topic) => topic && analyzedTopicKeys.has(normalizeCatalogTopicKey(topic))))]
+    .sort((left, right) => left.localeCompare(right));
   const extractedKeys = new Set(extracted.map(normalizeCatalogTopicKey));
-  const manual = topics.filter((topic) => !extractedKeys.has(normalizeCatalogTopicKey(topic)))
+  const manual = topicsWithAnalyzedQuestions.filter((topic) => !extractedKeys.has(normalizeCatalogTopicKey(topic)))
     .sort((left, right) => left.localeCompare(right));
   return { extracted, manual, all: [...new Set([...extracted, ...manual])] };
 };
@@ -2124,18 +2145,11 @@ export const getLessonEligibleSubjectGradePairs = async (contexts = []) => {
   const eligiblePairs = await Promise.all([...candidates.values()].map(async ({ subject, grade, studentIds }) => {
     const papers = await getQuestionPapers({ subject, grade });
     if (!papers.length) return null;
-    const extractedTopics = papers.flatMap((paper) => [
-      ...(paper.topics ?? []),
-      ...(Array.isArray(paper.questions) ? paper.questions.flatMap((question) => [
-        question.topic,
-        ...(Array.isArray(question.topics) ? question.topics : []),
-      ]) : []),
-    ]).filter(Boolean);
     const topicGroups = await getGlobalTopicOptionGroups({
       subject,
       grade,
       studentIds: [...studentIds],
-      extractedTopics,
+      questionPapers: papers,
     });
     return topicGroups.all.length ? { subject, grade } : null;
   }));
@@ -2732,34 +2746,21 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     (Array.isArray(studentState.completedTopicSummaries) ? studentState.completedTopicSummaries : [])
       .map((summary) => [normalizeCatalogTopicKey(summary.topic), summary]),
   );
-  const currentLessonTopicKeys = new Set((readyCompletedLesson?.topicUnderstandingScores ?? [])
-    .map((entry) => normalizeCatalogTopicKey(entry.topic)).filter(Boolean));
   getTopicSummary(completedLessons).forEach((summary) => {
     const key = normalizeCatalogTopicKey(summary.topic);
     if (!key) return;
     const saved = topicSummaryByKey.get(key);
     if (!saved) {
       topicSummaryByKey.set(key, { ...summary, topicStatus: 'done', attendanceStatus: 'attended' });
-    } else if (currentLessonTopicKeys.has(key)) {
+    } else {
       topicSummaryByKey.set(key, { ...saved, topicStatus: 'done', attendanceStatus: 'attended' });
     }
   });
-  const topicSummaries = [...topicSummaryByKey.values()];
+  const topicSummaries = [...topicSummaryByKey.values()].filter((summary) => summary.topicStatus === 'done');
   const eligibleTopicSummaries = getEligibleExerciseTopics(topicSummaries);
   if (!eligibleTopicSummaries.length) {
-    return { generated: false, reason: 'No completed or sufficiently understood marked topics are available for exercise generation.', assignments: [], criteria: studentState.generationStatus };
+    return { generated: false, reason: 'No topics from completed, attended lessons are available for exercise generation.', assignments: [], criteria: studentState.generationStatus };
   }
-  const completedTopics = topicSummaries.filter((item) => item.topicStatus !== 'marked').map((item) => item.topic);
-  const eligibleTopics = eligibleTopicSummaries.map((item) => item.topic);
-  const markedTopicSuggestions = eligibleTopicSummaries
-    .filter((item) => item.topicStatus === 'marked')
-    .map((item) => ({
-      topic: item.topic,
-      averageUnderstandingLevel: item.understandingLevel,
-      averageUnderstandingPercent: Math.round(item.understandingLevel * 100),
-      maxSuggestionsInThisGeneration: 2,
-      suggestionOnly: true,
-    }));
   const {
     selectedPapers,
     topicPaperMetadata,
@@ -2790,6 +2791,13 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       assignments: [],
     };
   }
+  const sourceTopicKeys = new Set(topicsWithSources.map((item) => normalizeCatalogTopicKey(item.topic)));
+  const generationTopicSummaries = eligibleTopicSummaries.filter((summary) => sourceTopicKeys.has(normalizeCatalogTopicKey(summary.topic)));
+  const eligibleTopics = generationTopicSummaries.map((item) => item.topic);
+  const completedTopics = eligibleTopics;
+  const completedTopicCount = eligibleTopicSummaries.length;
+  const requiredQuestionCount = Math.min(MAX_QUESTIONS_PER_EXERCISE, completedTopicCount);
+  const topicPaperMetadataWithSources = topicPaperMetadata.filter((item) => item.papers.length > 0);
 
   onProgress?.(`Using topic metadata from ${selectedPapers.length} analyzed question papers [Generating exercises]`);
 
@@ -2819,22 +2827,13 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
   };
   const effectiveOverrideExerciseIdsByDate = { ...regenerationState.overrideExerciseIdsByDate, ...overrideExerciseIdsByDate };
   const aiPlan = buildAiQuestionPlan({
-    topicSummaries: eligibleTopicSummaries,
+    topicSummaries: generationTopicSummaries,
+    requiredQuestionCount,
+    completedTopicCount,
     assignmentDates,
     generationNumber,
     dailyExerciseCaps: effectiveDailyExerciseCaps,
   });
-  const plannedTopics = new Set(aiPlan.perDayTopics.flatMap((day) => day.topics));
-  const unbackedPlannedTopics = [...plannedTopics].filter((topic) =>
-    !topicPaperMetadata.some((item) => item.topic === topic && item.papers.length > 0));
-  if (unbackedPlannedTopics.length) {
-    return {
-      generated: false,
-      reason: `No analyzed question metadata is available for: ${unbackedPlannedTopics.join(', ')}.`,
-      assignments: [],
-      criteria: { ...studentState.generationStatus, ...subscriptionTrace, topicsWithoutSources: unbackedPlannedTopics },
-    };
-  }
   if (aiPlan.perDayTopics.every((day) => day.requiredCount === 0)) {
     return { generated: false, reason: 'There are no remaining exercise slots under the daily topic limit.', assignments: [], criteria: studentState.generationStatus };
   }
@@ -2848,7 +2847,8 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     assignmentDates,
     completedTopics,
     eligibleTopics,
-    markedTopicSuggestions,
+    completedTopicCount,
+    excludedCompletedTopicCount: completedTopicCount - generationTopicSummaries.length,
     tutorReports: [...new Set([
       ...subjectTutorReports,
       ...completedLessons.map((lesson) => lesson.topicReport ?? lesson.note).filter(Boolean),
@@ -2859,7 +2859,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       ...paperMetadataForAi(paper),
       topics: (paper.topics ?? []).filter((topic) => questionMatchesTopics({ topic }, eligibleTopics)),
     })),
-    topicPaperMetadata,
+    topicPaperMetadata: topicPaperMetadataWithSources,
     selectedPapers: selectedPapers.map((paper) => ({
       id: paper.id,
       year: paper.year,
@@ -2878,27 +2878,31 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     dailyExerciseCaps: effectiveDailyExerciseCaps,
     maxQuestionsPerDay: aiPlan.maxQuestionsPerDay,
     questionPlanRules: aiPlan,
-    lessonHistory: completedLessons.map((lesson) => ({
-      topic: lesson.topic,
-      topicReport: lesson.topicReport ?? lesson.note ?? '',
-      understandingLevel: lessonScoreToRatio(lesson.understandingLevel ?? understandingLevel ?? 0.5) ?? 0.5,
-      topicUnderstandingScores: (lesson.topicUnderstandingScores ?? []).map((entry) => ({
-        ...entry,
-        understandingLevel: lessonScoreToRatio(entry.understandingLevel) ?? 0.5,
-      })),
-      completedOn: lesson.completedOn ?? lesson.createdAt ?? '',
-    })),
-    understandingByTopic: eligibleTopicSummaries.map((summary) => ({
+    lessonHistory: completedLessons.flatMap((lesson, lessonIndex) => {
+      const topicEntries = getLessonTopicEntries(lesson, lessonIndex)
+        .filter((entry) => sourceTopicKeys.has(normalizeCatalogTopicKey(entry.topic)));
+      if (!topicEntries.length) return [];
+      return [{
+        topic: topicEntries.map((entry) => entry.topic).join(' | '),
+        topicReport: lesson.topicReport ?? lesson.note ?? '',
+        understandingLevel: lessonScoreToRatio(lesson.understandingLevel ?? understandingLevel ?? 0.5) ?? 0.5,
+        topicUnderstandingScores: topicEntries.map((entry) => ({
+          topic: entry.topic,
+          topicReport: entry.reportSnippet,
+          understandingLevel: lessonScoreToRatio(entry.understandingLevel) ?? 0.5,
+        })),
+        completedOn: lesson.completedOn ?? lesson.createdAt ?? '',
+      }];
+    }),
+    understandingByTopic: generationTopicSummaries.map((summary) => ({
       topic: summary.topic,
       understandingLevel: summary.understandingLevel,
       completedOn: summary.completedOn,
       topicStatus: summary.topicStatus,
     })),
-    markedTopicUsageLimits: aiPlan.rules.markedTopicUsageLimits,
     recentExerciseHistory,
     previousGenerationSummaries: getRecentGenerationSummaries(assignmentHistory, 2),
     reusedRecentPapers,
-    topicsWithoutSources,
   };
   let aiResponse = await recommendExercises(aiPayload);
 
@@ -2908,10 +2912,17 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     selectedPapers,
     validateSources: isFirebaseConfigured,
   });
-  if (!exactPlan.valid && exactPlan.shortDay) {
+  for (let correctionAttempt = 0; !exactPlan.valid && exactPlan.shortDay
+    && correctionAttempt < MAX_EXACT_PLAN_CORRECTION_ATTEMPTS; correctionAttempt += 1) {
     const { assignmentDate, returnedQuestionCount, requiredQuestionCount, topics: requiredTopics } = exactPlan.shortDay;
-    const correctionInstruction = `Your previous response returned one exercise for ${assignmentDate} with ${returnedQuestionCount} question(s) inside it; exactly ${requiredQuestionCount} questions are required for the planned topics ${JSON.stringify(requiredTopics)}. Return the FULL plan again. There must be one recommendation object for this date, and its questions array must contain every required topic question. Do not create extra exercise documents. Do not stop early. If distinct indexed questions are insufficient, reuse an exact indexed question for the same topic on a different date as instructed; never omit a required question.`;
-    aiResponse = await recommendExercises({ ...aiPayload, correctionInstruction });
+    const missingCount = Math.max(0, requiredQuestionCount - returnedQuestionCount);
+    const correctionInstruction = `The previous full plan failed validation: ${assignmentDate} returned ${returnedQuestionCount} question objects but this date requires exactly ${requiredQuestionCount}. You must return the FULL plan again, with one parent exercise for this date and exactly ${requiredQuestionCount} question objects, including one for every planned topic slot ${JSON.stringify(requiredTopics)}. A topic may appear in multiple slots when fewer topics have analyzed indexes than the completed-topic question quota. Do not lower the count, omit a slot, stop early, or add parent exercise documents. ${missingCount ? `There are ${missingCount} missing question slot(s).` : 'Remove excess question objects while preserving every planned topic slot.'} If a topic has no unused unique question left in this generation, repeat an exact indexed question for that same topic on another date; if a repeated topic slot has no distinct indexed question, reuse its exact indexed reference in that exercise. Use only indexed references, paper ids, and page numbers.`;
+    try {
+      aiResponse = await recommendExercises({ ...aiPayload, correctionInstruction });
+    } catch (error) {
+      console.warn('[Examifying][AI] exact question-count correction request failed:', error?.message || error);
+      break;
+    }
     exactPlan = validateExactRecommendationPlan({
       recommendations: aiResponse?.recommendations ?? [],
       questionPlan: aiPlan,
@@ -2919,31 +2930,32 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       validateSources: isFirebaseConfigured,
     });
   }
-  if (!exactPlan.valid && exactPlan.shortDay && exactPlan.shortDay.returnedQuestionCount < exactPlan.shortDay.requiredQuestionCount) {
-    const usedQuestionReferences = assignmentHistory.flatMap((assignment) => [
-      ...(assignment.questionLinks ?? []),
-      ...(assignment.questions ?? []),
-      ...(assignment.questionReferences ?? []).map((questionReference, index) => ({
-        questionReference,
-        paperId: assignment.paperIds?.[index] || assignment.paperIds?.[0],
-      })),
-    ]);
-    const repairedPlan = fillMissingPlannedQuestionsFromIndexes({
-      recommendations: aiResponse?.recommendations ?? [],
-      questionPlan: aiPlan,
-      selectedPapers,
-      previouslyUsedQuestionReferences: usedQuestionReferences,
-      isQuestionForTopic: (question, topic) => questionMatchesTopics(question, [topic]),
+  const usedQuestionReferences = assignmentHistory.flatMap((assignment) => [
+    ...(assignment.questionLinks ?? []),
+    ...(assignment.questions ?? []),
+    ...(assignment.questionReferences ?? []).map((questionReference, index) => ({
+      questionReference,
+      paperId: assignment.paperIds?.[index] || assignment.paperIds?.[0],
+    })),
+  ]);
+  const repairedPlan = fillMissingPlannedQuestionsFromIndexes({
+    recommendations: aiResponse?.recommendations ?? [],
+    questionPlan: aiPlan,
+    selectedPapers,
+    previouslyUsedQuestionReferences: usedQuestionReferences,
+    isQuestionForTopic: (question, topic) => questionMatchesTopics(question, [topic]),
+  });
+  aiResponse = { ...aiResponse, recommendations: repairedPlan.recommendations };
+  exactPlan = validateExactRecommendationPlan({
+    recommendations: aiResponse.recommendations,
+    questionPlan: aiPlan,
+    selectedPapers,
+    validateSources: isFirebaseConfigured,
+  });
+  if (repairedPlan.filledCount) {
+    console.info('[Examifying][AI] enforced planned per-exercise question counts from selected paper indexes', {
+      repairedQuestionSlots: repairedPlan.filledCount,
     });
-    if (repairedPlan.filledCount) {
-      aiResponse = { ...aiResponse, recommendations: repairedPlan.recommendations };
-      exactPlan = validateExactRecommendationPlan({
-        recommendations: aiResponse.recommendations,
-        questionPlan: aiPlan,
-        selectedPapers,
-        validateSources: isFirebaseConfigured,
-      });
-    }
   }
   if (!exactPlan.valid) {
     return {

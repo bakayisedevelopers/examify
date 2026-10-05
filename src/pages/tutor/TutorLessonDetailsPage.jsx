@@ -262,13 +262,6 @@ export const TutorLessonDetailsPage = () => {
     getQuestionPapers({ subject, grade })
       .then((papers) => {
         if (cancelled) return;
-        const extractedTopics = papers.flatMap((paper) => [
-          ...(paper.topics ?? []),
-          ...(Array.isArray(paper.questions) ? paper.questions.flatMap((question) => [
-            question.topic,
-            ...(Array.isArray(question.topics) ? question.topics : []),
-          ]) : []),
-        ]).filter(Boolean);
         const studentIds = contexts
           .filter((context) => context.accessRole === 'co-owner' && context.subject === subject && context.grade === grade)
           .map((context) => context.studentId);
@@ -276,7 +269,7 @@ export const TutorLessonDetailsPage = () => {
           subject,
           grade,
           studentIds,
-          extractedTopics,
+          questionPapers: papers,
         });
       })
       .then((groups) => {

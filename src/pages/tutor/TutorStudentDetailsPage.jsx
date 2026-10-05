@@ -16,6 +16,7 @@ import {
   getTutorAssignmentHistoryData,
   getTutorExercisesForAssignedStudents,
   getTutorLessonsForAssignedStudents,
+  removeCompletedTopicFromLesson,
   getCompletedPeerMarkingWorkForTutor,
   deleteLessonSession,
   deleteExerciseAssignmentForTutor,
@@ -87,6 +88,7 @@ export const TutorStudentDetailsPage = () => {
   const [selectedAccessRole, setSelectedAccessRole] = useState('marker');
   const [savingStaffAccess, setSavingStaffAccess] = useState(false);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [removingLessonTopicKey, setRemovingLessonTopicKey] = useState('');
 
   useEffect(() => {
     if (!studentId || !profile?.uid || periodId || student?.subject !== subject || !student?.subjectInstanceId) return undefined;
@@ -173,13 +175,6 @@ export const TutorStudentDetailsPage = () => {
     setLessonEligibleSubjects([...new Set(eligiblePairs.map((pair) => pair.subject))].sort());
     setLessonEligibilityError(eligibilityResult.error?.message || '');
     setLessonEligibilityLoading(false);
-    const extractedTopics = papers.flatMap((paper) => [
-      ...(paper.topics ?? []),
-      ...(Array.isArray(paper.questions) ? paper.questions.flatMap((question) => [
-        question.topic,
-        ...(Array.isArray(question.topics) ? question.topics : []),
-      ]) : []),
-    ]).filter(Boolean);
     setStudent(studentContext);
     setStaffAccess(await getStaffStudentAccess({ studentId, subject: activeSubject, tutorId: profile.uid, subjectInstanceId: studentContext?.subjectInstanceId }));
     if (studentContext?.accessRole === 'co-owner') setStaffMembers(await getStaffMembersForAccess({ tutorId: profile.uid, subject: activeSubject }));
@@ -193,7 +188,7 @@ export const TutorStudentDetailsPage = () => {
         subject: activeSubject,
         grade: studentContext?.grade,
         studentIds: [studentId],
-        extractedTopics,
+        questionPapers: papers,
       }));
     } catch (error) {
       setTopicOptions(emptyTopicGroups);
@@ -207,6 +202,31 @@ export const TutorStudentDetailsPage = () => {
 
   const canManage = student?.accessRole === 'co-owner';
   const canMark = canManage || student?.accessRole === 'marker';
+  const removeLessonTopic = async (lesson, topic) => {
+    const operationKey = `${lesson.id}:${topic}`;
+    if (!canManage || removingLessonTopicKey) return;
+    if (!window.confirm(`Remove “${topic}” from this completed lesson? Its lesson score will be removed and the topic will remain completed only if another completed lesson covers it.`)) return;
+    setRemovingLessonTopicKey(operationKey);
+    try {
+      const result = await removeCompletedTopicFromLesson({
+        studentId,
+        subjectInstanceId: student.subjectInstanceId,
+        lessonId: lesson.id,
+        subject,
+        topic,
+      });
+      await load();
+      setStatus(result.lessonStatus === 'incomplete'
+        ? `Removed ${topic}. The lesson has no remaining completed topics and is now incomplete.`
+        : result.topicRemainsCompleted
+          ? `Removed ${topic} from this lesson. It remains completed because another completed lesson covers it.`
+          : `Removed ${topic} from this lesson and the student's completed topic list.`);
+    } catch (error) {
+      setStatus(error.message || 'Could not remove the completed topic.');
+    } finally {
+      setRemovingLessonTopicKey('');
+    }
+  };
   const todayLocal = today();
   const regenerationEndDate = getSevenDayWindow(todayLocal).at(-1);
   const regenerationInProgress = isRegenerating || (
@@ -496,12 +516,28 @@ export const TutorStudentDetailsPage = () => {
       <section className="panel p-5">
         <SectionHeader eyebrow="Lessons" title="Tutor lessons" description="Planned and completed lessons for this student." />
         <div className="space-y-3">{lessons.map((lesson) => {
-          const lessonStatus = lesson.status === 'planned' ? 'Planned' : lesson.status === 'missed' ? 'Missed' : lesson.status === 'cancelled' ? 'Cancelled' : 'Completed';
+          const lessonTopics = [...new Set((lesson.topics ?? [lesson.topic]).filter(Boolean))];
+          const lessonStatus = lesson.status === 'planned' ? 'Planned' : lesson.status === 'incomplete' ? 'Incomplete' : lesson.status === 'missed' ? 'Missed' : lesson.status === 'cancelled' ? 'Cancelled' : 'Completed';
           const lessonTypeLabel = lesson.lessonType === 'inPerson' ? 'In-person' : 'Online (WhatsApp)';
-          const content = <><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{(lesson.topics ?? [lesson.topic]).filter(Boolean).join(' | ')}</p><span className="rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-300">{lessonStatus}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lessonTypeLabel}</p></>;
-          return student?.historicalAccessRole
-            ? <div key={lesson.id} className="block rounded-lg bg-slate-50 p-4">{content}</div>
-            : <Link key={lesson.id} to={`${basePath}/lessons/${lesson.id}`} className="block rounded-lg bg-slate-50 p-4">{content}</Link>;
+          const content = <><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-semibold text-slate-950">{lessonTopics.join(' | ') || lesson.topic || 'Lesson topic removed'}</p><span className="rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-300">{lessonStatus}</span></div><p className="text-sm text-slate-500">{lesson.completedOn || lesson.lessonDate || 'No date'} • {lessonTypeLabel}</p></>;
+          return <div key={lesson.id} className="rounded-lg bg-slate-50 p-4">
+            {student?.historicalAccessRole
+              ? content
+              : <Link to={`${basePath}/lessons/${lesson.id}`} className="block">{content}</Link>}
+            {canManage && lesson.status === 'completed' && lessonTopics.length ? <div className="mt-3 border-t border-slate-200 pt-3">
+              <p className="mb-2 text-xs font-semibold text-slate-500">Correct completed topics</p>
+              <div className="flex flex-wrap gap-2">{lessonTopics.map((topic) => {
+                const operationKey = `${lesson.id}:${topic}`;
+                const isRemoving = removingLessonTopicKey === operationKey;
+                return <span key={topic} className="inline-flex items-center gap-1 rounded-full border border-lime-300 bg-lime-100 px-3 py-1 text-sm font-medium text-lime-950">
+                  {topic}
+                  <button type="button" className="ml-1 text-xs font-semibold text-rose-700 hover:text-rose-900 disabled:opacity-50" onClick={() => removeLessonTopic(lesson, topic)} disabled={Boolean(removingLessonTopicKey)} aria-label={`Remove ${topic} from this completed lesson`}>
+                    {isRemoving ? 'Removing…' : 'Remove'}
+                  </button>
+                </span>;
+              })}</div>
+            </div> : null}
+          </div>;
         })}{!lessons.length ? <p className="text-sm text-slate-500">No lessons yet.</p> : null}</div>
       </section>
       </section></div> : null}

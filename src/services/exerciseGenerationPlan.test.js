@@ -5,6 +5,7 @@ import {
   getEligibleExerciseTopics,
   getExerciseGenerationMode,
   fillMissingPlannedQuestionsFromIndexes,
+  fillTopicSlotsToQuestionCount,
   getGenerationWeekForTrigger,
   getRegenerationState,
   getSevenDayWindow,
@@ -67,6 +68,105 @@ test('a missing topic question is filled from selected analyzed paper indexes wi
   assert.equal(result.recommendations[0].questions[4].questionReference, 'Q6');
 });
 
+test('indexed-question repair returns the required count from one through five', () => {
+  const topicNames = ['Fractions', 'Decimals', 'Algebra', 'Geometry', 'Measurement'];
+  const selectedPapers = [{
+    id: 'paper-1',
+    questions: topicNames.map((topic, index) => ({ topic, questionReference: `Q${index + 1}`, pageNumber: index + 1 })),
+  }];
+
+  for (let requiredCount = 1; requiredCount <= 5; requiredCount += 1) {
+    const topics = topicNames.slice(0, requiredCount);
+    const result = fillMissingPlannedQuestionsFromIndexes({
+      recommendations: [],
+      questionPlan: { perDayTopics: [{ assignmentDate: '2026-10-10', exerciseCount: 1, topics, requiredCount }] },
+      selectedPapers,
+      isQuestionForTopic: (question, topic) => question.topic === topic,
+    });
+    assert.equal(result.recommendations[0].questions.length, requiredCount);
+    assert.deepEqual(result.recommendations[0].questions.map((question) => question.topic), topics);
+  }
+});
+
+test('a limited analyzed-topic set is repeated to preserve the completed-topic question quota', () => {
+  assert.deepEqual(fillTopicSlotsToQuestionCount(['Fractions', 'Decimals', 'Algebra'], 4), [
+    'Fractions', 'Decimals', 'Algebra', 'Fractions',
+  ]);
+  assert.deepEqual(fillTopicSlotsToQuestionCount(['Fractions', 'Decimals', 'Algebra', 'Geometry'], 4), [
+    'Fractions', 'Decimals', 'Algebra', 'Geometry',
+  ]);
+  assert.deepEqual(fillTopicSlotsToQuestionCount([], 4), []);
+});
+
+test('indexed-question repair repeats a same-topic question on other dates after distinct references run out', () => {
+  const dates = ['2026-10-10', '2026-10-11', '2026-10-12', '2026-10-13'];
+  const result = fillMissingPlannedQuestionsFromIndexes({
+    recommendations: [{ assignmentDate: dates[0], questions: [{
+      topic: 'Fractions', questionReference: 'Q1', paperId: 'paper-1', pageNumber: 2,
+    }] }],
+    questionPlan: { perDayTopics: dates.map((assignmentDate) => ({
+      assignmentDate, exerciseCount: 1, topics: ['Fractions'], requiredCount: 1,
+    })) },
+    selectedPapers: [{ id: 'paper-1', questions: [{ topic: 'Fractions', questionReference: 'Q1', pageNumber: 2 }] }],
+    isQuestionForTopic: (question, topic) => question.topic === topic,
+  });
+
+  assert.equal(result.recommendations.length, dates.length);
+  assert.deepEqual(result.recommendations.map((recommendation) => recommendation.assignmentDate), dates);
+  assert.ok(result.recommendations.every((recommendation) => recommendation.questions.length === 1));
+  assert.ok(result.recommendations.every((recommendation) => recommendation.questions[0].questionReference === 'Q1'));
+});
+
+test('indexed-question repair preserves a repeated topic slot when its only indexed question must repeat', () => {
+  const result = fillMissingPlannedQuestionsFromIndexes({
+    recommendations: [],
+    questionPlan: { perDayTopics: [{
+      assignmentDate: '2026-10-10', exerciseCount: 1,
+      topics: ['Fractions', 'Decimals', 'Algebra', 'Fractions'], requiredCount: 4,
+    }] },
+    selectedPapers: [{ id: 'paper-1', questions: [
+      { topic: 'Fractions', questionReference: 'F1', pageNumber: 2 },
+      { topic: 'Decimals', questionReference: 'D1', pageNumber: 3 },
+      { topic: 'Algebra', questionReference: 'A1', pageNumber: 4 },
+    ] }],
+    isQuestionForTopic: (question, topic) => question.topic === topic,
+  });
+
+  assert.equal(result.recommendations[0].questions.length, 4);
+  assert.deepEqual(result.recommendations[0].questions.map((question) => question.topic), [
+    'Fractions', 'Decimals', 'Algebra', 'Fractions',
+  ]);
+  assert.deepEqual(result.recommendations[0].questions.map((question) => question.questionReference), ['F1', 'D1', 'A1', 'F1']);
+});
+
+test('indexed-question repair removes duplicate, unplanned and extra parent outputs', () => {
+  const result = fillMissingPlannedQuestionsFromIndexes({
+    recommendations: [
+      { assignmentDate: '2026-10-10', questions: [
+        { topic: 'Fractions', questionReference: 'Q1', paperId: 'paper-1', pageNumber: 2 },
+        { topic: 'Fractions', questionReference: 'Q1', paperId: 'paper-1', pageNumber: 2 },
+        { topic: 'Planned lesson topic', questionReference: 'Q9', paperId: 'paper-1', pageNumber: 9 },
+      ] },
+      { assignmentDate: '2026-10-10', questions: [
+        { topic: 'Decimals', questionReference: 'Q2', paperId: 'paper-1', pageNumber: 3 },
+      ] },
+      { assignmentDate: '2026-10-11', questions: [{ topic: 'Fractions', questionReference: 'Q1' }] },
+    ],
+    questionPlan: { perDayTopics: [{
+      assignmentDate: '2026-10-10', exerciseCount: 1, topics: ['Fractions', 'Decimals'], requiredCount: 2,
+    }] },
+    selectedPapers: [{ id: 'paper-1', questions: [
+      { topic: 'Fractions', questionReference: 'Q1', pageNumber: 2 },
+      { topic: 'Decimals', questionReference: 'Q2', pageNumber: 3 },
+    ] }],
+    isQuestionForTopic: (question, topic) => question.topic === topic,
+  });
+
+  assert.equal(result.recommendations.length, 1);
+  assert.equal(result.recommendations[0].questions.length, 2);
+  assert.deepEqual(result.recommendations[0].questions.map((question) => question.topic), ['Fractions', 'Decimals']);
+});
+
 test('seven-day regeneration window starts today and crosses month boundaries', () => {
   assert.deepEqual(getSevenDayWindow('2026-09-29'), [
     '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05',
@@ -104,30 +204,24 @@ test('initial and manual triggers keep their week while lesson completion advanc
   assert.equal(getGenerationWeekForTrigger(3, { lessonCompleted: true }), 4);
 });
 
-test('generation eligibility includes all done topics and marked-only topics at 70 percent or higher', () => {
+test('generation eligibility includes completed lesson topics and excludes marked and planned topics', () => {
   const topics = getEligibleExerciseTopics([
     { topic: 'Done without recent score', topicStatus: 'done', understandingLevel: null },
     { topic: 'Marked at threshold', topicStatus: 'marked', understandingLevel: 0.7 },
-    { topic: 'Marked above threshold', topicStatus: 'marked', understandingLevel: 0.84 },
-    { topic: 'Marked below threshold', topicStatus: 'marked', understandingLevel: 0.69 },
+    { topic: 'Planned lesson topic', topicStatus: 'planned', understandingLevel: 1 },
   ]);
-  assert.deepEqual(topics.map((topic) => topic.topic), [
-    'Done without recent score', 'Marked at threshold', 'Marked above threshold',
-  ]);
+  assert.deepEqual(topics.map((topic) => topic.topic), ['Done without recent score']);
 });
 
-test('a marked-only topic can be planned no more than twice in a seven-day generation', () => {
+test('day selection excludes marked and planned topics even when passed directly', () => {
   const marked = { topic: 'Marked topic', topicStatus: 'marked', understandingLevel: 0.75 };
+  const planned = { topic: 'Planned topic', topicStatus: 'planned', understandingLevel: 1 };
   const done = { topic: 'Done topic', topicStatus: 'done', understandingLevel: 0.5 };
-  const usageCounts = new Map();
-  const plan = Array.from({ length: 7 }, (_, dayIndex) => selectTopicsForExerciseDay({
-    topicSummaries: [marked, done],
-    maxTopicsPerDay: 1,
-    dayIndex,
+  const topics = selectTopicsForExerciseDay({
+    topicSummaries: [marked, planned, done],
+    maxTopicsPerDay: 3,
+    dayIndex: 0,
     generationNumber: 1,
-    topicUsageCounts: usageCounts,
-    markedTopicUsageLimit: 2,
-  }));
-  assert.equal(plan.flat().filter((topic) => topic === marked.topic).length, 2);
-  assert.ok(plan.every((topics) => topics.length === 1));
+  });
+  assert.deepEqual(topics, [done.topic]);
 });

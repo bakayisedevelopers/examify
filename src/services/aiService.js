@@ -135,8 +135,8 @@ const buildPrompt = ({
   subject = 'Mathematics',
   completedTopics = [],
   eligibleTopics = completedTopics,
-  markedTopicSuggestions = [],
-  markedTopicUsageLimits = {},
+  completedTopicCount = completedTopics.length,
+  excludedCompletedTopicCount = 0,
   tutorReports = [],
   pastMarks = [],
   questionPaperMetadata = [],
@@ -158,8 +158,8 @@ You are Examifying's ${subject} exercise recommendation assistant for South Afri
 
 Business rules:
 - Recommend ${subject} only.
-- Use only topics listed in Eligible topics. Topics marked done through a completed lesson are eligible. A topic recorded from marking but not attended is eligible only when its 28-day average understanding score is at least 0.7 (70%).
-- Marked-only topics are suggestions, not completed lesson topics. Use each marked-only topic no more than its limit in Marked-topic usage limits across this entire seven-day generation; the limit is two uses per marked-only topic.
+- Use only topics listed in Eligible topics. Every eligible topic must come from a completed, attended lesson. Do not include topics from planned lessons or topics created only by marking/review.
+- Topics without an analyzed question index are excluded from Eligible topics. They still count toward the required question count, so use the eligible analyzed topics to fill those question slots.
 - Prefer references to question papers and question numbers instead of rewriting full question text.
 - Consider grade, region, tutor reports, tutor notes, topic-based question metadata, question paper metadata, stored question indexes, and past marks.
 - Return a compact JSON object with a top-level key called "recommendations".
@@ -192,8 +192,8 @@ Subject: ${subject}
 Generation mode: ${mode}
 Completed topics: ${JSON.stringify(completedTopics)}
 Eligible topics for this generation: ${JSON.stringify(eligibleTopics)}
-Marked-only topic suggestions (score scale is 0 to 1): ${JSON.stringify(markedTopicSuggestions)}
-Marked-topic usage limits across this seven-day generation: ${JSON.stringify(markedTopicUsageLimits)}
+Completed lesson topic count used for the per-exercise question quota: ${completedTopicCount}
+Completed lesson topics excluded because they lack analyzed question indexes: ${excludedCompletedTopicCount}
 Tutor reports: ${JSON.stringify(tutorReports)}
 Tutor notes: ${tutorNotes}
 Past marks: ${JSON.stringify(pastMarks)}
@@ -217,23 +217,27 @@ Maximum question references in one exercise: ${maxQuestionsPerDay}
 Maximum exercise documents per date: ${maxExercisesPerDay}
 
 Additional mandatory generation rules:
+- Exact question count is mandatory for every planned exercise date. For each date where exerciseCount is 1, return exactly requiredCount question objects, with one question for every topic slot. Never reduce the count because there are fewer metadata-backed topics or not enough unique questions.
+- If the topic slots repeat a topic because some completed topics lack analyzed metadata, choose separate indexed questions for that topic when available. If the index contains only one matching question for a repeated topic slot, repeat that exact indexed reference to preserve the required count.
+- If a topic has no unused distinct indexed question left for another date in this same generation, reuse an exact indexed question for that same topic on a different date. Keep the repeated question as a separate question object in that date's exercise. Never omit a question slot.
+- Eligible topics are limited to those taught in completed, attended lessons. Do not use topics from scheduled/planned lessons or marking-only records.
 - All structured understandingLevel values in lesson history and topic summaries use a normalized ratio from 0 to 1, where 0 means no demonstrated understanding and 1 means full understanding. Interpret these values only on that scale; a percentage is the ratio multiplied by 100. Tutor report notes may show the same understanding as a human-readable percentage; divide that percentage by 100 before comparing it with structured understandingLevel values. Never interpret understanding as a 0-to-10 or 0-to-100 stored score.
 - Follow Question-plan rules.perDayTopics. Return exactly one recommendation object for each date with exerciseCount 1, and place every planned topic question for that date inside that object's questions array.
-- requiredCount is the number of questions inside that one exercise document, not the number of exercise documents. The array must contain exactly that number and one question for each planned topic.
+- requiredCount is the number of questions inside that one exercise document, not the number of exercise documents. The array must contain exactly that number and one question for each planned topic slot, including repeated topic slots where required.
 - Return no unplanned exercise documents, no extra questions, and no missing questions. When exerciseCount is zero, return no recommendation for that date.
 - Each question object is one indexed question reference and one topic. Each parent recommendation is one exercise document for the date, even when its questions come from different topics or question papers.
 - Never return more than Maximum exercise documents per date. The frontend validates parent document counts and nested question counts separately and rejects the entire plan if either is short or over.
-- Each question reference must belong to an eligible topic, and marked-only topics must follow the stated per-topic usage limit across all seven dates.
+- Each question reference must belong to one of the completed-lesson topics planned for its date.
 - Choose questions from Topic-based source metadata first. For each topic, prefer using questions from at least two different papers when available.
 - Do not use a question for a topic unless that question appears under that exact topic in Topic-based source metadata.
 - Return exactly one question reference for each question object, without ranges like "1.1.3 - 1.1.5".
-- For both initial and weekly modes, follow the exact daily topic slots in the plan; use each planned topic once for that date.
+- For both initial and weekly modes, follow the exact daily topic slots in the plan. Use distinct topics when there are enough metadata-backed completed topics; repeat topic slots when needed to match the required question count.
 - When more than three topics are available, bias selections toward higher understanding topics, while still occasionally including lower understanding topics.
 - Only use the selected source papers and include their exact ids in paperId.
 - Use only questions from the stored source paper question indexes. Do not invent question numbers.
-- Each completed topic has up to four matching analyzed paper sources in Topic-based source metadata. Use those sources to find enough indexed questions for every planned slot.
+- Each completed lesson topic has up to four matching analyzed paper sources in Topic-based source metadata. Use those sources to find enough indexed questions for every planned slot.
 - Preserve the generation-history restriction: prefer matching papers not used in the recent generation summaries and use a recent paper only when fewer than four matching unused papers are available for that topic. Avoid exact questions from the last 28 days while there are enough distinct indexed questions for that topic.
-- If the available distinct indexed questions are still insufficient to fill every planned slot, repeat an exact indexed question for that same topic on a different assignment date as the final fallback. Do not repeat a question twice on the same date. Repetition is not a reason to omit a planned slot: always return the exact required count, and never invent a reference, paper id, or page number.
+- If the available distinct indexed questions are still insufficient to fill every planned slot, repeat an exact indexed question for that same topic on a different assignment date as the final fallback. Repeat within the same date only when a repeated topic slot has no other indexed reference. Repetition is not a reason to omit a planned slot: always return the exact required count, and never invent a reference, paper id, or page number.
 - Use the exact questionReference, paperId, and pageNumber found in the stored question index.
 - Return only the two example fields per recommendation and the four example fields per nested question; the app fills display and linking fields locally.
 - Avoid repeating exact questionReferences from the same paper that appear in Last 28 days exercise history while other distinct indexed questions for that topic remain available.
