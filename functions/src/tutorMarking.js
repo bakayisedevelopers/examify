@@ -373,7 +373,7 @@ export const saveTutorExerciseScore = onCall({ cpu: 'gcf_gen1' }, async (request
   return { topic: String(topic).trim(), understandingLevel: average, exerciseId, score };
 });
 
-export const removeCompletedTopicFromLesson = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+export const removeCompletedTopicFromLesson = onCall({ cpu: 'gcf_gen1', maxInstances: 1, concurrency: 1 }, async (request) => {
   const uid = request.auth?.uid;
   const { studentId, subjectInstanceId, lessonId, subject, topic } = request.data ?? {};
   const topicName = String(topic ?? '').trim();
