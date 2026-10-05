@@ -1,2 +1,2 @@
-export const LEGAL_POLICY_VERSION = '2026-10-04';
-export const LEGAL_POLICY_EFFECTIVE_DATE = '4 October 2026';
+export const LEGAL_POLICY_VERSION = '2026-10-05';
+export const LEGAL_POLICY_EFFECTIVE_DATE = '5 October 2026';

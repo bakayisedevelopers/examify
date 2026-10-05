@@ -89,19 +89,19 @@ export const LandingPage = () => {
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-lime-400 opacity-75"></span>
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-lime-400"></span>
               </span>
-              The 70 - 20 - 10 Mathematics Platform
+              Designed to help students get 60%+ in exams
             </div>
 
             <h1 className="text-4xl font-black tracking-tight text-white sm:text-5xl lg:text-6xl leading-[1.08]">
-              Master Mathematics through{' '}
+              Get{' '}
               <span className="bg-gradient-to-r from-lime-300 via-lime-400 to-emerald-400 bg-clip-text text-transparent underline decoration-lime-400/30 decoration-wavy underline-offset-8">
-                daily practice
+                60%+
               </span>
-              , peer review & tutor guidance.
+              {' '}in your Mathematics exams.
             </h1>
 
             <p className="max-w-2xl text-lg text-slate-300 font-normal leading-relaxed">
-              Examifying structures your high school Mathematics routine using the proven 70-20-10 learning framework. Practice daily on paper, review peers to sharpen your eye, and let your dedicated tutor guide your syllabus roadmap.
+              Examifying is designed to help students get 60%+ in their exams through focused Mathematics practice, tutor guidance, and structured preparation.
             </p>
 
             <div className="flex flex-wrap items-center gap-4 pt-2">
@@ -486,7 +486,7 @@ export const LandingPage = () => {
               </div>
             </div>
             <p className="max-w-md text-sm text-slate-400 leading-relaxed">
-              Structured daily Mathematics learning for South African high school students, powered by the 70-20-10 methodology, dedicated tutors, and peer marking.
+              Designed to help students get 60%+ in their exams through focused Mathematics practice and tutor guidance.
             </p>
           </div>
 

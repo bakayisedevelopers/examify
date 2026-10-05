@@ -44,7 +44,7 @@ export const RouteDocumentTitle = () => {
 
   useEffect(() => {
     if (pathname === '/') {
-      document.title = 'Examifying';
+      document.title = 'Examifying | Get 60%+ in Your Exams';
       return;
     }
     const pathRole = pathname.split('/').filter(Boolean)[0];

@@ -256,12 +256,21 @@ export const PoliciesPage = () => {
             {' '}or email <a className={externalLinkClass} href="mailto:POPIAComplaints@inforegulator.org.za">POPIAComplaints@inforegulator.org.za</a>.
           </p>
 
-          <h3 className="font-semibold text-slate-900">9. Browser storage and notifications</h3>
+          <h3 className="font-semibold text-slate-900">9. Browser storage, cookies, and notifications</h3>
           <p className="text-slate-600">
-            The app uses browser storage and Firebase authentication to maintain your signed-in session and application
-            state. If you enable browser notifications, the browser and Firebase Cloud Messaging create a device token
-            that we store to deliver service notifications. You can revoke notification permission in your browser or
-            device settings. The current application does not include an advertising analytics SDK.
+            Examifying does not currently set first-party browser cookies or use analytics or advertising trackers. Firebase
+            Authentication uses necessary browser storage, such as IndexedDB or local storage where supported, to keep you
+            signed in and complete authentication securely. Examifying also stores your cookie preference on this device so
+            the consent prompt does not appear on every visit. These necessary functions cannot be disabled in the app.
+            Google sign-in and Paystack checkout use provider-hosted flows; any storage or cookies used on Google or
+            Paystack domains are governed by those providers' own privacy information.
+          </p>
+          <p className="text-slate-600">
+            If you enable browser notifications, the browser and Firebase Cloud Messaging create a device token that we
+            store to deliver service notifications. You can revoke notification permission in your browser or device
+            settings. The app currently has no optional analytics or advertising storage categories. Use the Cookie
+            Preferences control available throughout Examifying to review or change the saved choice; for signed-in users,
+            the preference is also recorded on their account.
           </p>
 
           <h3 className="font-semibold text-slate-900">10. Marketing and service messages</h3>
