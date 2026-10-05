@@ -3332,6 +3332,9 @@ export const getTutorAssignedStudentContexts = async (tutorId) => {
       assignmentId: item.id, assignmentPeriodId: item.id,
       accessRole: isPrimaryTutor ? 'co-owner' : episode.staffByUid?.[tutorId] ?? 'viewer',
       isPrimaryTutor,
+      activeSubjectPlanId: episode.lessonQuota?.planId || episode.planId || episode.subscriptionPlanId || null,
+      activeSubjectRenewalDate: episode.lessonQuota?.renewalDate || episode.renewalDate || episode.subscriptionRenewalDate || null,
+      activeSubjectWindowStartAt: episode.lessonQuota?.windowStartAt || episode.entitlementWindowStartAt || episode.subscriptionStartAt || null,
       lessonQuota: episode.lessonQuota ?? null,
     };
   });

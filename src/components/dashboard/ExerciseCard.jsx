@@ -2,6 +2,7 @@ import { CalendarDays, Lock, FileText } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { SubmissionUpload } from './SubmissionUpload';
+import { ExerciseStatusBadges } from './ExerciseStatusBadges';
 import { deleteExerciseSubmissionFiles, uploadSubmissionImages, uploadTutorMarkedWork } from '../../services/storageService';
 import { getQuestionPapersByIds, saveTutorMarkedExercise } from '../../services/firestoreService';
 import { MarkingCanvas as ImageEditor } from '../canvas/pictureEditorCanvas';
@@ -102,7 +103,7 @@ export const ExerciseCard = ({ exercise, availability, paymentLocked, studentId,
           <CalendarDays className="h-4 w-4" />
           {exercise.assignmentDate}
         </span>
-        <span className="rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">{availability.label}</span>
+        <ExerciseStatusBadges exercise={exercise} />
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <h3 className="text-2xl font-bold text-slate-950">{exercise.title}</h3>

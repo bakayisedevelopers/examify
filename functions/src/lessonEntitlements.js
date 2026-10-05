@@ -19,8 +19,6 @@ const MAX_SESSION_MUTATIONS = 100;
 
 const userRef = (db, uid) => db.collection(USERS).doc(uid);
 const subjectRef = (db, studentId, subjectInstanceId) => userRef(db, studentId).collection('subjects').doc(subjectInstanceId);
-const subscriptionRef = (db, studentId) => userRef(db, studentId).collection('subscriptions').doc('current');
-const paymentRef = (db, studentId, reference) => userRef(db, studentId).collection('payments').doc(reference);
 const requireUid = (request) => {
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError('unauthenticated', 'Sign in before managing lessons.');
@@ -123,28 +121,46 @@ export const getActiveSubjectLessonQuotaUpdates = async ({
   }));
 };
 
-const assertVerifiedActiveSubscription = ({ subscription, payment, studentId, now = new Date() }) => {
-  if (!subscription || subscription.status !== 'active' || !['circle', 'personalized'].includes(subscription.planId)) {
-    throw new HttpsError('failed-precondition', 'An active paid subscription is required to schedule this lesson.');
+const assertActiveSubjectLessonEntitlement = ({ episode, sessionMode, now = new Date() }) => {
+  const existingQuota = episode?.lessonQuota;
+  const planId = existingQuota?.planId || episode?.planId || episode?.subscriptionPlanId;
+  if (!episode || episode.status !== 'active' || !['circle', 'personalized'].includes(planId)) {
+    throw new HttpsError('failed-precondition', 'This active subject does not have a schedulable paid lesson plan.');
   }
-  const renewalDate = timestampToDate(subscription.renewalDate);
+  let quote;
+  try {
+    quote = calculateSubscriptionQuote({ planId, billingPeriod: 'monthly', subjectCount: 1 });
+  } catch {
+    throw new HttpsError('failed-precondition', 'The active subject lesson plan is invalid.');
+  }
+  const renewalDate = timestampToDate(existingQuota?.renewalDate || episode.renewalDate || episode.subscriptionRenewalDate);
   if (!renewalDate || renewalDate <= now) {
     throw new HttpsError('failed-precondition', 'This subscription window has ended. Renew the plan before scheduling another lesson.');
   }
-  if (!subscription.latestReference) throw new HttpsError('failed-precondition', 'A verified subscription payment is required to schedule lessons.');
-  let quote;
-  try {
-    quote = calculateSubscriptionQuote(subscription);
-  } catch {
-    throw new HttpsError('failed-precondition', 'The active subscription selection is invalid.');
+  if (!quote.allowedSessionModes.includes(sessionMode)) {
+    throw new HttpsError('failed-precondition', `${quote.planName} does not allow ${sessionMode === 'group' ? 'group' : 'one-on-one'} lessons.`);
   }
-  if (!payment || payment.status !== 'success' || payment.studentId !== studentId
-    || payment.reference !== subscription.latestReference || payment.planId !== quote.planId
-    || payment.billingPeriod !== quote.billingPeriod || Number(payment.subjectCount) !== quote.subjectCount
-    || Number(payment.amount) !== quote.amount || payment.currency !== quote.currency) {
-    throw new HttpsError('failed-precondition', 'A matching successful subscription payment is required to schedule lessons.');
-  }
-  return { quote, windowStartAt: resolveWindowStart(subscription, quote, payment.paidAt), renewalDate };
+  const windowStartAt = timestampToDate(existingQuota?.windowStartAt || episode.entitlementWindowStartAt || episode.subscriptionStartAt)
+    || new Date(renewalDate.getTime() - quote.billingCycleDays * 86400000);
+  const cycleId = existingQuota?.cycleId || episode.subscriptionCycleId || `subject-renewal-${renewalDate.getTime()}`;
+  const renewalTimestamp = admin.firestore.Timestamp.fromDate(renewalDate);
+  const windowStartTimestamp = admin.firestore.Timestamp.fromDate(windowStartAt);
+  const subscription = {
+    planId,
+    billingPeriod: 'monthly',
+    subjectCount: 1,
+    renewalDate: renewalTimestamp,
+    entitlementWindowStartAt: windowStartTimestamp,
+    activatedAt: windowStartTimestamp,
+    latestReference: cycleId,
+  };
+  const lessonQuota = existingQuota?.version === 1
+    ? existingQuota
+    : buildSubjectLessonQuota({
+      subscription, quote, windowStartAt: windowStartTimestamp,
+      renewalDate: renewalTimestamp, cycleId,
+    });
+  return { subscription, quote, windowStartAt: windowStartTimestamp, renewalDate: renewalTimestamp, lessonQuota };
 };
 
 const assertDateWithinWindow = ({ lessonDate, windowStartAt, renewalDate, now = new Date(), allowPast = false }) => {
@@ -302,7 +318,6 @@ const scheduleLessons = async ({ request, sessionStatus }) => {
       subjectInstanceId,
       studentRef: userRef(db, studentId),
       episodeRef: subjectRef(db, studentId, subjectInstanceId),
-      subscriptionRef: subscriptionRef(db, studentId),
       lessonRef: subjectRef(db, studentId, subjectInstanceId).collection('lessons').doc(documentIdForOperation(operationId, studentId)),
     };
   });
@@ -311,23 +326,20 @@ const scheduleLessons = async ({ request, sessionStatus }) => {
   }
 
   const rows = await db.runTransaction(async (transaction) => {
-    const initialRefs = [actorRef, ...contexts.flatMap((context) => [context.studentRef, context.episodeRef, context.subscriptionRef, context.lessonRef])];
+    const initialRefs = [actorRef, ...contexts.flatMap((context) => [context.studentRef, context.episodeRef, context.lessonRef])];
     const initialSnapshots = await Promise.all(initialRefs.map((ref) => transaction.get(ref)));
     const snapshotByPath = new Map(initialRefs.map((ref, index) => [ref.path, initialSnapshots[index]]));
     const actorSnapshot = snapshotByPath.get(actorRef.path);
     const actor = actorSnapshot.exists ? actorSnapshot.data() : null;
     const idempotentRows = [];
-    const payments = new Map();
-    const subs = new Map();
     const episodeData = new Map();
     const studentData = new Map();
     for (const context of contexts) {
       const studentSnapshot = snapshotByPath.get(context.studentRef.path);
       const episodeSnapshot = snapshotByPath.get(context.episodeRef.path);
-      const subscriptionSnapshot = snapshotByPath.get(context.subscriptionRef.path);
       const existingLesson = snapshotByPath.get(context.lessonRef.path);
-      if (!studentSnapshot.exists || !episodeSnapshot.exists || !subscriptionSnapshot.exists) {
-        throw new HttpsError('failed-precondition', 'The student’s active subject or subscription could not be found.');
+      if (!studentSnapshot.exists || !episodeSnapshot.exists) {
+        throw new HttpsError('failed-precondition', 'The student or active subject could not be found.');
       }
       const student = { uid: context.studentId, ...studentSnapshot.data() };
       const episode = episodeSnapshot.data();
@@ -338,9 +350,6 @@ const scheduleLessons = async ({ request, sessionStatus }) => {
       }
       studentData.set(context.studentId, student);
       episodeData.set(context.studentId, { ref: context.episodeRef, snapshot: episodeSnapshot, data: episode });
-      const subscription = subscriptionSnapshot.data();
-      subs.set(context.studentId, subscription);
-      if (subscription.latestReference) payments.set(context.studentId, paymentRef(db, context.studentId, subscription.latestReference));
       if (existingLesson.exists) {
         const existing = existingLesson.data();
         const statusMatches = sessionStatus === 'lesson_log_pending'
@@ -364,34 +373,23 @@ const scheduleLessons = async ({ request, sessionStatus }) => {
       return idempotentRows;
     }
 
-    const paymentRefs = [...payments.values()];
-    const paymentSnapshots = paymentRefs.length ? await Promise.all(paymentRefs.map((ref) => transaction.get(ref))) : [];
-    const paymentByPath = new Map(paymentRefs.map((ref, index) => [ref.path, paymentSnapshots[index]]));
     const quotaByStudent = new Map();
-    const subscriptionContextByStudent = new Map();
     for (const context of contexts) {
-      const subscription = subs.get(context.studentId);
-      const reference = subscription.latestReference;
-      const paymentSnapshot = reference ? paymentByPath.get(paymentRef(db, context.studentId, reference).path) : null;
-      const payment = paymentSnapshot?.exists ? paymentSnapshot.data() : null;
-      const verified = assertVerifiedActiveSubscription({ subscription, payment, studentId: context.studentId, now: now.toDate() });
-      if (!verified.quote.allowedSessionModes.includes(sessionMode)) {
-        throw new HttpsError('failed-precondition', `${verified.quote.planName} does not allow ${sessionMode === 'group' ? 'group' : 'one-on-one'} lessons.`);
-      }
+      const episode = episodeData.get(context.studentId).data;
+      const entitlement = assertActiveSubjectLessonEntitlement({ episode, sessionMode, now: now.toDate() });
       assertDateWithinWindow({
-        lessonDate: input.lessonDate, windowStartAt: verified.windowStartAt,
-        renewalDate: verified.renewalDate, now: now.toDate(), allowPast: sessionStatus === 'lesson_log_pending',
+        lessonDate: input.lessonDate, windowStartAt: entitlement.windowStartAt,
+        renewalDate: entitlement.renewalDate, now: now.toDate(), allowPast: sessionStatus === 'lesson_log_pending',
       });
       const reconciled = await reconcileQuotaLedger({
         transaction,
         episodeRef: episodeData.get(context.studentId).ref,
-        episode: episodeData.get(context.studentId).data,
-        subscriptionContext: verified,
+        episode,
+        subscriptionContext: entitlement,
         now,
       });
       reserveQuota(reconciled.lessonQuota, sessionMode, now);
       quotaByStudent.set(context.studentId, reconciled.lessonQuota);
-      subscriptionContextByStudent.set(context.studentId, verified);
     }
 
     if (sessionMode === 'group' && new Set(contexts.map((context) => episodeData.get(context.studentId).data.grade || '')).size !== 1) {
@@ -400,7 +398,6 @@ const scheduleLessons = async ({ request, sessionStatus }) => {
     const transactionRows = [];
     contexts.forEach((context, index) => {
       const episode = episodeData.get(context.studentId).data;
-      const verified = subscriptionContextByStudent.get(context.studentId);
       const lesson = {
         studentId: context.studentId,
         tutorId: actorId,
@@ -423,7 +420,7 @@ const scheduleLessons = async ({ request, sessionStatus }) => {
         status: sessionStatus,
         completedOn: '',
         scheduleOperationId: operationId,
-        quotaCycleId: makeCycleId(subs.get(context.studentId)),
+        quotaCycleId: quotaByStudent.get(context.studentId).cycleId,
         assignmentPeriodId: context.subjectInstanceId,
         createdAt: now,
         updatedAt: now,
@@ -431,7 +428,6 @@ const scheduleLessons = async ({ request, sessionStatus }) => {
       transaction.set(context.lessonRef, lesson);
       transaction.update(context.episodeRef, { lessonQuota: quotaByStudent.get(context.studentId), updatedAt: now });
       transactionRows[index] = { id: context.lessonRef.id, ...lesson, documentPath: context.lessonRef.path };
-      if (verified.quote.subjectCount < 1) throw new HttpsError('failed-precondition', 'This subscription does not include registered subjects.');
     });
     return transactionRows;
   });
@@ -567,7 +563,7 @@ const updatePlannedGroupRoster = async ({ request }) => {
     const studentId = String(student.studentId);
     const subjectInstanceId = String(student.subjectInstanceId);
     const episodeRef = subjectRef(db, studentId, subjectInstanceId);
-    return { studentId, subjectInstanceId, studentRef: userRef(db, studentId), episodeRef, subscriptionRef: subscriptionRef(db, studentId), lessonRef: episodeRef.collection('lessons').doc() };
+    return { studentId, subjectInstanceId, studentRef: userRef(db, studentId), episodeRef, lessonRef: episodeRef.collection('lessons').doc() };
   });
   const now = admin.firestore.Timestamp.now();
   return db.runTransaction(async (transaction) => {
@@ -597,7 +593,7 @@ const updatePlannedGroupRoster = async ({ request }) => {
       }),
       ...newContexts.map((context) => [context.episodeRef.id, context.episodeRef]),
     ]).values()];
-    const newStudentRefs = newContexts.flatMap((context) => [context.studentRef, context.subscriptionRef, context.lessonRef]);
+    const newStudentRefs = newContexts.flatMap((context) => [context.studentRef, context.lessonRef]);
     const readRefs = [...new Map([...episodeRefs, ...newStudentRefs].map((ref) => [ref.path, ref])).values()];
     const readSnapshots = readRefs.length ? await Promise.all(readRefs.map((ref) => transaction.get(ref))) : [];
     const snapshotByPath = new Map(readRefs.map((ref, index) => [ref.path, readSnapshots[index]]));
@@ -612,35 +608,24 @@ const updatePlannedGroupRoster = async ({ request }) => {
       assertActorCanTeach({ actorId, actor, episode: episodeSnapshot.data(), lesson });
     }
 
-    const paymentRefs = [];
-    const subscriptionByStudent = new Map();
+    const entitlementByStudent = new Map();
     for (const context of newContexts) {
       const studentSnapshot = snapshotByPath.get(context.studentRef.path);
       const episodeSnapshot = snapshotByPath.get(context.episodeRef.path);
-      const subscriptionSnapshot = snapshotByPath.get(context.subscriptionRef.path);
-      if (!studentSnapshot?.exists || !episodeSnapshot?.exists || !subscriptionSnapshot?.exists) throw new HttpsError('failed-precondition', 'A selected student does not have an active subject and subscription.');
+      if (!studentSnapshot?.exists || !episodeSnapshot?.exists) throw new HttpsError('failed-precondition', 'A selected student does not have an active subject.');
       const student = { uid: context.studentId, ...studentSnapshot.data() };
       const episode = episodeSnapshot.data();
       assertTutorEpisodeAccess({ actorId, actor, student, episode, subject });
       if (episode.subjectKey !== subject || String(episode.grade ?? '') !== grade) throw new HttpsError('failed-precondition', 'Added students must match the group’s active subject and grade.');
-      const subscription = subscriptionSnapshot.data();
-      subscriptionByStudent.set(context.studentId, subscription);
-      if (subscription.latestReference) paymentRefs.push(paymentRef(db, context.studentId, subscription.latestReference));
+      entitlementByStudent.set(context.studentId, assertActiveSubjectLessonEntitlement({ episode, sessionMode: 'group', now: now.toDate() }));
     }
-    const paymentSnapshots = paymentRefs.length ? await Promise.all(paymentRefs.map((ref) => transaction.get(ref))) : [];
-    const paymentByPath = new Map(paymentRefs.map((ref, index) => [ref.path, paymentSnapshots[index]]));
     const quotaByStudent = new Map();
     for (const context of newContexts) {
-      const subscription = subscriptionByStudent.get(context.studentId);
-      const paymentSnapshot = subscription.latestReference
-        ? paymentByPath.get(paymentRef(db, context.studentId, subscription.latestReference).path) : null;
-      const payment = paymentSnapshot?.exists ? paymentSnapshot.data() : null;
-      const verified = assertVerifiedActiveSubscription({ subscription, payment, studentId: context.studentId, now: now.toDate() });
-      if (!verified.quote.allowedSessionModes.includes('group')) throw new HttpsError('failed-precondition', `${verified.quote.planName} does not allow group lessons.`);
-      assertDateWithinWindow({ lessonDate: first.lessonDate, windowStartAt: verified.windowStartAt, renewalDate: verified.renewalDate, now: now.toDate() });
+      const entitlement = entitlementByStudent.get(context.studentId);
+      assertDateWithinWindow({ lessonDate: first.lessonDate, windowStartAt: entitlement.windowStartAt, renewalDate: entitlement.renewalDate, now: now.toDate() });
       const reconciled = await reconcileQuotaLedger({
         transaction, episodeRef: context.episodeRef, episode: snapshotByPath.get(context.episodeRef.path).data(),
-        subscriptionContext: verified, now,
+        subscriptionContext: entitlement, now,
       });
       reserveQuota(reconciled.lessonQuota, 'group', now);
       quotaByStudent.set(context.studentId, reconciled.lessonQuota);
@@ -669,7 +654,7 @@ const updatePlannedGroupRoster = async ({ request }) => {
         studentName: episode.studentName || 'Student', lessonDate: first.lessonDate,
         lessonType: first.lessonType || 'online', whatsappLessonLink: first.whatsappLessonLink || '', locationDetails: first.locationDetails || '',
         sessionMode: 'group', groupSessionId, groupStudentCount: nextCount, attendanceStatus: 'pending', attended: null,
-        status: 'planned', completedOn: '', scheduleOperationId: randomUUID(), quotaCycleId: makeCycleId(subscriptionByStudent.get(context.studentId)),
+        status: 'planned', completedOn: '', scheduleOperationId: randomUUID(), quotaCycleId: quotaByStudent.get(context.studentId).cycleId,
         assignmentPeriodId: context.subjectInstanceId, createdAt: now, updatedAt: now,
       };
       transaction.create(context.lessonRef, lesson);

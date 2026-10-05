@@ -4,8 +4,9 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { MarkingCanvas as ImageEditor } from '../../components/canvas/pictureEditorCanvas';
 import { SectionHeader } from '../../components/common/SectionHeader';
+import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
 import { useAuth } from '../../hooks/useAuth';
-import { canOpenExercise, getExerciseAvailability } from '../../utils/exerciseRules';
+import { canOpenExercise } from '../../utils/exerciseRules';
 import {
   generateExercisePlanIfEligible,
   completePeerMarkingAssignment,
@@ -20,9 +21,6 @@ import { uploadPeerReviewImage } from '../../services/storageService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 
 const TodayExerciseCard = ({ exercise, onOpen }) => {
-  const submitted = Boolean(exercise.submittedImageUrl || exercise.submitted === 'Yes');
-  const availability = getExerciseAvailability(exercise.assignmentDate, submitted);
-
   return (
     <button
       type="button"
@@ -32,7 +30,7 @@ const TodayExerciseCard = ({ exercise, onOpen }) => {
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700">{exercise.subject ?? DEFAULT_SUBJECT}</span>
-        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">{availability.label}</span>
+        <ExerciseStatusBadges exercise={exercise} className="justify-end" />
       </div>
       <h3 className="mt-4 text-xl font-bold text-slate-950">{exercise.title}</h3>
       <p className="mt-2 text-sm font-semibold text-accent">{exercise.topic}</p>

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
+import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
 import { useAuth } from '../../hooks/useAuth';
 import { getActiveSubjectsForStudent, getExerciseHistory, getStudentAccessState, getTodayExercise } from '../../services/firestoreService';
-import { getExerciseAvailability } from '../../utils/exerciseRules';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 
 export const StudentExercisesPage = () => {
@@ -55,16 +55,16 @@ export const StudentExercisesPage = () => {
       </div>
       {!paymentCompleted ? <div className="panel p-5 text-sm text-amber-700">Payment is required before exercises unlock.</div> : null}
       <SectionHeader eyebrow="Today" title={todayExercise?.title ?? 'Waiting for today\'s assignment'} description={todayExercise?.instruction ?? 'Once payment and generation criteria are complete, today’s exercise will appear here.'} />
+      {todayExercise ? <div className="panel p-4"><ExerciseStatusBadges exercise={todayExercise} /></div> : null}
       <div className="grid gap-4">
         {history.map((exercise) => {
-          const availability = getExerciseAvailability(exercise.assignmentDate, exercise.submitted);
           return (
             <div key={exercise.id} className="panel flex items-center justify-between p-5">
               <div>
                 <p className="font-semibold text-slate-950">{exercise.title}</p>
                 <p className="mt-1 text-sm text-slate-500">{exercise.assignmentDate}</p>
               </div>
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-600">{availability.label}</span>
+              <ExerciseStatusBadges exercise={exercise} className="justify-end" />
             </div>
           );
         })}

@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'reac
 import { LoaderCircle } from 'lucide-react';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
+import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
 import { useAuth } from '../../hooks/useAuth';
 import {
   generateExercisePlanIfEligible,
@@ -408,7 +409,7 @@ export const TutorStudentDetailsPage = () => {
       <div className="flex items-start justify-between gap-4"><div><h2 id="student-details-title" className="text-xl font-semibold text-slate-950">Student details and lessons</h2><p className="mt-1 text-sm text-slate-500">{subject}</p></div><button type="button" className="btn-secondary inline-flex items-center" aria-label="Close student details" onClick={() => setIsDetailsOpen(false)}><X className="h-4 w-4" /></button></div>
       <section className="panel p-5">
         <h2 className="text-xl font-semibold text-slate-950">Student details</h2>
-        <p className="mt-2 text-sm text-slate-500">{student?.grade || '?'} • {student?.province || '?'} • {subject} • {student?.paymentCompleted ? 'Paid' : 'Unpaid'}</p>
+        <p className="mt-2 text-sm text-slate-500">{student?.grade || '?'} • {student?.province || '?'} • {subject} • {student?.activeSubjectPlanId === 'personalized' || student?.lessonQuota?.planId === 'personalized' ? 'Personalized plan' : student?.activeSubjectPlanId === 'circle' || student?.lessonQuota?.planId === 'circle' ? 'Circle plan' : 'Lesson plan unavailable'}</p>
       </section>
 
       {canManage ? <section className="panel space-y-4 p-5">
@@ -519,7 +520,8 @@ export const TutorStudentDetailsPage = () => {
                 navigate(`/tutor/exercises/${exercise.id}?${params.toString()}`);
               }} className="min-w-0 flex-1 text-left">
                 <p className="font-semibold text-slate-100">{exercise.title}</p>
-                <p className="text-sm text-slate-400">{exercise.subject} • {exercise.assignmentDate}{exercise.submittedImageUrl || exercise.submitted === 'Yes' ? ' • Submitted' : ''}</p>
+                <p className="text-sm text-slate-400">{exercise.subject} • {exercise.assignmentDate}</p>
+                <ExerciseStatusBadges exercise={exercise} className="mt-2" />
               </button>
               {canManage && canDeleteExercise(exercise) ? <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={() => removeExercise(exercise)} disabled={deletingExerciseId === exercise.id} aria-label={`Delete ${exercise.title}`} title="Delete future exercise">
                 <Trash2 className="h-4 w-4" aria-hidden="true" /> {deletingExerciseId === exercise.id ? 'Deleting...' : 'Delete'}

@@ -3,6 +3,7 @@ import { Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
+import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
 import { useAuth } from '../../hooks/useAuth';
 import { deleteExerciseAssignmentForTutor, getTutorAssignedStudentContexts, getTutorExercisesForAssignedStudents } from '../../services/firestoreService';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
@@ -88,7 +89,7 @@ export const TutorExercisesPage = () => {
                 <p className="mt-2 text-sm text-slate-300">{exercise.topic}</p>
               </div>
             </button>
-            <span className="rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-300">{exercise.submittedImageUrl ? 'Submitted' : 'Not submitted'}</span>
+            <ExerciseStatusBadges exercise={exercise} className="justify-end" />
             {canDeleteExercise(exercise) ? (
               <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={() => removeExercise(exercise)} disabled={deletingExerciseId === exercise.id} aria-label={`Delete ${exercise.title}`} title="Delete future exercise">
                 <Trash2 className="h-4 w-4" aria-hidden="true" /> {deletingExerciseId === exercise.id ? 'Deleting...' : 'Delete'}

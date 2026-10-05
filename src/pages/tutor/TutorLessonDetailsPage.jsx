@@ -99,14 +99,13 @@ export const TutorLessonDetailsPage = () => {
   }, [plannedRequestFingerprint]);
 
   const getStudentLessonBlocker = useCallback((student, mode = sessionMode, date = lessonDate) => {
-    const planId = student.subscriptionPlanId;
-    if (planId === 'free' || student.paymentCompleted === false) return 'An active paid subscription is required.';
-    if (planId && !['circle', 'personalized'].includes(planId)) return 'This student does not have a schedulable subscription plan.';
+    const planId = student.activeSubjectPlanId || student.lessonQuota?.planId || student.subscriptionPlanId;
+    if (!['circle', 'personalized'].includes(planId)) return 'This active subject does not have a schedulable lesson plan.';
     if (planId === 'circle' && mode !== 'group') return 'The Circle plan includes group lessons only.';
     if (planId === 'personalized' && !['group', 'one-on-one'].includes(mode)) return 'This plan does not include the selected lesson format.';
     const quota = student.lessonQuota;
-    const renewalKey = johannesburgDateKey(quota?.renewalDate || student.subscriptionRenewalDate);
-    const startKey = johannesburgDateKey(quota?.windowStartAt || student.entitlementWindowStartAt);
+    const renewalKey = johannesburgDateKey(quota?.renewalDate || student.activeSubjectRenewalDate || student.subscriptionRenewalDate);
+    const startKey = johannesburgDateKey(quota?.windowStartAt || student.activeSubjectWindowStartAt || student.entitlementWindowStartAt);
     if (renewalKey && date >= renewalKey) return 'Choose a date before this student’s subscription renews.';
     if (startKey && date < startKey) return 'Choose a date on or after this student’s subscription activation.';
     const bucket = quota?.[mode === 'group' ? 'group' : 'oneOnOne'];
