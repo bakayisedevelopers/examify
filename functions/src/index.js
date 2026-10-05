@@ -1,6 +1,12 @@
 export {
   initializePaystackTransaction,
   verifyPaystackTransaction,
+  cancelPaystackCheckout,
+  paystackWebhook,
+  processPaystackWebhookEvents,
+  retryAuthorizationRefunds,
+  reconcileUnfinalizedPaystackPayments,
+  getAdminAuthorizationRefundIssues,
   chargeStoredAuthorization,
   manageStudentSubscription,
 } from './paystack.js';
@@ -44,6 +50,13 @@ export {
 } from './gemini.js';
 
 export { resolveTopicsWithGemini } from './topicResolver.js';
+export { getAdminWorkspaceData } from './adminWorkspace.js';
+export {
+  getTutorWhatsAppSettings,
+  saveTutorWhatsAppNumber,
+  saveTutorWhatsAppGroupLink,
+  getAuthorizedLessonWhatsAppAccess,
+} from './whatsappAccess.js';
 export { ensureGlobalTopicGrade, migrateGlobalTopicCatalog } from './globalTopicCatalog.js';
 
 export {

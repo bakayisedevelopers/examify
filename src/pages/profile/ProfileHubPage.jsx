@@ -4,6 +4,7 @@ import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
 import { APP_VERSION, ROLES } from '../../lib/constants';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
+import { ProfileIdentityCard } from '../../components/common/ProfileIdentityCard';
 
 const cardClass = 'panel flex items-center gap-3 p-2.5 transition hover:border-lime-500/40 hover:bg-slate-800/60 md:block md:p-5 md:hover:-translate-y-1 md:hover:shadow-lg';
 
@@ -11,6 +12,9 @@ export const ProfileHubPage = ({ role }) => {
   const { profile, logout } = useAuth();
   const subscriptionState = useStudentSubscriptionState(role === ROLES.STUDENT ? profile : null);
   const basePath = `/${role}/profile`;
+  const roleLabel = role === ROLES.STUDENT
+    ? (subscriptionState?.subscriptionPlanName || 'Checking subscription')
+    : ({ teacher: 'Teacher', tutor: 'Tutor', admin: 'Admin', parent: 'Parent' }[role] || 'Account');
   const items = [
     { to: `${basePath}/details`, label: 'Personal details', description: 'Update your name, password, and profile information.', icon: UserRound },
     ...(role !== ROLES.STUDENT || subscriptionState?.paymentCompleted ? [{ to: `${basePath}/subjects`, label: 'Subjects', description: role === ROLES.TUTOR ? 'Upload marks proof to add approved teaching subjects.' : 'Manage the subjects attached to your account.', icon: BookOpen }] : []),
@@ -22,6 +26,7 @@ export const ProfileHubPage = ({ role }) => {
 
   return (
     <AppShell title="Profile" subtitle="Manage account details, subjects, billing, legal links, and settings." role={role} user={profile} onLogout={logout}>
+      <ProfileIdentityCard account={profile} roleLabel={roleLabel} />
       <div className="grid gap-2 md:gap-4 md:grid-cols-2 xl:grid-cols-3">
         {items.map(({ to, label, description, icon: Icon }) => (
           <Link key={to} to={to} className={cardClass}>

@@ -674,7 +674,7 @@ const TopicPicker = ({ topicOptions, selectedTopic, setSelectedTopic, addTopic, 
       </label>
       <button type="button" className="btn-secondary self-end" onClick={addTopic} disabled={disabled || !selectedTopic}>Add topic</button>
     </div>
-    {topics.length ? <ul className="flex flex-wrap gap-2">{topics.map((topic) => <li key={topic} className="inline-flex items-center gap-2 rounded-md border border-lime-700/20 bg-lime-50 px-3 py-2 text-sm font-medium text-slate-800"><span>{topic}</span>{!disabled ? <button type="button" className="text-rose-700 hover:text-rose-900" aria-label={`Remove ${topic}`} onClick={() => removeTopic(topic)}>×</button> : null}</li>)}</ul> : null}
+    {topics.length ? <ul className="flex flex-wrap gap-2">{topics.map((topic) => <li key={topic} className="inline-flex items-center gap-2 rounded-md border border-lime-500/40 bg-lime-100 px-3 py-2 text-sm font-medium text-slate-900"><span>{topic}</span>{!disabled ? <button type="button" className="text-rose-800 hover:text-rose-950" aria-label={`Remove ${topic}`} onClick={() => removeTopic(topic)}>×</button> : null}</li>)}</ul> : null}
   </div>
 );
 

@@ -3,10 +3,11 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { SubscriptionLifecyclePanel } from '../../components/billing/SubscriptionLifecyclePanel';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
+import { AuthorizationChargeDisclosure } from '../../components/billing/AuthorizationChargeDisclosure';
 import { useAuth } from '../../hooks/useAuth';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
 import { generateExercisePlanIfEligible, getActiveSubjectsForStudent, getStudentAccessState } from '../../services/firestoreService';
-import { initializeSubscriptionPayment, verifySubscriptionPayment } from '../../services/paymentsService';
+import { cancelSubscriptionPaymentCheckout, initializeSubscriptionPayment, verifySubscriptionPayment } from '../../services/paymentsService';
 import { refreshStudentSubscriptionState, setStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
 
 export const StudentBillingPage = () => {
@@ -18,6 +19,8 @@ export const StudentBillingPage = () => {
   const [status, setStatus] = useState('');
   const [isVerifyingPayment, setIsVerifyingPayment] = useState(false);
   const [isStartingSubscription, setIsStartingSubscription] = useState(false);
+  const [pendingAuthorizationCheckout, setPendingAuthorizationCheckout] = useState(null);
+  const [isCancellingAuthorizationCheckout, setIsCancellingAuthorizationCheckout] = useState(false);
 
   const lastVerifiedReferenceRef = useRef(null);
   const params = new URLSearchParams(location.search);
@@ -46,13 +49,19 @@ export const StudentBillingPage = () => {
     }
   };
 
-  const completeStudentAccessFlow = useCallback(async (reference) => {
+  const completeStudentAccessFlow = useCallback(async (reference, verification = null) => {
     const refreshedProfile = await refreshProfile(profile?.uid);
     const activeProfile = refreshedProfile || profile;
-    await refreshStudentSubscriptionState(activeProfile);
+    const refreshedSubscription = await refreshStudentSubscriptionState(activeProfile);
+    if (!refreshedSubscription?.paidSubscriptionActive) {
+      throw new Error(`Paystack verified payment ${reference}, but subscription activation is still being finalized. Retry verification from this page; do not pay again.`);
+    }
+    const authorizationNote = verification?.authorizationOnly
+      ? ` R1.00 was temporarily charged for card authorization; the automatic refund request is ${verification.refundStatus || 'pending'}${verification.nextBillingDate ? `. The next actual charge is expected ${new Date(verification.nextBillingDate).toLocaleDateString()} for R${Number(verification.nextBillingAmount || 0).toFixed(2)}` : (verification.noNextChargeWhileOfferApplies ? '. This offer has no paid renewal while it remains active' : '')}.${verification.manualPaymentRequired ? ' Paystack did not provide a reusable authorization, so the next payment will need to be completed manually.' : ''}`
+      : '';
     const subjects = await getActiveSubjectsForStudent(activeProfile.uid);
     if (!subjects.length) {
-      setStatus('Payment verified successfully. Choose your registered subjects to start the Examifying Program.');
+      setStatus(`Payment verified and subscription activated. Choose your registered subjects to start the Examifying Program.${authorizationNote}`);
       return;
     }
 
@@ -75,9 +84,9 @@ export const StudentBillingPage = () => {
     const generatedSubjects = outcomes.filter((outcome) => outcome.generated).map((outcome) => outcome.subject);
     const waitingSubjects = outcomes.filter((outcome) => outcome.waiting).map((outcome) => outcome.subject);
     if (generatedSubjects.length) {
-      setStatus(`Payment verified. Initial exercise generation started for ${generatedSubjects.join(', ')}.${waitingSubjects.length ? ` Still waiting on requirements for ${waitingSubjects.join(', ')}.` : ''}`);
+      setStatus(`Payment verified and subscription activated. Initial exercise generation started for ${generatedSubjects.join(', ')}.${waitingSubjects.length ? ` Still waiting on requirements for ${waitingSubjects.join(', ')}.` : ''}${authorizationNote}`);
     } else {
-      setStatus(`Payment verified successfully. Initial exercise generation is waiting for the remaining requirements${waitingSubjects.length ? ` for ${waitingSubjects.join(', ')}` : ''}.`);
+      setStatus(`Payment verified and subscription activated. Initial exercise generation is waiting for the remaining requirements${waitingSubjects.length ? ` for ${waitingSubjects.join(', ')}` : ''}.${authorizationNote}`);
     }
   }, [profile, refreshProfile]);
 
@@ -112,6 +121,8 @@ export const StudentBillingPage = () => {
         setStatus(result.renewalCancelled
           ? `Your ${result.quote.planName} subscription remains active until ${formatRenewalDate(result.renewalDate)}. Resume renewal in subscription management to keep it after that date.`
           : `Your ${result.quote.planName} subscription is already active.`);
+      } else if (result.requiresAuthorizationDisclosure && result.authorizationUrl) {
+        setPendingAuthorizationCheckout(result);
       } else if (result.authorizationUrl) {
         window.location.href = result.authorizationUrl;
       } else {
@@ -121,6 +132,29 @@ export const StudentBillingPage = () => {
       setStatus(error?.message || 'Could not start subscription checkout.');
     } finally {
       setIsStartingSubscription(false);
+    }
+  };
+
+  const cancelAuthorizationCheckout = async () => {
+    if (!pendingAuthorizationCheckout?.reference || !profile?.uid) return;
+    setIsCancellingAuthorizationCheckout(true);
+    try {
+      const result = await cancelSubscriptionPaymentCheckout({ studentId: profile.uid, reference: pendingAuthorizationCheckout.reference });
+      if (result.paymentSucceeded) {
+        const verification = await verifySubscriptionPayment(pendingAuthorizationCheckout.reference, profile.uid);
+        if (verification?.status === 'success') {
+          await completeStudentAccessFlow(pendingAuthorizationCheckout.reference, verification);
+          setPendingAuthorizationCheckout(null);
+          navigate(location.pathname, { replace: true });
+          return;
+        }
+      }
+      setPendingAuthorizationCheckout(null);
+      setStatus('Checkout closed. If you did not complete the Paystack payment, the reserved discount will be released after Paystack confirms the transaction was abandoned.');
+    } catch (error) {
+      setStatus(error?.message || 'Could not close the pending checkout.');
+    } finally {
+      setIsCancellingAuthorizationCheckout(false);
     }
   };
 
@@ -153,7 +187,7 @@ export const StudentBillingPage = () => {
           return;
         }
 
-        await completeStudentAccessFlow(reference);
+        await completeStudentAccessFlow(reference, verification);
 
         navigate(location.pathname, { replace: true });
       } catch (error) {
@@ -199,6 +233,12 @@ export const StudentBillingPage = () => {
           }}
         />
       ) : null}
+      <AuthorizationChargeDisclosure
+        checkout={pendingAuthorizationCheckout}
+        isCancelling={isCancellingAuthorizationCheckout}
+        onContinue={() => { if (pendingAuthorizationCheckout?.authorizationUrl) window.location.assign(pendingAuthorizationCheckout.authorizationUrl); }}
+        onCancel={cancelAuthorizationCheckout}
+      />
       {subscriptionState ? <SubscriptionPlanSelector key={`${initialSelection.planId}-${initialSelection.billingPeriod}-${initialSelection.subjectCount}-${initialSelection.discountCode}`} onContinue={handleContinue} isSubmitting={isStartingSubscription || isVerifyingPayment} initialSelection={initialSelection} initialDiscountCode={initialSelection.discountCode} studentId={profile.uid} mobileSwipe /> : null}
       <div className="mt-5 space-y-3">
         {status ? <div role="status" className="panel p-4 text-sm text-slate-700">{status}</div> : null}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, ChevronDown, LoaderCircle, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { AppShell } from '../components/common/AppShell';
@@ -66,33 +66,71 @@ const inferMetadataFromName = (file, profile) => {
   return { grade, region, subject, year, month, paperNumber };
 };
 
+const makeBulkFileEntry = (file) => ({
+  id: `bulk-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  file,
+});
+
+const pairAvailableBulkMemos = (rows, memoEntries) => {
+  const nextRows = rows.map((row) => ({ ...row }));
+  const remainingMemos = [];
+  memoEntries.forEach((entry) => {
+    let bestRowIndex = -1;
+    let bestScore = 0;
+    nextRows.forEach((row, index) => {
+      if (row.memoFile || row.paperFileId === entry.id) return;
+      const score = overlapScore(row.paperFile, entry.file);
+      if (score > bestScore) {
+        bestScore = score;
+        bestRowIndex = index;
+      }
+    });
+    if (bestRowIndex >= 0) {
+      nextRows[bestRowIndex] = {
+        ...nextRows[bestRowIndex],
+        memoFile: entry.file,
+        memoFileId: entry.id,
+      };
+    } else {
+      remainingMemos.push(entry);
+    }
+  });
+  return { rows: nextRows, memoFiles: remainingMemos };
+};
+
 const buildBulkRows = ({ files, profile }) => {
-  const allFiles = Array.from(files ?? []);
-  const memoFiles = allFiles.filter(isMemoFile);
-  const paperFiles = allFiles.filter((file) => !isMemoFile(file));
+  const allEntries = Array.from(files ?? [], makeBulkFileEntry);
+  const memoEntries = allEntries.filter(({ file }) => isMemoFile(file));
+  const paperEntries = allEntries.filter(({ file }) => !isMemoFile(file));
   const usedMemoIndexes = new Set();
 
-  return paperFiles.map((paperFile, index) => {
+  const rows = paperEntries.map((paperEntry, index) => {
     let bestMemoIndex = -1;
     let bestScore = 0;
-    memoFiles.forEach((memoFile, memoIndex) => {
+    memoEntries.forEach((memoEntry, memoIndex) => {
       if (usedMemoIndexes.has(memoIndex)) return;
-      const score = overlapScore(paperFile, memoFile);
+      const score = overlapScore(paperEntry.file, memoEntry.file);
       if (score > bestScore) {
         bestScore = score;
         bestMemoIndex = memoIndex;
       }
     });
-    const memoFile = bestScore > 0 && bestMemoIndex >= 0 ? memoFiles[bestMemoIndex] : null;
+    const memoEntry = bestScore > 0 && bestMemoIndex >= 0 ? memoEntries[bestMemoIndex] : null;
     if (bestMemoIndex >= 0) usedMemoIndexes.add(bestMemoIndex);
     return {
-      id: `${Date.now()}-${index}-${paperFile.name}`,
-      paperFile,
-      memoFile,
-      ...inferMetadataFromName(paperFile, profile),
+      id: paperEntry.id || `bulk-row-${Date.now()}-${index}`,
+      paperFileId: paperEntry.id,
+      paperFile: paperEntry.file,
+      memoFileId: memoEntry?.id ?? '',
+      memoFile: memoEntry?.file ?? null,
+      ...inferMetadataFromName(paperEntry.file, profile),
       notes: '',
     };
   });
+  return {
+    rows,
+    memoFiles: memoEntries.filter((_, index) => !usedMemoIndexes.has(index)),
+  };
 };
 
 const PaperAnalysisStatus = ({ paper, visible = true }) => {
@@ -165,6 +203,7 @@ export const PastExamPapersPage = () => {
   const [singleForm, setSingleForm] = useState(defaultPaperForm(profile));
   const [bulkRows, setBulkRows] = useState([]);
   const [bulkMemoFiles, setBulkMemoFiles] = useState([]);
+  const bulkAdditionalInputRef = useRef(null);
   const [filters, setFilters] = useState({ subject: 'all', year: 'all' });
   const [adminPaperFilters, setAdminPaperFilters] = useState({
     analyzing: { search: '', subject: 'all', year: 'all' },
@@ -642,14 +681,134 @@ export const PastExamPapersPage = () => {
 
   const handleBulkFiles = (event) => {
     const files = Array.from(event.target.files ?? []);
-    const rows = buildBulkRows({ files, profile });
-    setBulkRows(rows);
-    setBulkMemoFiles(files.filter(isMemoFile));
-    setStatus(rows.length ? `${rows.length} question paper${rows.length === 1 ? '' : 's'} prepared for review.` : 'No question paper files were detected. Include paper files and optional memo files.');
+    const result = buildBulkRows({ files, profile });
+    setBulkRows(result.rows);
+    setBulkMemoFiles(result.memoFiles);
+    event.target.value = '';
+    setStatus(result.rows.length
+      ? `${result.rows.length} question paper${result.rows.length === 1 ? '' : 's'} prepared for review.${result.memoFiles.length ? ` ${result.memoFiles.length} memo file${result.memoFiles.length === 1 ? ' is' : 's are'} available to link.` : ''}`
+      : result.memoFiles.length
+        ? 'No question papers were detected. Memo files are ready to link after you add paper files.'
+        : 'No question paper files were detected. Include paper files and optional memo files.');
   };
 
   const updateBulkRow = (id, patch) => setBulkRows((current) => current.map((row) => row.id === id ? { ...row, ...patch } : row));
-  const removeBulkRow = (id) => setBulkRows((current) => current.filter((row) => row.id !== id));
+  const handleAddMoreBulkFiles = (event) => {
+    const files = Array.from(event.target.files ?? []);
+    if (!files.length) return;
+    const additions = buildBulkRows({ files, profile });
+    const combinedRows = [...bulkRows, ...additions.rows];
+    const candidates = [...bulkMemoFiles, ...additions.memoFiles];
+    const paired = pairAvailableBulkMemos(combinedRows, candidates);
+    setBulkRows(paired.rows);
+    setBulkMemoFiles(paired.memoFiles);
+    event.target.value = '';
+    setStatus(`${additions.rows.length} paper${additions.rows.length === 1 ? '' : 's'} added from the new files and checked by the detector.${paired.memoFiles.length ? ` ${paired.memoFiles.length} memo file${paired.memoFiles.length === 1 ? ' is' : 's are'} available to link.` : ''}`);
+  };
+
+  const changeBulkMemo = (rowId, selectedFileId) => {
+    const targetRow = bulkRows.find((row) => row.id === rowId);
+    if (!targetRow || selectedFileId === targetRow.memoFileId) return;
+
+    let sourceFile = null;
+    let sourceRowId = '';
+    let sourceRole = '';
+    bulkRows.forEach((row) => {
+      if (row.id !== rowId && row.paperFileId === selectedFileId) {
+        sourceFile = row.paperFile;
+        sourceRowId = row.id;
+        sourceRole = 'paper';
+      } else if (row.memoFileId === selectedFileId) {
+        sourceFile = row.memoFile;
+        sourceRowId = row.id === rowId ? '' : row.id;
+        sourceRole = 'memo';
+      }
+    });
+    const pooledEntry = bulkMemoFiles.find((entry) => entry.id === selectedFileId);
+    if (pooledEntry) {
+      sourceFile = pooledEntry.file;
+      sourceRole = 'pool';
+    }
+    if (selectedFileId && !sourceFile) return;
+
+    const nextRows = bulkRows.map((row) => ({ ...row }));
+    const nextPool = [...bulkMemoFiles];
+    const pushMemoToPool = (id, file) => {
+      if (id && file && !nextPool.some((entry) => entry.id === id)) nextPool.push({ id, file });
+    };
+    if (targetRow.memoFileId) pushMemoToPool(targetRow.memoFileId, targetRow.memoFile);
+
+    if (sourceRole === 'pool') {
+      const poolIndex = nextPool.findIndex((entry) => entry.id === selectedFileId);
+      if (poolIndex >= 0) nextPool.splice(poolIndex, 1);
+    } else if (sourceRole === 'memo' && sourceRowId) {
+      const sourceRow = nextRows.find((row) => row.id === sourceRowId);
+      if (sourceRow) {
+        sourceRow.memoFile = null;
+        sourceRow.memoFileId = '';
+      }
+    } else if (sourceRole === 'paper' && sourceRowId) {
+      const sourceRow = nextRows.find((row) => row.id === sourceRowId);
+      if (sourceRow?.memoFileId) pushMemoToPool(sourceRow.memoFileId, sourceRow.memoFile);
+      const sourceIndex = nextRows.findIndex((row) => row.id === sourceRowId);
+      if (sourceIndex >= 0) nextRows.splice(sourceIndex, 1);
+    }
+
+    const nextTarget = nextRows.find((row) => row.id === rowId);
+    if (nextTarget) {
+      nextTarget.memoFile = sourceFile;
+      nextTarget.memoFileId = selectedFileId;
+    }
+    setBulkRows(nextRows);
+    setBulkMemoFiles(nextPool.filter((entry) => entry.id !== selectedFileId));
+  };
+
+  const addBulkMemoFile = (rowId, event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      setStatus(`${file.name} is not a PDF. Memo files must be PDFs.`);
+      return;
+    }
+    const entry = makeBulkFileEntry(file);
+    const row = bulkRows.find((item) => item.id === rowId);
+    if (!row) return;
+    setBulkRows((current) => current.map((item) => item.id === rowId
+      ? { ...item, memoFile: file, memoFileId: entry.id }
+      : item));
+    if (row.memoFileId && row.memoFile) {
+      setBulkMemoFiles((current) => [...current.filter((item) => item.id !== row.memoFileId), { id: row.memoFileId, file: row.memoFile }]);
+    }
+    setStatus(`Memo ${file.name} added for ${row.paperFile.name}. It will not create a separate paper or trigger a second analysis.`);
+  };
+
+  const convertBulkMemoToPaper = (rowId) => {
+    const row = bulkRows.find((item) => item.id === rowId);
+    if (!row?.memoFile || !row.memoFileId) return;
+    const newPaperRow = {
+      id: row.memoFileId,
+      paperFileId: row.memoFileId,
+      paperFile: row.memoFile,
+      memoFileId: '',
+      memoFile: null,
+      ...inferMetadataFromName(row.memoFile, profile),
+      notes: '',
+    };
+    setBulkRows((current) => current.flatMap((item) => item.id === rowId
+      ? [{ ...item, memoFile: null, memoFileId: '' }, newPaperRow]
+      : [item]));
+    setBulkMemoFiles((current) => current.filter((entry) => entry.id !== row.memoFileId));
+    setStatus(`${newPaperRow.paperFile.name} is now a question paper and will be analyzed when the bulk upload is saved.`);
+  };
+
+  const removeBulkRow = (id) => {
+    const row = bulkRows.find((item) => item.id === id);
+    setBulkRows((current) => current.filter((item) => item.id !== id));
+    if (row?.memoFileId && row.memoFile) {
+      setBulkMemoFiles((current) => [...current.filter((entry) => entry.id !== row.memoFileId), { id: row.memoFileId, file: row.memoFile }]);
+    }
+  };
 
   const handleBulkSubmit = async () => {
     if (!bulkRows.length) {
@@ -892,11 +1051,11 @@ export const PastExamPapersPage = () => {
           </form>
         ) : (
           <div className="space-y-4">
-            <label className="block"><span className="label">Bulk files</span><input type="file" className="input" multiple accept=".pdf,application/pdf" onChange={handleBulkFiles} /><span className="mt-1 block text-xs text-slate-500">Select PDF question papers and optional PDF memos together. The app will infer metadata and pair memos by filename similarity before upload.</span></label>
+            <label className="block"><span className="label">Bulk files</span><input type="file" className="input" multiple accept=".pdf,application/pdf" onChange={handleBulkFiles} /><span className="mt-1 block text-xs text-slate-500">Select PDF question papers and optional PDF memos together. The detector checks each file, then pairs likely memos by filename. You can correct the file roles in the table.</span></label>
             {bulkRows.length ? (
               <div className="w-full overflow-hidden rounded-2xl border border-slate-700 bg-slate-900/90">
                 <div className="overflow-x-auto overscroll-x-contain">
-                  <table className="min-w-[1180px] border-collapse text-left text-sm">
+                  <table className="min-w-[1390px] border-collapse text-left text-sm">
                     <thead className="bg-slate-800 text-xs uppercase tracking-[0.2em] text-slate-400">
                       <tr>
                         <th className="w-12 px-4 py-3 font-semibold">#</th>
@@ -910,18 +1069,24 @@ export const PastExamPapersPage = () => {
                         <th className="min-w-40 px-4 py-3 font-semibold">Paper</th>
                         <th className="min-w-64 px-4 py-3 font-semibold">Notes</th>
                         <th className="min-w-48 px-4 py-3 font-semibold">Preview</th>
-                        <th className="min-w-28 px-4 py-3 font-semibold">Action</th>
+                        <th className="min-w-52 px-4 py-3 font-semibold">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800">
-                      {bulkRows.map((row, index) => (
+                      {bulkRows.map((row, index) => {
+                        const memoOptions = [
+                          ...bulkMemoFiles,
+                          ...bulkRows.filter((sourceRow) => sourceRow.memoFileId).map((sourceRow) => ({ id: sourceRow.memoFileId, file: sourceRow.memoFile })),
+                        ].filter((entry, optionIndex, entries) => entry.id && entry.file && entries.findIndex((candidate) => candidate.id === entry.id) === optionIndex);
+                        return (
                         <tr key={row.id} className="align-top">
                           <td className="px-4 py-3 font-semibold text-slate-500">{index + 1}</td>
                           <td className="px-4 py-3"><p className="font-semibold text-slate-950">{row.paperFile.name}</p><p className="mt-1 text-xs text-slate-500">{Math.round((row.paperFile.size || 0) / 1024)} KB</p></td>
                           <td className="px-4 py-3">
-                            <select className="input min-w-52" value={row.memoFile?.name ?? ''} onChange={(event) => updateBulkRow(row.id, { memoFile: bulkMemoFiles.find((file) => file.name === event.target.value) ?? null })}>
+                            <select className="input min-w-52" aria-label={`Memo for ${row.paperFile.name}`} value={row.memoFileId ?? ''} onChange={(event) => changeBulkMemo(row.id, event.target.value)}>
                               <option value="">No memo linked</option>
-                              {bulkMemoFiles.map((memoFile) => <option key={`${row.id}-${memoFile.name}`} value={memoFile.name}>{memoFile.name}</option>)}
+                              {memoOptions.map((entry) => <option key={`${row.id}-${entry.id}`} value={entry.id}>{entry.file.name}{entry.id === row.memoFileId ? ' (linked)' : ' (memo)'}</option>)}
+                              {bulkRows.filter((sourceRow) => sourceRow.id !== row.id).map((sourceRow) => <option key={`${row.id}-paper-${sourceRow.paperFileId}`} value={sourceRow.paperFileId}>{sourceRow.paperFile.name} (currently a paper; selecting moves it to memo)</option>)}
                             </select>
                           </td>
                           <td className="px-4 py-3"><select className="input min-w-52" value={row.subject} onChange={(event) => updateBulkRow(row.id, { subject: event.target.value })}>{visibleSubjects.map((subject) => <option key={subject}>{subject}</option>)}</select></td>
@@ -937,14 +1102,25 @@ export const PastExamPapersPage = () => {
                               <button type="button" className="btn-secondary text-xs" onClick={() => openLocalFilePreview(row.memoFile)} disabled={!row.memoFile}>Open memo</button>
                             </div>
                           </td>
-                          <td className="px-4 py-3"><button type="button" className="btn-secondary text-sm" onClick={() => removeBulkRow(row.id)}>Remove</button></td>
+                          <td className="px-4 py-3">
+                            <div className="flex min-w-48 flex-col items-start gap-2">
+                              <label className="btn-secondary cursor-pointer text-xs">
+                                {row.memoFile ? 'Replace memo file' : 'Upload memo file'}
+                                <input type="file" className="sr-only" accept=".pdf,application/pdf" onChange={(event) => addBulkMemoFile(row.id, event)} />
+                              </label>
+                              <button type="button" className="btn-secondary text-xs" onClick={() => convertBulkMemoToPaper(row.id)} disabled={!row.memoFile}>Convert memo to paper</button>
+                              <button type="button" className="btn-secondary text-xs" onClick={() => removeBulkRow(row.id)}>Remove paper</button>
+                            </div>
+                          </td>
                         </tr>
-                      ))}
+                      ); })}
                     </tbody>
                   </table>
                 </div>
               </div>
             ) : null}
+            <input ref={bulkAdditionalInputRef} type="file" className="sr-only" multiple accept=".pdf,application/pdf" onChange={handleAddMoreBulkFiles} />
+            <button type="button" className="btn-secondary w-full" onClick={() => bulkAdditionalInputRef.current?.click()}>Add more papers or memos</button>
             {bulkRows.length ? <button type="button" className="btn-primary w-full" onClick={handleBulkSubmit}>Upload reviewed papers</button> : null}
           </div>
         )}
@@ -958,7 +1134,7 @@ export const PastExamPapersPage = () => {
               <div>
                 <p className="text-sm font-semibold uppercase tracking-[0.25em] text-brand-700">Edit paper</p>
                 <h2 className="mt-2 text-2xl font-bold text-slate-950">{editingPaper.displayName || editingPaper.paperFileName || 'Question paper'}</h2>
-                <p className="mt-1 text-sm text-slate-500">Changing question-paper files or metadata queues the paper for analysis again. Memo-only changes do not run analysis.</p>
+                <p className="mt-1 text-sm text-slate-500">Replacing the question-paper file queues it for analysis again. Memo and metadata changes save without re-analysis.</p>
               </div>
               <button type="button" className="btn-secondary" onClick={closeEditPaper}>Close</button>
             </div>

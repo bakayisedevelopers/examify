@@ -85,6 +85,16 @@ export const SignupPage = () => {
       }
     }
 
+    if (form.role === ROLES.TUTOR || form.role === 'teacher') {
+      try {
+        whatsappNumber = normalizeWhatsAppNumber(form.whatsappNumber);
+      } catch (error) {
+        setStatus(error.message);
+        setCreating(false);
+        return;
+      }
+    }
+
     if (form.role === 'teacher') {
       if (!form.school.trim()) {
         setStatus('Please enter the school you are teaching in.');
@@ -110,6 +120,7 @@ export const SignupPage = () => {
           province: form.role === ROLES.STUDENT ? form.province : null,
           school: (form.role === ROLES.STUDENT || form.role === 'teacher') ? form.school.trim() : null,
           ...(form.role === ROLES.STUDENT ? { whatsappNumber } : {}),
+          ...([ROLES.TUTOR, 'teacher'].includes(form.role) ? { whatsappNumber } : {}),
           isTeacher: form.role === 'teacher',
         },
       });
@@ -210,9 +221,24 @@ export const SignupPage = () => {
         ) : null}
 
         {form.role === 'teacher' ? (
+          <>
+            <label className="block">
+              <span className="label">WhatsApp number</span>
+              <input type="tel" inputMode="tel" autoComplete="tel" className="input" placeholder="+27 82 123 4567 or +44 20 1234 5678" value={form.whatsappNumber} onChange={handleChange('whatsappNumber')} required />
+              <span className="mt-1 block text-xs text-slate-400">Include your country code. This is saved privately for assigned students.</span>
+            </label>
+            <label className="block">
+              <span className="label">School teaching in</span>
+              <input className="input" placeholder="e.g. Johannesburg Secondary School" value={form.school} onChange={handleChange('school')} required />
+            </label>
+          </>
+        ) : null}
+
+        {form.role === ROLES.TUTOR ? (
           <label className="block md:col-span-2">
-            <span className="label">School teaching in</span>
-            <input className="input" placeholder="e.g. Johannesburg Secondary School" value={form.school} onChange={handleChange('school')} required />
+            <span className="label">WhatsApp number</span>
+            <input type="tel" inputMode="tel" autoComplete="tel" className="input" placeholder="+27 82 123 4567 or +44 20 1234 5678" value={form.whatsappNumber} onChange={handleChange('whatsappNumber')} required />
+            <span className="mt-1 block text-xs text-slate-400">Include your country code. This is saved privately for assigned students.</span>
           </label>
         ) : null}
 
@@ -243,7 +269,7 @@ export const SignupPage = () => {
           <button
             type="submit"
             className="btn-primary w-full"
-            disabled={(!acceptedPolicies || form.fullName.trim() === '' || form.email.trim() === '' || form.password.trim() === '' || (form.role === ROLES.STUDENT && (form.grade.trim() === 'Select Grade' || form.province.trim() === 'National' || !form.school.trim() || !form.whatsappNumber.trim())) || (form.role === 'teacher' && !form.school.trim())) || creating}
+            disabled={(!acceptedPolicies || form.fullName.trim() === '' || form.email.trim() === '' || form.password.trim() === '' || (form.role === ROLES.STUDENT && (form.grade.trim() === 'Select Grade' || form.province.trim() === 'National' || !form.school.trim() || !form.whatsappNumber.trim())) || ([ROLES.TUTOR, 'teacher'].includes(form.role) && !form.whatsappNumber.trim()) || (form.role === 'teacher' && !form.school.trim())) || creating}
           >
             {creating ? 'Creating account...' : 'Create account'}
           </button>

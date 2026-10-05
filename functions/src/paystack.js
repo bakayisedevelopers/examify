@@ -1,9 +1,11 @@
-import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions';
-import { randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { getDb, admin } from './admin.js';
 import { getPaystackConfig } from './config.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
+import { getNextActualSubscriptionCharge, needsAuthorizationForZeroCostCheckout } from './paystackPricingCore.js';
 import { getActiveSubjectLessonQuotaUpdates } from './lessonEntitlements.js';
 import { applyRecurringDiscount, applyScheduledDiscount, calculateDiscount, calculateDiscountEndAt, normalizeDiscountCode } from './discountCodesCore.js';
 import { getDiscountQuoteForCheckout, reserveDiscountRedemption, transitionDiscountRedemptionForPayment } from './discountCodes.js';
@@ -31,7 +33,9 @@ const paystackRequest = async ({ path, method = 'POST', payload }) => {
   const data = await response.json();
 
   if (!response.ok || data.status === false) {
-    throw new HttpsError('internal', data.message ?? 'Paystack request failed.');
+    const error = new HttpsError('internal', data.message ?? 'Paystack request failed.');
+    error.paystackRejected = true;
+    throw error;
   }
 
   return data.data;
@@ -42,6 +46,121 @@ const makeReference = (prefix, studentId) => `${prefix}-${studentId}-${randomUUI
 const isReusableAuthorization = (authorization) => authorization?.reusable === true
   && Boolean(authorization.authorizationCode)
   && Boolean(authorization.email);
+
+const toMinorUnits = (amount) => {
+  const minorUnits = Math.round(Number(amount) * 100);
+  if (!Number.isSafeInteger(minorUnits) || minorUnits < 0) {
+    throw new HttpsError('failed-precondition', 'The subscription amount is invalid.');
+  }
+  return minorUnits;
+};
+
+const MAX_AUTHORIZATION_REFUND_ATTEMPTS = 5;
+
+const requestAuthorizationRefund = async ({ db, studentId, reference }) => {
+  const paymentRef = studentPaymentRef(db, studentId, reference);
+  const now = admin.firestore.Timestamp.now();
+  const claim = await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(paymentRef);
+    if (!snapshot.exists) return { claimed: false, reason: 'payment_missing' };
+    const payment = snapshot.data();
+    if (payment.status !== 'success' || payment.authorizationOnly !== true) {
+      return { claimed: false, reason: 'not_authorization_payment' };
+    }
+    const refundStatus = payment.authorizationRefundStatus;
+    if (['pending', 'processing', 'processed', 'success', 'needs-attention'].includes(refundStatus)) {
+      return { claimed: false, reason: 'refund_already_requested', refundStatus };
+    }
+    if (Number(payment.authorizationRefundAttempts || 0) >= MAX_AUTHORIZATION_REFUND_ATTEMPTS) {
+      transaction.set(paymentRef, {
+        authorizationRefundStatus: 'needs-attention',
+        authorizationRefundError: 'Automatic refund initiation reached its retry limit.',
+        authorizationRefundUpdatedAt: now,
+        updatedAt: now,
+      }, { merge: true });
+      return { claimed: false, reason: 'refund_retry_limit_reached', refundStatus: 'needs-attention' };
+    }
+    const lastAttemptAt = payment.authorizationRefundAttemptedAt?.toDate?.();
+    if (refundStatus === 'requesting' && lastAttemptAt && now.toDate() - lastAttemptAt < 10 * 60 * 1000) {
+      return { claimed: false, reason: 'refund_request_in_progress', refundStatus };
+    }
+    transaction.set(paymentRef, {
+      authorizationRefundStatus: 'requesting',
+      authorizationRefundAttemptedAt: now,
+      authorizationRefundAttempts: admin.firestore.FieldValue.increment(1),
+      updatedAt: now,
+    }, { merge: true });
+    return {
+      claimed: true,
+      amount: toMinorUnits(payment.authorizationChargeAmount),
+      attempts: Number(payment.authorizationRefundAttempts || 0) + 1,
+      gatewayTransactionId: payment.gatewayTransactionId ?? null,
+    };
+  });
+  if (!claim.claimed) return claim;
+
+  let refundPostAttempted = false;
+  try {
+    let refund = null;
+    if (claim.gatewayTransactionId) {
+      const existingRefunds = await paystackRequest({
+        path: `/refund?transaction=${encodeURIComponent(claim.gatewayTransactionId)}&perPage=50`,
+        method: 'GET',
+      });
+      refund = (Array.isArray(existingRefunds) ? existingRefunds : []).find((item) =>
+        Number(item.amount) === claim.amount && String(item.transaction?.reference ?? reference) === reference);
+    }
+    if (!refund) {
+      refundPostAttempted = true;
+      refund = await paystackRequest({
+        path: '/refund',
+        method: 'POST',
+        payload: {
+          transaction: reference,
+          amount: claim.amount,
+          currency: 'ZAR',
+          customer_note: 'Refund of the temporary Examifying card authorization charge.',
+          merchant_note: `Temporary subscription authorization refund for ${reference}`,
+        },
+      });
+    }
+    const providerStatus = String(refund.status ?? 'pending').toLowerCase();
+    const normalizedStatus = providerStatus === 'processed' || providerStatus === 'success'
+      ? 'processed'
+      : providerStatus === 'failed' || providerStatus === 'needs-attention'
+        ? providerStatus
+        : 'pending';
+    await paymentRef.set({
+      authorizationRefundStatus: normalizedStatus,
+      authorizationRefundProviderStatus: providerStatus,
+      authorizationRefundId: refund.id ?? null,
+      authorizationRefundAmount: Number(refund.amount ?? claim.amount) / 100,
+      authorizationRefundCurrency: refund.currency ?? 'ZAR',
+      authorizationRefundExpectedAt: refund.expected_at ?? null,
+      authorizationRefundUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      authorizationRefundError: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return { claimed: true, refundStatus: normalizedStatus, refundId: refund.id ?? null };
+  } catch (error) {
+    logger.error('Could not initiate temporary subscription authorization refund', {
+      studentId, reference, attempt: claim.attempts, error: error?.message ?? String(error),
+    });
+    await paymentRef.set({
+      // A lost response after POST is ambiguous: stop automatic retries until the
+      // provider's refund list has been reconciled, to avoid double-refunding.
+      authorizationRefundStatus: refundPostAttempted && !error?.paystackRejected ? 'needs-attention' : 'failed',
+      authorizationRefundError: String(error?.message ?? error).slice(0, 500),
+      authorizationRefundUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true }).catch((persistError) => {
+      logger.error('Could not persist temporary authorization refund failure', {
+        studentId, reference, error: persistError?.message ?? String(persistError),
+      });
+    });
+    return { claimed: true, refundStatus: 'failed' };
+  }
+};
 
 export const applyFreeSubscription = async ({ studentId, pendingReference = null, pendingStatus = 'applied', reason = null }) => {
   const db = getDb();
@@ -110,7 +229,7 @@ export const applyFreeSubscription = async ({ studentId, pendingReference = null
   return quote;
 };
 
-const completeZeroCostDiscountCheckout = async ({ db, studentId, payerId, isParent, email, reference, quote, discount, isNewRedemption = true }) => {
+const completeZeroCostDiscountCheckout = async ({ db, studentId, payerId, isParent, email, reference, quote, discount, reusableAuthorization = false, isNewRedemption = true }) => {
   const now = admin.firestore.Timestamp.now();
   const renewalDate = admin.firestore.Timestamp.fromDate(
     new Date(now.toDate().getTime() + quote.billingCycleDays * 24 * 60 * 60 * 1000),
@@ -181,7 +300,8 @@ const completeZeroCostDiscountCheckout = async ({ db, studentId, payerId, isPare
         discountReservationStatus: expectedReservationStatus,
       } : {}),
       ...(discount.billingDuration === 'fixed_months' ? { discountDurationMonths: discount.discountDurationMonths, discountEndsAt } : {}),
-      currency: quote.currency, ...quote, amount: 0, product: 'Examifying subscription',
+      currency: quote.currency, ...quote, amount: 0, subscriptionAmountDue: 0,
+      product: 'Examifying subscription',
       paidAt: now, zeroCostCheckout: true, createdAt: now, updatedAt: now,
     }, { merge: true });
     transaction.set(subRef, {
@@ -196,8 +316,8 @@ const completeZeroCostDiscountCheckout = async ({ db, studentId, payerId, isPare
       discountBenefit: recurringBenefit,
       latestReference: reference, activatedAt: now, entitlementWindowStartAt: now,
       renewedAt: now, renewalDate, cancelAtPeriodEnd: false,
-      manualPaymentRequired: !(carriesRenewalDiscount && discount.percentOff === 100),
-      autoRenew: carriesRenewalDiscount && discount.percentOff === 100,
+      manualPaymentRequired: !reusableAuthorization,
+      autoRenew: reusableAuthorization,
       renewalAttemptCount: 0,
       graceEndsAt: admin.firestore.FieldValue.delete(), renewalAttempt: admin.firestore.FieldValue.delete(),
       renewalChargeLock: admin.firestore.FieldValue.delete(), pendingPlan: admin.firestore.FieldValue.delete(),
@@ -291,8 +411,13 @@ export const applyZeroCostSubscriptionRenewal = async ({ studentId, quote, renew
       || expectedQuote.discountCode !== quote.discountCode) {
       throw new HttpsError('aborted', 'The subscription changed before its free renewal could be applied.');
     }
+    const carriedDiscountEndsAt = quote.discountBenefit?.discountEndsAt ?? benefit?.discountEndsAt ?? null;
     const discountEndsAt = quote.discountBillingDuration === 'fixed_months'
-      ? admin.firestore.Timestamp.fromDate(calculateDiscountEndAt(now.toDate(), quote.discountDurationMonths, quote.billingCycleDays))
+      ? (carriedDiscountEndsAt?.toDate
+        ? carriedDiscountEndsAt
+        : carriedDiscountEndsAt instanceof Date
+          ? admin.firestore.Timestamp.fromDate(carriedDiscountEndsAt)
+          : admin.firestore.Timestamp.fromDate(calculateDiscountEndAt(now.toDate(), quote.discountDurationMonths, quote.billingCycleDays)))
       : null;
     const newBenefit = quote.discountRedemptionReference
       && ['recurring', 'fixed_months'].includes(quote.discountBillingDuration)
@@ -303,7 +428,7 @@ export const applyZeroCostSubscriptionRenewal = async ({ studentId, quote, renew
         billingPeriod: quote.billingPeriod,
         subjectCount: quote.subjectCount,
         billingDuration: quote.discountBillingDuration,
-        activatedAt: now,
+        activatedAt: quote.discountBenefit?.activatedAt ?? benefit?.activatedAt ?? now,
         ...(quote.discountBillingDuration === 'fixed_months' ? {
           discountDurationMonths: quote.discountDurationMonths,
           discountEndsAt,
@@ -431,6 +556,8 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
       studentAuthorizationRef(db, studentId).get(),
     ]);
     const currentSubscription = currentSubscriptionSnapshot.exists ? currentSubscriptionSnapshot.data() : null;
+    const currentAuthorization = authorizationSnapshot.exists ? authorizationSnapshot.data() : null;
+    const hasReusableAuthorization = isReusableAuthorization(currentAuthorization);
     const renewalDate = currentSubscription?.renewalDate?.toDate?.() ?? null;
     const renewalAttemptDate = currentSubscription?.renewalAttempt?.renewalDate?.toDate?.() ?? null;
     if (renewalDate && renewalDate <= new Date()
@@ -723,16 +850,33 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
         };
       }
     }
-    if (appliedDiscount?.finalAmount === 0) {
+    const zeroCostCheckout = appliedDiscount?.finalAmount === 0;
+    const requiresAuthorizationOnlyCharge = needsAuthorizationForZeroCostCheckout({
+      amountDue: appliedDiscount?.finalAmount,
+      planId: quote.planId,
+      currentPaidSubscription: subscriptionIsCurrent,
+      hasReusableAuthorization,
+      discountPercent: appliedDiscount?.percentOff,
+      billingDuration: appliedDiscount?.billingDuration,
+    });
+    if (zeroCostCheckout && !requiresAuthorizationOnlyCharge) {
       return await completeZeroCostDiscountCheckout({
         db, studentId, payerId, isParent, email, reference, quote,
-        discount: appliedDiscount, isNewRedemption: Boolean(appliedDiscount?.discountRedemptionReference),
+        discount: appliedDiscount,
+        reusableAuthorization: hasReusableAuthorization,
+        isNewRedemption: Boolean(appliedDiscount?.discountRedemptionReference),
       });
     }
+    const subscriptionAmountDue = appliedDiscount?.finalAmount ?? quote.amount;
+    const authorizationChargeAmount = requiresAuthorizationOnlyCharge ? 1 : null;
+    const transactionAmount = authorizationChargeAmount ?? subscriptionAmountDue;
     if (appliedDiscount) {
       await studentPaymentRef(db, studentId, reference).set({
         reference, studentId, payerId, parentId: isParent ? payerId : null, email,
         status: 'initializing',
+        authorizationOnly: requiresAuthorizationOnlyCharge,
+        ...(requiresAuthorizationOnlyCharge ? { authorizationChargeAmount } : {}),
+        subscriptionAmountDue,
         originalAmount: appliedDiscount.originalAmount, discountAmount: appliedDiscount.discountAmount,
         discountPercent: appliedDiscount.percentOff, discountCode: appliedDiscount.code,
         discountBillingDuration: appliedDiscount.billingDuration,
@@ -745,7 +889,7 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
           discountEndsAt: appliedDiscount.discountEndsAt || null,
           discountStartedAt: appliedDiscount.discountStartedAt || null,
         } : {}),
-        currency: quote.currency, ...quote, amount: appliedDiscount.finalAmount,
+        currency: quote.currency, ...quote, amount: transactionAmount,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
@@ -766,7 +910,7 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
         method: 'POST',
         payload: {
           email,
-          amount: Math.round((appliedDiscount?.finalAmount ?? quote.amount) * 100),
+          amount: toMinorUnits(transactionAmount),
           currency: 'ZAR',
           reference,
           callback_url: callbackUrlWithStudent.toString(),
@@ -777,6 +921,12 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
             billingPeriod: quote.billingPeriod,
             subjectCount: quote.subjectCount,
             ...(appliedDiscount ? { discountCode: appliedDiscount.code, discountPercent: appliedDiscount.percentOff } : {}),
+            ...(requiresAuthorizationOnlyCharge ? {
+              checkoutPurpose: 'subscription_authorization',
+              authorizationOnly: true,
+              authorizationChargeAmount: 1,
+              subscriptionAmountDue: 0,
+            } : {}),
             product: 'Examifying subscription',
           },
         },
@@ -798,6 +948,9 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
       email,
       status: 'initialized',
       ...(appliedDiscount ? {
+        authorizationOnly: requiresAuthorizationOnlyCharge,
+        ...(requiresAuthorizationOnlyCharge ? { authorizationChargeAmount } : {}),
+        subscriptionAmountDue,
         originalAmount: appliedDiscount.originalAmount,
         discountAmount: appliedDiscount.discountAmount,
         discountPercent: appliedDiscount.percentOff,
@@ -815,15 +968,34 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
       } : {}),
       currency: 'ZAR',
       ...quote,
-      amount: appliedDiscount?.finalAmount ?? quote.amount,
+      amount: transactionAmount,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+
+    const nextAuthorizationCharge = requiresAuthorizationOnlyCharge
+      ? getNextActualSubscriptionCharge({
+        baseAmount: quote.amount,
+        percentOff: appliedDiscount.percentOff,
+        billingDuration: appliedDiscount.billingDuration,
+        discountDurationMonths: appliedDiscount.discountDurationMonths,
+        billingCycleDays: quote.billingCycleDays,
+      })
+      : null;
 
     return {
       authorizationUrl: transaction.authorization_url,
       accessCode: transaction.access_code,
       reference,
       quote,
+      ...(requiresAuthorizationOnlyCharge ? {
+        requiresAuthorizationDisclosure: true,
+        authorizationOnly: true,
+        authorizationChargeAmount,
+        subscriptionAmountDue,
+        nextBillingDate: nextAuthorizationCharge.nextBillingDate?.toISOString?.() ?? null,
+        nextBillingAmount: nextAuthorizationCharge.nextBillingAmount,
+        ...(nextAuthorizationCharge.noNextChargeWhileOfferApplies ? { noNextChargeWhileOfferApplies: true } : {}),
+      } : {}),
       ...(appliedDiscount ? { discount: appliedDiscount } : {}),
     };
   } catch (error) {
@@ -1013,23 +1185,71 @@ export const manageStudentSubscription = onCall({ cpu: 'gcf_gen1' }, async (requ
   return result;
 });
 
-export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (request) => {
-  const { reference, studentId } = request.data ?? {};
+export const cancelPaystackCheckout = onCall({ cpu: 'gcf_gen1' }, async (request) => {
   const payerId = request.auth?.uid;
-  if (!payerId) throw new HttpsError('unauthenticated', 'Sign in to verify your payment.');
-  if (!reference || !studentId) {
-    throw new HttpsError('invalid-argument', 'reference and studentId are required.');
-  }
-
+  const { studentId, reference } = request.data ?? {};
+  if (!payerId) throw new HttpsError('unauthenticated', 'Sign in before cancelling checkout.');
+  if (!studentId || !reference) throw new HttpsError('invalid-argument', 'studentId and reference are required.');
   const db = getDb();
   await assertCanManageStudentSubscription({ db, payerId, studentId });
+  const paymentRef = studentPaymentRef(db, studentId, reference);
+  const result = await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(paymentRef);
+    if (!snapshot.exists) throw new HttpsError('not-found', 'The pending checkout was not found.');
+    const payment = snapshot.data();
+    if (payment.payerId !== payerId) throw new HttpsError('permission-denied', 'This checkout belongs to another account.');
+    if (payment.checkoutCancellationRequested === true) return { cancelled: true };
+    if (payment.status === 'success') return { cancelled: false, paymentSucceeded: true };
+    if (!['initializing', 'initialized', 'pending', 'processing', 'ongoing'].includes(payment.status)) {
+      throw new HttpsError('failed-precondition', 'This checkout can no longer be cancelled.');
+    }
+    transaction.set(paymentRef, {
+      checkoutCancellationRequested: true,
+      checkoutCancellationRequestedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return {
+      cancelled: true,
+    };
+  });
+  return result;
+});
+
+const finalizePaystackPayment = async ({ reference, studentId, payerId }) => {
+  const db = getDb();
   const paymentRef = studentPaymentRef(db, studentId, reference);
   const paymentSnapshot = await paymentRef.get();
   if (!paymentSnapshot.exists) throw new HttpsError('not-found', 'Payment record not found.');
   const payment = paymentSnapshot.data();
   if (payment.payerId !== payerId) throw new HttpsError('permission-denied', 'This payment belongs to another account.');
-  if (payment.status === 'success') return { status: 'success', reference, authorizationStored: false };
-  if (['failed', 'abandoned', 'reversed', 'amount_mismatch'].includes(payment.status)) {
+  if (payment.status === 'success') {
+    const existingAuthorization = await studentAuthorizationRef(db, studentId).get();
+    const authorizationStored = isReusableAuthorization(existingAuthorization.data());
+    if (payment.discountCode && payment.discountReservationStatus !== 'scheduled') {
+      await transitionDiscountRedemptionForPayment({
+        db,
+        code: payment.discountCode,
+        reference: payment.discountRedemptionReference || reference,
+        status: 'success',
+      }).catch((error) => {
+        logger.error('Could not repair a redeemed discount after an idempotent payment verification', {
+          studentId, reference, code: payment.discountCode, error: error?.message ?? String(error),
+        });
+      });
+    }
+    const refund = payment.authorizationOnly === true
+      ? await requestAuthorizationRefund({ db, studentId, reference })
+      : null;
+    return {
+      status: 'success', reference, authorizationStored,
+      ...(payment.authorizationOnly ? {
+        authorizationOnly: true,
+        refundStatus: refund?.refundStatus ?? payment.authorizationRefundStatus ?? 'pending',
+        manualPaymentRequired: !authorizationStored,
+      } : {}),
+    };
+  }
+  if (['failed', 'abandoned', 'reversed', 'amount_mismatch', 'cancelled'].includes(payment.status)) {
     return { status: payment.status, reference, authorizationStored: false };
   }
   if (!['initializing', 'initialized', 'pending', 'processing', 'ongoing'].includes(payment.status) || !payment.planId || !payment.studentId) {
@@ -1050,24 +1270,26 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
   const discount = payment.discountPercent
     ? calculateDiscount(quote.amount, Number(payment.discountPercent))
     : null;
-  const expectedAmount = discount?.finalAmount ?? quote.amount;
+  const expectedSubscriptionAmount = Number.isFinite(Number(payment.subscriptionAmountDue))
+    ? Number(payment.subscriptionAmountDue)
+    : (discount?.finalAmount ?? quote.amount);
+  const expectedTransactionAmount = payment.authorizationOnly === true
+    ? Number(payment.authorizationChargeAmount)
+    : expectedSubscriptionAmount;
+  if (!Number.isFinite(expectedTransactionAmount) || expectedTransactionAmount < 0) {
+    throw new HttpsError('failed-precondition', 'The saved payment amount is invalid. Please start a new checkout.');
+  }
 
   const transaction = await paystackRequest({
     path: `/transaction/verify/${reference}`,
     method: 'GET',
   });
 
-  if (transaction.status === 'success' && (Number(transaction.amount) !== Math.round(expectedAmount * 100) || transaction.currency !== quote.currency)) {
+  if (transaction.status === 'success' && (transaction.reference !== reference
+    || Number(transaction.amount) !== toMinorUnits(expectedTransactionAmount)
+    || transaction.currency !== quote.currency)) {
     await paymentRef.set({ status: 'amount_mismatch', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
     throw new HttpsError('failed-precondition', 'The verified payment does not match this subscription price.');
-  }
-
-  if (payment.discountReservationStatus !== 'scheduled' || transaction.status === 'success') {
-    await transitionDiscountRedemptionForPayment({
-      db, code: payment.discountCode,
-      reference: payment.discountRedemptionReference || reference,
-      status: transaction.status,
-    });
   }
 
   const authorization = transaction.authorization ?? null;
@@ -1091,6 +1313,7 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
     currency: transaction.currency ?? quote.currency,
     status: transaction.status,
     gatewayResponse: transaction.gateway_response,
+    gatewayTransactionId: transaction.id ?? null,
     paidAt: transaction.paid_at ?? null,
     channel: transaction.channel ?? null,
     studentId: payment.studentId,
@@ -1098,6 +1321,12 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
     email: transaction.customer?.email ?? payment.email,
     ...quote,
     amount: Number(transaction.amount ?? 0) / 100,
+    subscriptionAmountDue: expectedSubscriptionAmount,
+    ...(payment.authorizationOnly === true ? {
+      authorizationOnly: true,
+      authorizationChargeAmount: expectedTransactionAmount,
+      ...(succeeded ? { authorizationRefundStatus: payment.authorizationRefundStatus || 'pending_initiation' } : {}),
+    } : {}),
     ...(discount ? {
       originalAmount: discount.originalAmount,
       discountAmount: discount.discountAmount,
@@ -1110,14 +1339,21 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
         discountStartedAt: payment.discountStartedAt || activationTimestamp,
       } : {}),
     } : {}),
+    ...(succeeded ? { finalizedAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
 
   let displacedPendingDiscount = null;
+  let reusableAuthorizationAvailable = reusableAuthorization;
   if (succeeded) {
     const subscriptionRef = studentSubscriptionRef(db, payment.studentId);
-    const currentSubscriptionSnapshot = await subscriptionRef.get();
+    const authorizationRef = studentAuthorizationRef(db, payment.studentId);
+    const [currentSubscriptionSnapshot, currentAuthorizationSnapshot] = await Promise.all([
+      subscriptionRef.get(), authorizationRef.get(),
+    ]);
     const currentSubscription = currentSubscriptionSnapshot.exists ? currentSubscriptionSnapshot.data() : null;
+    const currentAuthorization = currentAuthorizationSnapshot.exists ? currentAuthorizationSnapshot.data() : null;
+    reusableAuthorizationAvailable = reusableAuthorization || isReusableAuthorization(currentAuthorization);
     const subscriptionForQuota = {
       ...quote, status: 'active', latestReference: reference,
       renewalDate: nextRenewalDate, entitlementWindowStartAt: activationTimestamp,
@@ -1145,7 +1381,7 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
       }, { merge: true });
     }
     if (reusableAuthorization) {
-      batch.set(studentAuthorizationRef(db, payment.studentId), {
+      batch.set(authorizationRef, {
         studentId: payment.studentId,
         payerId,
         email: transaction.customer?.email ?? payment.email,
@@ -1161,15 +1397,13 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
         storedAt: admin.firestore.FieldValue.serverTimestamp(),
         reference,
       }, { merge: true });
-    } else {
-      batch.delete(studentAuthorizationRef(db, payment.studentId));
     }
 
     batch.set(subscriptionRef, {
       studentId: payment.studentId,
       status: 'active',
       ...quote,
-      amount: expectedAmount,
+      amount: expectedSubscriptionAmount,
       ...(discount ? {
         originalAmount: discount.originalAmount,
         discountAmount: discount.discountAmount,
@@ -1211,9 +1445,9 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
       entitlementWindowStartAt: activationTimestamp,
       renewedAt: activationTimestamp,
       renewalDate: nextRenewalDate,
-      autoRenew: reusableAuthorization || (['recurring', 'fixed_months'].includes(payment.discountBillingDuration) && Number(payment.discountPercent) === 100),
+      autoRenew: reusableAuthorizationAvailable,
       cancelAtPeriodEnd: false,
-      manualPaymentRequired: !(reusableAuthorization || (['recurring', 'fixed_months'].includes(payment.discountBillingDuration) && Number(payment.discountPercent) === 100)),
+      manualPaymentRequired: !reusableAuthorizationAvailable,
       renewalAttemptCount: 0,
       graceEndsAt: admin.firestore.FieldValue.delete(),
       renewalVerificationHoldUntil: admin.firestore.FieldValue.delete(),
@@ -1241,7 +1475,31 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
     activeSubjectQuotas.forEach(({ ref, lessonQuota }) => batch.set(ref, { lessonQuota, updatedAt: activationTimestamp }, { merge: true }));
   }
 
-  await batch.commit();
+  try {
+    await batch.commit();
+  } catch (error) {
+    if (succeeded) {
+      logger.error('Paystack succeeded but subscription finalization failed', {
+        studentId, payerId, reference, planId: quote.planId,
+        subjectCount: quote.subjectCount, amount: expectedSubscriptionAmount,
+        error: error?.message ?? String(error),
+      });
+      throw new HttpsError('internal', `Payment succeeded but subscription activation could not be finalized. Retry verification for reference ${reference}; do not make another payment.`);
+    }
+    throw error;
+  }
+
+  if (payment.discountReservationStatus !== 'scheduled' || succeeded) {
+    await transitionDiscountRedemptionForPayment({
+      db, code: payment.discountCode,
+      reference: payment.discountRedemptionReference || reference,
+      status: transaction.status,
+    }).catch((error) => {
+      logger.error('Could not finalize the discount redemption after subscription activation', {
+        studentId, reference, code: payment.discountCode, error: error?.message ?? String(error),
+      });
+    });
+  }
 
   if (displacedPendingDiscount?.discountRedemptionReference) {
     await transitionDiscountRedemptionForPayment({
@@ -1250,11 +1508,308 @@ export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (requ
     });
   }
 
+  const authorizationRefund = succeeded && payment.authorizationOnly === true
+    ? await requestAuthorizationRefund({ db, studentId: payment.studentId, reference })
+    : null;
+  const nextActualCharge = succeeded && payment.authorizationOnly === true
+    ? getNextActualSubscriptionCharge({
+      baseAmount: quote.amount,
+      percentOff: Number(payment.discountPercent),
+      billingDuration: payment.discountBillingDuration,
+      discountDurationMonths: payment.discountDurationMonths,
+      billingCycleDays: quote.billingCycleDays,
+      activationDate,
+    })
+    : null;
   return {
     status: transaction.status,
     reference,
-    authorizationStored: reusableAuthorization,
+    authorizationStored: reusableAuthorizationAvailable,
+    ...(payment.authorizationOnly === true ? {
+      authorizationOnly: true,
+      refundStatus: authorizationRefund?.refundStatus ?? 'pending',
+      nextBillingDate: nextActualCharge?.nextBillingDate?.toISOString?.() ?? null,
+      nextBillingAmount: nextActualCharge?.nextBillingAmount ?? null,
+      manualPaymentRequired: !reusableAuthorizationAvailable,
+      ...(nextActualCharge?.noNextChargeWhileOfferApplies ? { noNextChargeWhileOfferApplies: true } : {}),
+    } : {}),
   };
+};
+
+export const verifyPaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const { reference, studentId } = request.data ?? {};
+  const payerId = request.auth?.uid;
+  if (!payerId) throw new HttpsError('unauthenticated', 'Sign in to verify your payment.');
+  if (!reference || !studentId) {
+    throw new HttpsError('invalid-argument', 'reference and studentId are required.');
+  }
+  const db = getDb();
+  await assertCanManageStudentSubscription({ db, payerId, studentId });
+  return finalizePaystackPayment({ reference, studentId, payerId });
+});
+
+const findPaymentForWebhook = async ({ db, transactionReference, gatewayTransactionId }) => {
+  if (transactionReference) {
+    const byReference = await db.collectionGroup('payments')
+      .where('reference', '==', transactionReference).limit(1).get();
+    if (!byReference.empty) return byReference.docs[0];
+  }
+  if (gatewayTransactionId !== null && gatewayTransactionId !== undefined) {
+    const byGatewayId = await db.collectionGroup('payments')
+      .where('gatewayTransactionId', '==', Number(gatewayTransactionId)).limit(1).get();
+    if (!byGatewayId.empty) return byGatewayId.docs[0];
+  }
+  return null;
+};
+
+const processPaystackWebhookEvent = async ({ db, event }) => {
+  const data = event.data ?? {};
+  if (event.event === 'charge.success') {
+    const reference = String(data.reference ?? '').trim();
+    if (!reference) throw new Error('The charge.success event has no transaction reference.');
+    const paymentSnapshot = await findPaymentForWebhook({ db, transactionReference: reference });
+    if (!paymentSnapshot) throw new Error(`Payment record for ${reference} has not been created yet.`);
+    const payment = paymentSnapshot.data();
+    const result = await finalizePaystackPayment({
+      reference,
+      studentId: payment.studentId || paymentSnapshot.ref.parent.parent?.id,
+      payerId: payment.payerId,
+    });
+    if (result.status !== 'success') {
+      throw new Error(`Paystack verification for ${reference} is still ${result.status}.`);
+    }
+    return { status: 'processed', result: 'payment_finalized' };
+  }
+
+  const refundStatusByEvent = {
+    'refund.pending': 'pending',
+    'refund.processing': 'processing',
+    'refund.processed': 'processed',
+    'refund.failed': 'failed',
+  };
+  const refundStatus = refundStatusByEvent[event.event];
+  if (!refundStatus) return { status: 'ignored', result: 'unsupported_event' };
+
+  const transactionReference = typeof data.transaction === 'object'
+    ? data.transaction?.reference
+    : (typeof data.reference === 'string' ? data.reference : null);
+  const gatewayTransactionId = typeof data.transaction === 'object'
+    ? data.transaction?.id
+    : data.transaction;
+  const paymentSnapshot = await findPaymentForWebhook({ db, transactionReference, gatewayTransactionId });
+  if (!paymentSnapshot) throw new Error('Could not match the refund event to a payment record.');
+  const payment = paymentSnapshot.data();
+  if (payment.authorizationOnly !== true) return { status: 'ignored', result: 'not_authorization_payment' };
+
+  await db.runTransaction(async (transaction) => {
+    const freshSnapshot = await transaction.get(paymentSnapshot.ref);
+    if (!freshSnapshot.exists || freshSnapshot.data()?.authorizationOnly !== true) return;
+    const existingStatus = freshSnapshot.data()?.authorizationRefundStatus;
+    if (existingStatus === 'processed' || existingStatus === 'success') return;
+    transaction.set(paymentSnapshot.ref, {
+      authorizationRefundStatus: refundStatus,
+      authorizationRefundProviderStatus: refundStatus,
+      authorizationRefundId: data.id ?? freshSnapshot.data()?.authorizationRefundId ?? null,
+      authorizationRefundAmount: Number.isFinite(Number(data.amount)) ? Number(data.amount) / 100 : null,
+      authorizationRefundCurrency: data.currency ?? freshSnapshot.data()?.authorizationRefundCurrency ?? 'ZAR',
+      authorizationRefundUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      ...(refundStatus === 'failed' ? { authorizationRefundError: data.message ?? 'Paystack reported that the refund failed.' } : { authorizationRefundError: admin.firestore.FieldValue.delete() }),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+  });
+  return { status: 'processed', result: `refund_${refundStatus}` };
+};
+
+export const paystackWebhook = onRequest({ cpu: 'gcf_gen1', invoker: 'public', timeoutSeconds: 60 }, async (request, response) => {
+  if (request.method !== 'POST') {
+    response.status(405).send('Method not allowed');
+    return;
+  }
+  const { paystackSecretKey } = getPaystackConfig();
+  if (!paystackSecretKey) {
+    logger.error('Paystack webhook cannot validate signatures because PAYSTACK_SECRET_KEY is not configured.');
+    response.status(500).send('Webhook is not configured');
+    return;
+  }
+  const rawBody = request.rawBody;
+  const signature = String(request.get('x-paystack-signature') ?? '');
+  if (!Buffer.isBuffer(rawBody) || !/^[a-f0-9]{128}$/i.test(signature)) {
+    response.status(401).send('Invalid Paystack signature');
+    return;
+  }
+  const expected = createHmac('sha512', paystackSecretKey).update(rawBody).digest();
+  const supplied = Buffer.from(signature, 'hex');
+  if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) {
+    response.status(401).send('Invalid Paystack signature');
+    return;
+  }
+
+  const event = request.body;
+  if (!event || !['charge.success', 'refund.pending', 'refund.processing', 'refund.processed', 'refund.failed'].includes(event.event)) {
+    response.status(200).send('Event ignored');
+    return;
+  }
+  try {
+    const digest = createHash('sha256').update(rawBody).digest('hex');
+    const eventRef = getDb().collection('paystackWebhookEvents').doc(digest);
+    await getDb().runTransaction(async (transaction) => {
+      const existing = await transaction.get(eventRef);
+      const data = event.data ?? {};
+      const queuedEvent = {
+        event: event.event,
+        transactionReference: data.reference ?? (typeof data.transaction === 'object' ? data.transaction?.reference : null) ?? null,
+        gatewayTransactionId: (typeof data.transaction === 'object' ? data.transaction?.id : data.transaction) ?? null,
+        refundId: data.id ?? null,
+        data: {
+          reference: data.reference ?? null,
+          transaction: typeof data.transaction === 'object'
+            ? { reference: data.transaction?.reference ?? null, id: data.transaction?.id ?? null }
+            : data.transaction ?? null,
+          id: data.id ?? null,
+          amount: data.amount ?? null,
+          currency: data.currency ?? null,
+          status: data.status ?? null,
+          message: data.message ?? null,
+        },
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      if (existing.exists) {
+        if (existing.data()?.status === 'needs-attention') {
+          transaction.set(eventRef, {
+            ...queuedEvent, status: 'pending', attempts: 0,
+            lastError: admin.firestore.FieldValue.delete(),
+          }, { merge: true });
+        }
+        return;
+      }
+      transaction.create(eventRef, {
+        ...queuedEvent,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        status: 'pending',
+        attempts: 0,
+      });
+    });
+    response.status(200).send('Event accepted');
+  } catch (error) {
+    logger.error('Could not queue signed Paystack webhook event', { error: error?.message ?? String(error) });
+    response.status(500).send('Could not queue event');
+  }
+});
+
+export const processPaystackWebhookEvents = onSchedule(
+  { schedule: 'every 1 minutes', timeZone: 'UTC', cpu: 'gcf_gen1' },
+  async () => {
+    const db = getDb();
+    const pending = await db.collection('paystackWebhookEvents')
+      .where('status', '==', 'pending').limit(100).get();
+    for (const snapshot of pending.docs) {
+      try {
+        const result = await processPaystackWebhookEvent({ db, event: snapshot.data() });
+        await snapshot.ref.set({ ...result, processedAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      } catch (error) {
+        const attempts = Number(snapshot.data().attempts || 0) + 1;
+        const exhausted = attempts >= 72;
+        logger.error('Paystack webhook event processing failed', {
+          eventId: snapshot.id, event: snapshot.data().event, attempts,
+          error: error?.message ?? String(error),
+        });
+        await snapshot.ref.set({
+          attempts,
+          ...(exhausted ? { status: 'needs-attention' } : {}),
+          lastError: String(error?.message ?? error).slice(0, 500),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+      }
+    }
+  },
+);
+
+export const retryAuthorizationRefunds = onSchedule(
+  { schedule: 'every 30 minutes', timeZone: 'UTC', cpu: 'gcf_gen1' },
+  async () => {
+    const db = getDb();
+    const snapshot = await db.collectionGroup('payments')
+      .where('authorizationOnly', '==', true).limit(500).get();
+    for (const paymentSnapshot of snapshot.docs) {
+      const payment = paymentSnapshot.data();
+      const refundStatus = payment.authorizationRefundStatus;
+      const attemptedAt = payment.authorizationRefundAttemptedAt?.toDate?.();
+      const staleRequest = refundStatus === 'requesting'
+        && (!attemptedAt || Date.now() - attemptedAt.getTime() >= 10 * 60 * 1000);
+      const safelyRetryable = ['pending_initiation', 'failed'].includes(refundStatus) || staleRequest;
+      if (!safelyRetryable || payment.status !== 'success'
+        || Number(payment.authorizationRefundAttempts || 0) >= MAX_AUTHORIZATION_REFUND_ATTEMPTS) continue;
+      const studentId = payment.studentId || paymentSnapshot.ref.parent.parent?.id;
+      const reference = payment.reference || paymentSnapshot.id;
+      if (!studentId || !reference) continue;
+      await requestAuthorizationRefund({ db, studentId, reference });
+    }
+  },
+);
+
+export const reconcileUnfinalizedPaystackPayments = onSchedule(
+  { schedule: 'every 15 minutes', timeZone: 'UTC', cpu: 'gcf_gen1' },
+  async () => {
+    const db = getDb();
+    const pending = await db.collectionGroup('payments')
+      .where('status', 'in', ['initializing', 'initialized', 'pending', 'processing', 'ongoing'])
+      .limit(500).get();
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    for (const paymentSnapshot of pending.docs) {
+      const payment = paymentSnapshot.data();
+      if (payment.recurring === true) continue;
+      const createdAt = payment.createdAt?.toDate?.()?.getTime?.();
+      if (createdAt && createdAt > cutoff) continue;
+      const studentId = payment.studentId || paymentSnapshot.ref.parent.parent?.id;
+      const payerId = payment.payerId;
+      const reference = payment.reference || paymentSnapshot.id;
+      if (!studentId || !payerId || !reference || !payment.planId || !payment.billingPeriod) continue;
+      try {
+        await paymentSnapshot.ref.set({
+          reconciliationAttempts: admin.firestore.FieldValue.increment(1),
+          lastReconciliationAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        const result = await finalizePaystackPayment({ reference, studentId, payerId });
+        logger.info('Reconciled a pending Paystack checkout', { studentId, reference, status: result.status });
+      } catch (error) {
+        logger.error('Could not reconcile a pending Paystack checkout', {
+          studentId, reference, error: error?.message ?? String(error),
+        });
+      }
+    }
+  },
+);
+
+export const getAdminAuthorizationRefundIssues = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Sign in as an admin to review authorization refunds.');
+  const db = getDb();
+  const adminSnapshot = await db.collection('users').doc(uid).get();
+  if (!adminSnapshot.exists || adminSnapshot.data()?.role !== 'admin') {
+    throw new HttpsError('permission-denied', 'Only an admin can review authorization refunds.');
+  }
+  const snapshot = await db.collectionGroup('payments').where('authorizationOnly', '==', true).limit(500).get();
+  const now = Date.now();
+  const issues = snapshot.docs.map((paymentSnapshot) => {
+    const payment = paymentSnapshot.data();
+    const status = payment.authorizationRefundStatus || 'pending_initiation';
+    const attemptedAt = payment.authorizationRefundAttemptedAt?.toDate?.() ?? null;
+    const staleRequest = status === 'requesting' && (!attemptedAt || now - attemptedAt.getTime() >= 10 * 60 * 1000);
+    if (!['failed', 'needs-attention', 'pending_initiation'].includes(status) && !staleRequest) return null;
+    return {
+      reference: payment.reference || paymentSnapshot.id,
+      studentId: payment.studentId || paymentSnapshot.ref.parent.parent?.id || null,
+      email: payment.email || null,
+      status,
+      amount: Number(payment.authorizationChargeAmount || 1),
+      refundStatus: status,
+      attempts: Number(payment.authorizationRefundAttempts || 0),
+      error: payment.authorizationRefundError || null,
+      transactionStatus: payment.status || null,
+      updatedAt: payment.updatedAt?.toDate?.().toISOString?.() ?? null,
+    };
+  }).filter(Boolean);
+  return { issues };
 });
 
 export const chargeAuthorizationForSubscription = async ({

@@ -1,8 +1,15 @@
 export const normalizeWhatsAppNumber = (value = '') => {
   const input = String(value).trim();
-  let digits = input.replace(/\D/g, '');
-  if (input.startsWith('00')) digits = digits.slice(2);
-  if (digits.length === 10 && digits.startsWith('0')) digits = `27${digits.slice(1)}`;
+  if (!input || !/^[+\d\s().-]+$/.test(input)) {
+    throw new Error('Enter a valid WhatsApp number with its country code, or a South African number beginning with 0.');
+  }
+  const compact = input.replace(/[\s().-]/g, '');
+  if ((compact.match(/\+/g) || []).length > 1 || (compact.includes('+') && !compact.startsWith('+'))) {
+    throw new Error('Enter a valid WhatsApp number with its country code, or a South African number beginning with 0.');
+  }
+  let digits = compact.replace(/^\+/, '');
+  if (digits.startsWith('00') && !compact.startsWith('+')) digits = digits.slice(2);
+  if (!compact.startsWith('+') && digits.length === 10 && digits.startsWith('0')) digits = `27${digits.slice(1)}`;
   if (!/^[1-9]\d{7,14}$/.test(digits)) {
     throw new Error('Enter a valid WhatsApp number with its country code, or a South African number beginning with 0.');
   }
@@ -33,4 +40,21 @@ export const normalizeWhatsAppLessonLink = (value = '') => {
     throw new Error('Online lesson links must use WhatsApp (wa.me, call.whatsapp.com, or chat.whatsapp.com).');
   }
   return url.toString();
+};
+
+export const normalizeWhatsAppGroupInviteLink = (value = '') => {
+  const input = String(value).trim();
+  if (!input) return '';
+  let url;
+  try {
+    url = new URL(/^https:\/\//i.test(input) ? input : `https://${input}`);
+  } catch {
+    throw new Error('Enter a valid WhatsApp group invite link.');
+  }
+  if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== 'chat.whatsapp.com'
+    || url.username || url.password || url.search || url.hash
+    || !/^\/[A-Za-z0-9_-]{5,}\/?$/.test(url.pathname)) {
+    throw new Error('Use a WhatsApp group invite link from chat.whatsapp.com.');
+  }
+  return `https://chat.whatsapp.com/${url.pathname.split('/').filter(Boolean)[0]}`;
 };

@@ -1,8 +1,10 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { logger } from 'firebase-functions';
 import { admin, getDb } from './admin.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
 import { normalizeSupportedSubject } from './subjects.js';
 import { buildSubjectLessonQuota, releaseCancelledLessonQuota } from './lessonEntitlements.js';
+import { isSavedSubscriptionPaymentConsistent } from './paystackPricingCore.js';
 
 const ACCESS_ROLES = ['co-owner', 'marker', 'viewer'];
 const requireUid = (request) => {
@@ -73,7 +75,8 @@ const assertPaidSubjectCapacity = async ({ db, studentId, existingCount, additio
     : null;
   const payment = paymentSnapshot?.exists ? paymentSnapshot.data() : null;
   if (!payment || payment.status !== 'success' || payment.studentId !== studentId
-    || payment.reference !== subscription.latestReference || Number(payment.amount) !== quote.amount
+    || payment.reference !== subscription.latestReference
+    || !isSavedSubscriptionPaymentConsistent({ quote, subscription, payment })
     || payment.currency !== quote.currency || payment.planId !== quote.planId
     || payment.billingPeriod !== quote.billingPeriod || Number(payment.subjectCount) !== quote.subjectCount) {
     throw new HttpsError('failed-precondition', 'A matching successful student payment is required.');
@@ -126,7 +129,7 @@ const getVerifiedSubjectCapacity = async ({ db, studentId }) => {
   const paymentSnapshot = await studentPaymentRef(db, studentId, subscription.latestReference).get();
   const payment = paymentSnapshot.exists ? paymentSnapshot.data() : null;
   return payment?.status === 'success' && payment.studentId === studentId
-    && payment.reference === subscription.latestReference && Number(payment.amount) === quote.amount
+    && payment.reference === subscription.latestReference && isSavedSubscriptionPaymentConsistent({ quote, subscription, payment })
     && payment.planId === quote.planId && payment.billingPeriod === quote.billingPeriod
     && Number(payment.subjectCount) === quote.subjectCount ? quote.subjectCount : 0;
 };
@@ -337,54 +340,64 @@ export const assignStudentToTutor = onCall({ cpu: 'gcf_gen1' }, async (request) 
   const studentRef = db.collection('users').doc(studentId);
   const subscriptionRef = studentSubscriptionRef(db, studentId);
   const now = admin.firestore.Timestamp.now();
-  const episode = await db.runTransaction(async (transaction) => {
-    const [actorSnapshot, tutorSnapshot, studentSnapshot, subscriptionSnapshot, activeEpisodes] = await Promise.all([
-      transaction.get(actorRef), transaction.get(tutorRef), transaction.get(studentRef), transaction.get(subscriptionRef),
-      transaction.get(subjectCollection(db, studentId).where('status', '==', 'active')),
-    ]);
-    if (!actorSnapshot.exists || actorSnapshot.data().role !== 'admin') throw new HttpsError('permission-denied', 'Only an admin can assign the primary tutor.');
-    if (!studentSnapshot.exists || studentSnapshot.data().role !== 'student') throw new HttpsError('not-found', 'Student profile not found.');
-    ensureTutorForSubject(tutorSnapshot.exists ? tutorSnapshot.data() : null, subject);
-    const subscription = subscriptionSnapshot.exists ? subscriptionSnapshot.data() : null;
-    const renewalDate = subscription?.renewalDate?.toDate?.();
-    if (!subscription || subscription.status !== 'active' || !['circle', 'personalized'].includes(subscription.planId)
-      || !renewalDate || renewalDate <= now.toDate() || !subscription.latestReference) {
-      throw new HttpsError('failed-precondition', 'A student needs an active paid subscription before a tutor can be assigned.');
-    }
-    let quote;
-    try { quote = calculateSubscriptionQuote(subscription); } catch {
-      throw new HttpsError('failed-precondition', 'The student’s active subscription selection is invalid.');
-    }
-    const paymentRef = studentPaymentRef(db, studentId, subscription.latestReference);
-    const paymentSnapshot = await transaction.get(paymentRef);
-    const payment = paymentSnapshot.exists ? paymentSnapshot.data() : null;
-    if (!payment || payment.status !== 'success' || payment.studentId !== studentId
-      || payment.reference !== subscription.latestReference || Number(payment.amount) !== quote.amount
-      || payment.currency !== quote.currency || payment.planId !== quote.planId
-      || payment.billingPeriod !== quote.billingPeriod || Number(payment.subjectCount) !== quote.subjectCount) {
-      throw new HttpsError('failed-precondition', 'A matching successful subscription payment is required before assigning a tutor.');
-    }
-    if (activeEpisodes.size > quote.subjectCount) {
-      throw new HttpsError('failed-precondition', 'The student has more active subjects than their subscription allows.');
-    }
-    const matchingEpisode = activeEpisodes.docs.find((document) => normalizeSubject(document.data().subjectKey) === subject);
-    if (!matchingEpisode) throw new HttpsError('not-found', 'Active subject episode not found.');
-    const currentEpisode = await transaction.get(matchingEpisode.ref);
-    if (!currentEpisode.exists || currentEpisode.data().status !== 'active') {
-      throw new HttpsError('not-found', 'Active subject episode not found.');
-    }
-    const current = currentEpisode.data();
-    if (current.primaryTutorId) throw new HttpsError('already-exists', `This student already has a primary tutor for ${subject}.`);
-    transaction.update(episode.ref, {
-      primaryTutorId: tutorId,
-      activeStaffIds: admin.firestore.FieldValue.arrayUnion(tutorId),
-      historicalStaffIds: admin.firestore.FieldValue.arrayUnion(tutorId),
-      [`staffByUid.${tutorId}`]: 'co-owner',
-      staffMemberships: [...(current.staffMemberships ?? []), membership({ uid: tutorId, role: 'co-owner', grantedAt: now, grantedBy: actorId })],
-      updatedAt: now,
+  let episode;
+  try {
+    episode = await db.runTransaction(async (transaction) => {
+      const [actorSnapshot, tutorSnapshot, studentSnapshot, subscriptionSnapshot, activeEpisodes] = await Promise.all([
+        transaction.get(actorRef), transaction.get(tutorRef), transaction.get(studentRef), transaction.get(subscriptionRef),
+        transaction.get(subjectCollection(db, studentId).where('status', '==', 'active')),
+      ]);
+      if (!actorSnapshot.exists || actorSnapshot.data().role !== 'admin') throw new HttpsError('permission-denied', 'Only an admin can assign the primary tutor.');
+      if (!studentSnapshot.exists || studentSnapshot.data().role !== 'student') throw new HttpsError('not-found', 'Student profile not found.');
+      ensureTutorForSubject(tutorSnapshot.exists ? tutorSnapshot.data() : null, subject);
+      const subscription = subscriptionSnapshot.exists ? subscriptionSnapshot.data() : null;
+      const renewalDate = subscription?.renewalDate?.toDate?.();
+      if (!subscription || subscription.status !== 'active' || !['circle', 'personalized'].includes(subscription.planId)
+        || !renewalDate || renewalDate <= now.toDate() || !subscription.latestReference) {
+        throw new HttpsError('failed-precondition', 'A student needs an active paid subscription before a tutor can be assigned.');
+      }
+      let quote;
+      try { quote = calculateSubscriptionQuote(subscription); } catch {
+        throw new HttpsError('failed-precondition', 'The student’s active subscription selection is invalid.');
+      }
+      const paymentRef = studentPaymentRef(db, studentId, subscription.latestReference);
+      const paymentSnapshot = await transaction.get(paymentRef);
+      const payment = paymentSnapshot.exists ? paymentSnapshot.data() : null;
+      if (!payment || payment.status !== 'success' || payment.studentId !== studentId
+        || payment.reference !== subscription.latestReference
+        || !isSavedSubscriptionPaymentConsistent({ quote, subscription, payment })
+        || payment.currency !== quote.currency || payment.planId !== quote.planId
+        || payment.billingPeriod !== quote.billingPeriod || Number(payment.subjectCount) !== quote.subjectCount) {
+        throw new HttpsError('failed-precondition', 'A matching successful subscription payment is required before assigning a tutor.');
+      }
+      if (activeEpisodes.size > quote.subjectCount) {
+        throw new HttpsError('failed-precondition', 'The student has more active subjects than their subscription allows.');
+      }
+      const matchingEpisode = activeEpisodes.docs.find((document) => normalizeSubject(document.data().subjectKey) === subject);
+      if (!matchingEpisode) throw new HttpsError('not-found', 'Active subject episode not found.');
+      const currentEpisode = await transaction.get(matchingEpisode.ref);
+      if (!currentEpisode.exists || currentEpisode.data().status !== 'active') {
+        throw new HttpsError('not-found', 'Active subject episode not found.');
+      }
+      const current = currentEpisode.data();
+      if (current.primaryTutorId) throw new HttpsError('already-exists', `This student already has a primary tutor for ${subject}.`);
+      transaction.update(currentEpisode.ref, {
+        primaryTutorId: tutorId,
+        activeStaffIds: admin.firestore.FieldValue.arrayUnion(tutorId),
+        historicalStaffIds: admin.firestore.FieldValue.arrayUnion(tutorId),
+        [`staffByUid.${tutorId}`]: 'co-owner',
+        staffMemberships: [...(current.staffMemberships ?? []), membership({ uid: tutorId, role: 'co-owner', grantedAt: now, grantedBy: actorId })],
+        updatedAt: now,
+      });
+      return { id: currentEpisode.id, studentId, tutorId, subject };
     });
-    return { id: currentEpisode.id, studentId, tutorId, subject };
-  });
+  } catch (error) {
+    if (error instanceof HttpsError) throw error;
+    logger.error('Could not assign the primary tutor to the student subject', {
+      actorId, studentId, tutorId, subject, error: error?.message ?? String(error),
+    });
+    throw new HttpsError('internal', 'The tutor could not be assigned because an internal error occurred. Please retry.');
+  }
   return episode;
 });
 

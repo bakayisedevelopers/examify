@@ -148,7 +148,7 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
           <Link
             to={profilePath}
             onClick={() => setIsMobileMenuOpen(false)}
-            className="mb-5 flex min-w-0 flex-col items-center border-b border-slate-800 pb-5 text-center transition hover:opacity-90"
+          className="mb-5 hidden min-w-0 flex-col items-center border-b border-slate-800 pb-5 text-center transition hover:opacity-90 lg:flex"
           >
             <span className="relative flex h-14 w-14 flex-none items-center justify-center overflow-hidden rounded-full border border-slate-700 bg-slate-800 text-sm font-semibold text-lime-300">
               {initials}
@@ -180,13 +180,21 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
               </NavLink>
             ))}
           </nav>
-          <div className="mt-auto rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
+          <div className="mt-auto hidden rounded-2xl border border-slate-800 bg-slate-950/80 p-4 lg:block">
             <p className="text-xs uppercase tracking-[0.25em] text-slate-400">Signed in</p>
             <button type="button" onClick={() => { setIsMobileMenuOpen(false); onLogout(); }} className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-rose-400 hover:text-rose-300">
               <LogOut className="h-4 w-4" />
               Log out
             </button>
           </div>
+          <Link
+            to={profilePath}
+            onClick={() => setIsMobileMenuOpen(false)}
+            className="mt-auto block truncate rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm font-semibold text-white transition hover:border-lime-400/40 hover:text-lime-200 lg:hidden"
+            aria-label={`Open ${displayName}'s profile`}
+          >
+            {displayName}
+          </Link>
         </aside>
         <main className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain pb-[calc(2rem+env(safe-area-inset-bottom))] pr-1 lg:pb-4">
           <header className="panel hidden flex-col gap-3 p-6 border-slate-800 bg-slate-900/90 md:flex-row md:items-center md:justify-between lg:sticky lg:top-0 lg:z-30 lg:flex">

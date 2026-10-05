@@ -361,15 +361,27 @@ export const reconcileDiscountCodeReservations = onSchedule(
         if (!response.ok || payload.status !== true) continue;
         const transaction = payload.data;
         const definitiveFailure = ['failed', 'abandoned', 'reversed'].includes(transaction.status);
-        const amountMatches = Number(transaction.amount) === Math.round(Number(redemption.finalAmount) * 100)
-          && transaction.currency === 'ZAR';
-        if (transaction.status === 'success' && amountMatches) {
-          await transitionDiscountRedemptionForPayment({ db, code, reference: redemption.reference, status: 'success' });
-        } else if (definitiveFailure || transaction.status === 'success') {
-          await transitionDiscountRedemptionForPayment({ db, code, reference: redemption.reference, status: definitiveFailure ? transaction.status : 'failed' });
-          const payment = db.collection('users').doc(redemption.studentId).collection('payments').doc(redemption.reference);
-          await payment.set({
-            status: transaction.status === 'success' ? 'amount_mismatch' : transaction.status,
+        const paymentRef = db.collection('users').doc(redemption.studentId).collection('payments').doc(redemption.reference);
+        const paymentSnapshot = await paymentRef.get();
+        const payment = paymentSnapshot.data();
+        if (transaction.status === 'success' && payment?.status === 'success') {
+          // The finalizer validates gateway amount (including the temporary R1
+          // authorization charge) and persists the subscription atomically. This
+          // task only repairs a redemption counter after that finalization.
+          const amountMatches = Number(transaction.amount) === Math.round(Number(payment.amount) * 100)
+            && transaction.currency === payment.currency;
+          if (amountMatches) {
+            await transitionDiscountRedemptionForPayment({ db, code, reference: redemption.reference, status: 'success' });
+          } else {
+            logger.error('Finalized discounted payment no longer matches the verified Paystack amount', {
+              code, reference: redemption.reference, expectedAmount: payment.amount,
+              actualAmount: transaction.amount, authorizationOnly: payment.authorizationOnly === true,
+            });
+          }
+        } else if (definitiveFailure && payment?.status !== 'success') {
+          await transitionDiscountRedemptionForPayment({ db, code, reference: redemption.reference, status: transaction.status });
+          await paymentRef.set({
+            status: transaction.status,
             gatewayResponse: transaction.gateway_response ?? null,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           }, { merge: true });

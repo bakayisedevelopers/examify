@@ -8,15 +8,20 @@ import { getRoleDashboardData } from '../../services/firestoreService';
 export const AdminDashboardPage = () => {
   const { profile, logout } = useAuth();
   const [dashboard, setDashboard] = useState(null);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
-    getRoleDashboardData('admin').then(setDashboard);
+    getRoleDashboardData('admin').then(setDashboard).catch((error) => {
+      console.error('[Examifying][AdminDashboard] load:error', error);
+      setLoadError(error.message || 'Could not load admin dashboard data.');
+    });
   }, []);
-
-  if (!dashboard) return null;
 
   return (
     <AppShell title="Admin dashboard" subtitle="Monitor users, tutors, papers, subscriptions, and overall platform activity across Examifying." role="admin" user={profile} onLogout={logout}>
+      {loadError ? <div className="panel border border-rose-200 p-4 text-sm font-medium text-rose-700" role="alert">{loadError}</div> : null}
+      {!dashboard && !loadError ? <div className="panel p-5 text-sm text-slate-500" role="status">Loading admin dashboard…</div> : null}
+      {dashboard ? <>
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {(dashboard.stats ?? []).map((item) => <StatCard key={item.label} {...item} />)}
       </section>
@@ -46,6 +51,7 @@ export const AdminDashboardPage = () => {
           </div>
         </div>
       </section>
+      </> : null}
     </AppShell>
   );
 };

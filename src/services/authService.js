@@ -8,7 +8,7 @@ import {
   updatePassword,
   deleteUser,
 } from 'firebase/auth';
-import { deleteDoc, doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { deleteDoc, deleteField, doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { auth, db, functions, isFirebaseConfigured } from '../firebase/config';
 import { collections } from '../firebase/schema';
@@ -37,6 +37,9 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
   }
   const isTutorRole = role === 'tutor' || role === 'teacher';
   const whatsappNumber = role === 'student' ? normalizeWhatsAppNumber(extraProfile.whatsappNumber) : '';
+  const tutorWhatsAppNumber = isTutorRole ? normalizeWhatsAppNumber(extraProfile.whatsappNumber) : '';
+  const safeExtraProfile = Object.fromEntries(Object.entries(extraProfile)
+    .filter(([key]) => !isTutorRole || key !== 'whatsappNumber'));
   const studentDefaults = role === 'student'
     ? {
       paymentCompleted: false,
@@ -46,7 +49,7 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
 
   const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
   const profile = Object.fromEntries(Object.entries({
-    ...extraProfile,
+    ...safeExtraProfile,
     ...studentDefaults,
     uid: credential.user.uid,
     email: credential.user.email || email.trim(),
@@ -67,6 +70,10 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
   try {
     await updateProfile(credential.user, { displayName: fullName.trim() });
     await setDoc(doc(db, collections.users, credential.user.uid), profile);
+    if (isTutorRole) {
+      if (!functions) throw new Error('Firebase Functions are not configured. Tutor WhatsApp setup is temporarily unavailable.');
+      await httpsCallable(functions, 'saveTutorWhatsAppNumber')({ whatsappNumber: tutorWhatsAppNumber });
+    }
     return { user: credential.user, profile };
   } catch (error) {
     try {
@@ -119,7 +126,7 @@ export const logout = async () => {
   return true;
 };
 
-export const updateUserProfileDetails = async ({ uid, displayName, grade, whatsappNumber, newPassword, restoreSubjectInstanceIds = [] }) => {
+export const updateUserProfileDetails = async ({ uid, displayName, grade, whatsappNumber, role, newPassword, restoreSubjectInstanceIds = [] }) => {
 
   const normalizedWhatsAppNumber = whatsappNumber === undefined ? undefined : normalizeWhatsAppNumber(whatsappNumber);
   let gradeChangeResult = null;
@@ -140,9 +147,16 @@ export const updateUserProfileDetails = async ({ uid, displayName, grade, whatsa
 
     const payload = { updatedAt: serverTimestamp() };
     if (displayName) payload.displayName = displayName;
-    if (normalizedWhatsAppNumber) payload.whatsappNumber = normalizedWhatsAppNumber;
-    
-    await updateDoc(doc(db, collections.users, uid), payload);
+    if (role === 'tutor' || role === 'teacher') {
+      if (normalizedWhatsAppNumber) {
+        if (!functions) throw new Error('Firebase Functions are not configured. Tutor WhatsApp setup is temporarily unavailable.');
+        await httpsCallable(functions, 'saveTutorWhatsAppNumber')({ whatsappNumber: normalizedWhatsAppNumber });
+      }
+      await updateDoc(doc(db, collections.users, uid), { ...payload, whatsappNumber: deleteField() });
+    } else {
+      if (normalizedWhatsAppNumber) payload.whatsappNumber = normalizedWhatsAppNumber;
+      await updateDoc(doc(db, collections.users, uid), payload);
+    }
     return { uid, ...payload, gradeChangeResult };
   } else {
     // Demo mode bypass

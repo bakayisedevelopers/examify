@@ -28,6 +28,13 @@ export const verifySubscriptionPayment = async (reference, studentId) => {
   return response.data;
 };
 
+export const cancelSubscriptionPaymentCheckout = async ({ studentId, reference }) => {
+  if (!isFirebaseConfigured) return { cancelled: true, demo: true };
+  const callable = httpsCallable(functions, 'cancelPaystackCheckout');
+  const response = await callable({ studentId, reference });
+  return response.data;
+};
+
 export const manageStudentSubscription = async ({ studentId, action }) => {
   if (!isFirebaseConfigured) return { action, status: 'success', demo: true };
 
@@ -41,5 +48,12 @@ export const retryStudentSubscriptionPayment = async (studentId) => {
 
   const callable = httpsCallable(functions, 'chargeStoredAuthorization');
   const response = await callable({ studentId });
+  return response.data;
+};
+
+export const getAdminAuthorizationRefundIssues = async () => {
+  if (!isFirebaseConfigured) return { issues: [] };
+  const callable = httpsCallable(functions, 'getAdminAuthorizationRefundIssues');
+  const response = await callable();
   return response.data;
 };

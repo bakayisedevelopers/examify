@@ -4,6 +4,7 @@ import { useAuth } from '../../hooks/useAuth';
 import { updateUserProfileDetails } from '../../services/authService';
 import { getStudentSubjectHistoryOptions } from '../../services/firestoreService';
 import { ROLES, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
+import { getTutorWhatsAppSettings } from '../../services/whatsappService';
 
 export const ProfilePersonalDetailsPage = ({ role }) => {
   const { profile, logout, refreshProfile, isDemoMode } = useAuth();
@@ -18,6 +19,8 @@ export const ProfilePersonalDetailsPage = ({ role }) => {
   const [selectedHistoryIds, setSelectedHistoryIds] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
+  const isTutorRole = role === ROLES.TUTOR || role === 'teacher';
+  const [whatsappLoading, setWhatsAppLoading] = useState(isTutorRole && !isDemoMode);
 
   useEffect(() => {
     if (role !== ROLES.STUDENT || !profile?.uid || !grade || grade === profile.grade) {
@@ -43,6 +46,22 @@ export const ProfilePersonalDetailsPage = ({ role }) => {
     return () => { active = false; };
   }, [grade, profile?.grade, profile?.uid, role]);
 
+  useEffect(() => {
+    if (isDemoMode) {
+      setWhatsAppLoading(false);
+      return undefined;
+    }
+    if (!isTutorRole || !profile?.uid) return undefined;
+    let active = true;
+    setWhatsAppLoading(true);
+    getTutorWhatsAppSettings().then((settings) => {
+      if (active) setWhatsAppNumber(settings.whatsappNumber || '');
+    }).catch((error) => {
+      if (active) setMessage(error.message || 'Could not load your private WhatsApp number.');
+    }).finally(() => { if (active) setWhatsAppLoading(false); });
+    return () => { active = false; };
+  }, [isDemoMode, isTutorRole, profile?.uid]);
+
   const handleSave = async (event) => {
     event.preventDefault();
     setSaving(true);
@@ -53,7 +72,8 @@ export const ProfilePersonalDetailsPage = ({ role }) => {
         uid: profile?.uid,
         displayName,
         grade: role === ROLES.STUDENT ? grade : undefined,
-        whatsappNumber: role === ROLES.STUDENT ? whatsappNumber : undefined,
+        whatsappNumber: role === ROLES.STUDENT || isTutorRole ? whatsappNumber : undefined,
+        role,
         newPassword: password || undefined,
         restoreSubjectInstanceIds: role === ROLES.STUDENT ? selectedHistoryIds : [],
       });
@@ -121,6 +141,13 @@ export const ProfilePersonalDetailsPage = ({ role }) => {
               <input type="tel" inputMode="tel" autoComplete="tel" className="input" value={whatsappNumber} onChange={(event) => setWhatsAppNumber(event.target.value)} placeholder="082 123 4567 or +27 82 123 4567" required />
             </label>
           </>
+        ) : null}
+        {isTutorRole ? (
+          <label>
+            <span className="label">WhatsApp number</span>
+            <input type="tel" inputMode="tel" autoComplete="tel" className="input" value={whatsappNumber} onChange={(event) => setWhatsAppNumber(event.target.value)} placeholder="+27 82 123 4567 or +44 20 1234 5678" required disabled={whatsappLoading} />
+            <span className="mt-1 block text-xs text-slate-500">Enter an international number with its country code. Assigned students see this only for an upcoming online one-on-one lesson.</span>
+          </label>
         ) : null}
         <label>
           <span className="label">New password</span>

@@ -45,7 +45,7 @@ import {
 } from '../data/mockData';
 import { DEFAULT_SUBJECT, MAX_AI_SOURCE_PAPERS, MAX_EXERCISES_PER_DATE, MAX_QUESTIONS_PER_EXERCISE, WEEKLY_EXERCISE_DAYS } from '../lib/constants';
 import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../utils/tutorSubjects';
-import { calculateSubscriptionQuote, getEffectiveSubscriptionState } from '../utils/subscriptionPlans';
+import { calculateSubscriptionQuote, getEffectiveSubscriptionState, isSubscriptionPaymentConsistent } from '../utils/subscriptionPlans';
 import { normalizeWhatsAppLessonLink } from '../utils/whatsapp';
 import { buildLessonTopicScores } from './lessonPersistence';
 
@@ -77,6 +77,11 @@ const emptyDashboardData = {
 
 const ensureDb = () => {
   if (!db) throw new Error('Firebase is not configured. Add VITE_FIREBASE_* variables to use live data.');
+};
+const getAdminWorkspaceData = async (scope, payload = {}) => {
+  ensureDb();
+  if (!functions) throw new Error('Firebase Functions are not configured. Admin workspace data is unavailable.');
+  return (await httpsCallable(functions, 'getAdminWorkspaceData')({ scope, ...payload })).data;
 };
 
 const demoUsers = Object.values(mockUsers);
@@ -620,6 +625,7 @@ export const getRoleDashboardData = async (role, options = {}) => {
     if (role === 'tutor') return buildTutorDashboard({ tutorId: options.tutorId, subject: options.subject ?? DEFAULT_SUBJECT });
     return mockDashboardData[role];
   }
+  if (role === 'admin') return getAdminWorkspaceData('dashboard');
   return emptyDashboardData[role] ?? { stats: [] };
 };
 
@@ -1189,8 +1195,8 @@ const resolveVerifiedSubscriptionState = async ({ studentId, subscription }) => 
     && payment.planId === subscription.planId
     && payment.billingPeriod === subscription.billingPeriod
     && Number(payment.subjectCount) === Number(subscription.subjectCount)
-    && Number(payment.amount) === expectedQuote.amount
-    && payment.currency === expectedQuote.currency);
+    && payment.currency === expectedQuote.currency
+    && isSubscriptionPaymentConsistent({ quote: expectedQuote, subscription, payment }));
 
   if (!paymentMatchesSubscription) {
     return {
@@ -2253,12 +2259,7 @@ export const getAdminTutorOptions = async () => {
     })).filter((tutor) => tutor.subjects.length);
   }
 
-  ensureDb();
-  const snapshot = await getDocs(collection(db, collections.users));
-  return getApprovedTutorOrTeacherProfiles(snapshot.docs.map((item) => item.data()))
-    .map((tutor) => ({ ...tutor, subjects: getApprovedTutorSubjects(tutor) }))
-    .filter((tutor) => tutor.subjects.length)
-    .sort((left, right) => String(left.displayName || left.email || '').localeCompare(String(right.displayName || right.email || '')));
+  return getAdminWorkspaceData('tutors');
 };
 
 export const getAdminSubjectAssignmentData = async (subject = DEFAULT_SUBJECT) => {
@@ -2289,44 +2290,7 @@ export const getAdminSubjectAssignmentData = async (subject = DEFAULT_SUBJECT) =
     };
   }
 
-  ensureDb();
-  const [usersSnapshot, assignmentsSnapshot] = await Promise.all([
-    getDocs(collection(db, collections.users)),
-    getDocs(query(
-      collectionGroup(db, 'subjects'),
-      where('subjectKey', '==', subject),
-      where('status', '==', 'active'),
-    )),
-  ]);
-
-  const users = usersSnapshot.docs.map((item) => item.data());
-  const userById = new Map(users.map((user) => [user.uid, user]));
-  const activeEpisodes = assignmentsSnapshot.docs
-    .filter((item) => item.data().studentId && userById.get(item.data().studentId)?.role === 'student');
-  const students = [...new Map(activeEpisodes.map((item) => [item.data().studentId, userById.get(item.data().studentId)])).values()];
-  const tutors = getApprovedTutorOrTeacherProfiles(users, subject);
-  const studentMap = new Map(students.map((student) => [student.uid, student]));
-  const tutorMap = new Map(tutors.map((tutor) => [tutor.uid, tutor]));
-  const assignments = activeEpisodes.filter((item) => Boolean(item.data().primaryTutorId)).map((item) => {
-    const assignment = { id: item.id, ...item.data(), tutorId: item.data().primaryTutorId, subject: item.data().subjectKey };
-    const student = studentMap.get(assignment.studentId);
-    const tutor = tutorMap.get(assignment.tutorId);
-    const isTeacher = isTeacherProfile(tutor);
-    return {
-      ...assignment,
-      studentName: student?.displayName ?? student?.email ?? 'Student',
-      tutorName: tutor?.displayName ?? tutor?.email ?? 'Tutor',
-      tutorRoleLabel: isTeacher ? 'Teacher' : 'Tutor',
-    };
-  }).filter((assignment) => studentMap.has(assignment.studentId));
-  const assignedStudentIds = new Set(assignments.map((assignment) => assignment.studentId));
-
-  return {
-    students,
-    tutors,
-    assignments,
-    unassignedStudents: students.filter((student) => !assignedStudentIds.has(student.uid)),
-  };
+  return getAdminWorkspaceData('assignments', { subject });
 };
 
 export const getQuestionPapers = async ({ grade, region, subject = DEFAULT_SUBJECT } = {}) => {
@@ -3676,29 +3640,7 @@ export const getGuideQuizResultsSummary = async () => {
     };
   }
 
-  ensureDb();
-  const usersSnapshot = await getDocs(collection(db, collections.users));
-  const resultsSnapshot = await getDocs(query(collectionGroup(db, 'guideQuizResults'), orderBy('submittedAt', 'desc')));
-  const resultsByUser = new Map();
-
-  resultsSnapshot.docs.forEach((item) => {
-    const data = { id: item.id, ...item.data() };
-    if (!resultsByUser.has(data.userId)) {
-      resultsByUser.set(data.userId, data);
-    }
-  });
-
-  const users = usersSnapshot.docs.map((item) => item.data()).filter((user) => user.role === 'student' || user.role === 'tutor');
-  const buildRow = (user) => ({
-    id: user.uid,
-    name: user.displayName || user.email || (user.role === 'student' ? 'Student' : 'Tutor'),
-    percentage: resultsByUser.get(user.uid)?.percentage ?? null,
-  });
-
-  return {
-    students: users.filter((user) => user.role === 'student').map(buildRow),
-    tutors: users.filter((user) => user.role === 'tutor').map(buildRow),
-  };
+  return getAdminWorkspaceData('guide-results');
 };
 
 export const assignStudentToParent = async ({ parentId, studentIdentifier }) => {

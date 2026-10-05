@@ -209,6 +209,10 @@ service cloud.firestore {
         allow read, update, delete: if signedIn() && request.auth.uid == userId;
         allow create: if false;
       }
+      // Tutor contact information and per-subject invite links are returned only
+      // by callables that verify the owner or the student's exact lesson access.
+      match /private/{document=**} { allow read, write: if false; }
+      match /tutorSubjectSettings/{document=**} { allow read, write: if false; }
       match /notificationTokens/{document=**} {
         allow read, write: if signedIn() && request.auth.uid == userId;
       }

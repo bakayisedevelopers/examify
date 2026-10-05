@@ -140,10 +140,12 @@ export const validateDiscountSettings = (settings) => {
 };
 
 export const calculateDiscount = (baseAmount, percentOff) => {
-  const originalAmount = Math.round(Number(baseAmount) * 100) / 100;
-  if (!Number.isFinite(originalAmount) || originalAmount < 0) throw new Error('Subscription price is invalid.');
+  const originalAmountMinor = Math.round(Number(baseAmount) * 100);
+  if (!Number.isSafeInteger(originalAmountMinor) || originalAmountMinor < 0) throw new Error('Subscription price is invalid.');
   if (!Number.isInteger(percentOff) || percentOff < 1 || percentOff > 100) throw new Error('Discount percentage is invalid.');
-  const finalAmount = Math.round(originalAmount * (100 - percentOff)) / 100;
+  const finalAmountMinor = Math.round((originalAmountMinor * (100 - percentOff)) / 100);
+  const originalAmount = originalAmountMinor / 100;
+  const finalAmount = finalAmountMinor / 100;
   return {
     originalAmount,
     discountAmount: Math.round((originalAmount - finalAmount) * 100) / 100,

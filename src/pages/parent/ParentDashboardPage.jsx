@@ -5,6 +5,7 @@ import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { SubscriptionLifecyclePanel } from '../../components/billing/SubscriptionLifecyclePanel';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
+import { AuthorizationChargeDisclosure } from '../../components/billing/AuthorizationChargeDisclosure';
 import { 
   assignStudentToParent, 
   getStudentsForParent, 
@@ -12,7 +13,7 @@ import {
   getTodayExercise,
   updateStudentProfileByParent 
 } from '../../services/firestoreService';
-import { initializeSubscriptionPayment, verifySubscriptionPayment } from '../../services/paymentsService';
+import { cancelSubscriptionPaymentCheckout, initializeSubscriptionPayment, verifySubscriptionPayment } from '../../services/paymentsService';
 import { Users, Link as LinkIcon, AlertCircle, Edit, Check, X, Calendar, Activity } from 'lucide-react';
 
 const EditDetailsForm = ({ student, onSave, onCancel }) => {
@@ -69,6 +70,8 @@ export const ParentDashboardPage = () => {
   const [status, setStatus] = useState('');
   const [editingStudentId, setEditingStudentId] = useState(null);
   const [subscriptionStudent, setSubscriptionStudent] = useState(null);
+  const [pendingAuthorizationCheckout, setPendingAuthorizationCheckout] = useState(null);
+  const [isCancellingAuthorizationCheckout, setIsCancellingAuthorizationCheckout] = useState(false);
   
   const lastVerifiedReferenceRef = useRef(null);
   const handledDiscountLinkRef = useRef('');
@@ -107,8 +110,10 @@ export const ParentDashboardPage = () => {
       );
       
       setStudents(enrichedStudents);
+      return enrichedStudents;
     } catch (err) {
       console.error(err);
+      return [];
     }
   };
 
@@ -150,8 +155,15 @@ export const ParentDashboardPage = () => {
           return;
         }
 
-        setStatus('Payment verified successfully!');
-        await loadStudents();
+        const updatedStudents = await loadStudents();
+        const updatedStudent = updatedStudents.find((student) => student.uid === paymentStudentId);
+        if (!updatedStudent?.paymentCompleted) {
+          throw new Error(`Paystack verified payment ${reference}, but subscription activation is still being finalized. Retry verification; do not pay again.`);
+        }
+        const authorizationNote = verification.authorizationOnly
+          ? ` R1.00 was temporarily charged for card authorization; the automatic refund request is ${verification.refundStatus || 'pending'}${verification.nextBillingDate ? `. The next actual charge is expected ${new Date(verification.nextBillingDate).toLocaleDateString()} for R${Number(verification.nextBillingAmount || 0).toFixed(2)}` : (verification.noNextChargeWhileOfferApplies ? '. This offer has no paid renewal while it remains active' : '')}.${verification.manualPaymentRequired ? ' Paystack did not provide a reusable authorization, so the next payment will need to be completed manually.' : ''}`
+          : '';
+        setStatus(`Payment verified and subscription activated.${authorizationNote}`);
         navigate(location.pathname, { replace: true });
       } catch (error) {
         setStatus(error?.message || 'Payment verification failed.');
@@ -240,6 +252,8 @@ export const ParentDashboardPage = () => {
           ? `${result.quote.planName} is active until ${new Date(result.renewalDate).toLocaleDateString()}; automatic renewal is cancelled.`
           : `${result.quote.planName} is already active for ${student.displayName || 'the student'}.`);
         setSubscriptionStudent(null);
+      } else if (result.requiresAuthorizationDisclosure && result.authorizationUrl) {
+        setPendingAuthorizationCheckout({ ...result, studentId: student.uid });
       } else if (!result?.authorizationUrl) {
         throw new Error('No Paystack authorization URL was returned.');
       } else {
@@ -249,6 +263,35 @@ export const ParentDashboardPage = () => {
       setStatus(error?.message || 'Unable to start subscription checkout.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const cancelAuthorizationCheckout = async () => {
+    if (!pendingAuthorizationCheckout?.reference || !pendingAuthorizationCheckout?.studentId) return;
+    setIsCancellingAuthorizationCheckout(true);
+    try {
+      const result = await cancelSubscriptionPaymentCheckout({
+        studentId: pendingAuthorizationCheckout.studentId,
+        reference: pendingAuthorizationCheckout.reference,
+      });
+      if (result.paymentSucceeded) {
+        const verification = await verifySubscriptionPayment(pendingAuthorizationCheckout.reference, pendingAuthorizationCheckout.studentId);
+        if (verification?.status === 'success') {
+          const updatedStudents = await loadStudents();
+          if (!updatedStudents.some((student) => student.uid === pendingAuthorizationCheckout.studentId && student.paymentCompleted)) {
+            throw new Error('Payment is verified but subscription activation is still finalizing. Retry verification; do not pay again.');
+          }
+          setStatus(`Payment verified and subscription activated. R1.00 authorization refund status: ${verification.refundStatus || 'pending'}.${verification.manualPaymentRequired ? ' Paystack did not provide a reusable authorization, so the next payment will need to be completed manually.' : ''}`);
+          setPendingAuthorizationCheckout(null);
+          return;
+        }
+      }
+      setPendingAuthorizationCheckout(null);
+      setStatus('Checkout closed. If Paystack payment was not completed, its discount reservation will be released after Paystack confirms abandonment.');
+    } catch (error) {
+      setStatus(error?.message || 'Could not close the pending checkout.');
+    } finally {
+      setIsCancellingAuthorizationCheckout(false);
     }
   };
 
@@ -432,6 +475,12 @@ export const ParentDashboardPage = () => {
               }}
               onContinue={(selection) => handlePayForStudent(subscriptionStudent, selection)}
               isSubmitting={loading}
+            />
+            <AuthorizationChargeDisclosure
+              checkout={pendingAuthorizationCheckout}
+              isCancelling={isCancellingAuthorizationCheckout}
+              onContinue={() => { if (pendingAuthorizationCheckout?.authorizationUrl) window.location.assign(pendingAuthorizationCheckout.authorizationUrl); }}
+              onCancel={cancelAuthorizationCheckout}
             />
           </div>
         </div>

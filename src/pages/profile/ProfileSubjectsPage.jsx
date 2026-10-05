@@ -6,6 +6,8 @@ import { addStudentSubjects, getActiveSubjectsForStudent, getGlobalSubjects, get
 import { deleteTutorMarksDocument, retryTutorMarksDocument, uploadTutorMarksDocument } from '../../services/storageService';
 import { getApprovedTutorSubjects } from '../../utils/tutorSubjects';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
+import { getTutorWhatsAppSettings, saveTutorWhatsAppGroupLink } from '../../services/whatsappService';
+import { normalizeWhatsAppGroupInviteLink } from '../../utils/whatsapp';
 
 const statusStyles = {
   processing: 'bg-amber-50 text-amber-700',
@@ -38,6 +40,9 @@ export const ProfileSubjectsPage = ({ role }) => {
   const [historyCandidates, setHistoryCandidates] = useState([]);
   const [selectedHistoryIds, setSelectedHistoryIds] = useState([]);
   const [historyCapacity, setHistoryCapacity] = useState(0);
+  const [whatsappGroupLinks, setWhatsAppGroupLinks] = useState({});
+  const [whatsappGroupDrafts, setWhatsAppGroupDrafts] = useState({});
+  const [whatsappSettingsLoading, setWhatsAppSettingsLoading] = useState(isTutorRole);
   const tutorUploadFormRef = useRef(null);
   const loadStudentSubjects = useCallback(async () => {
     if (role !== ROLES.STUDENT || !profile?.uid) return;
@@ -69,6 +74,21 @@ export const ProfileSubjectsPage = ({ role }) => {
       setStatus(error.message || 'Could not load uploaded tutor documents.');
     });
   }, [loadTutorDocuments]);
+
+  useEffect(() => {
+    if (!isTutorRole || !profile?.uid) return undefined;
+    let active = true;
+    setWhatsAppSettingsLoading(true);
+    getTutorWhatsAppSettings().then((settings) => {
+      if (!active) return;
+      const links = settings.groupLinks || {};
+      setWhatsAppGroupLinks(links);
+      setWhatsAppGroupDrafts(links);
+    }).catch((error) => {
+      if (active) setStatus(error.message || 'Could not load WhatsApp group settings.');
+    }).finally(() => { if (active) setWhatsAppSettingsLoading(false); });
+    return () => { active = false; };
+  }, [isTutorRole, profile?.uid]);
 
   useEffect(() => {
     loadStudentSubjects().catch((error) => setStatus(error.message || 'Could not load your active subjects.'));
@@ -271,6 +291,22 @@ export const ProfileSubjectsPage = ({ role }) => {
     }
   };
 
+  const handleSaveWhatsAppGroup = async (subject, remove = false) => {
+    try {
+      const groupLink = remove ? '' : normalizeWhatsAppGroupInviteLink(whatsappGroupDrafts[subject] || '');
+      setSaving(true);
+      setStatus(`${remove ? 'Removing' : 'Saving'} ${subject} WhatsApp group link...`);
+      const result = await saveTutorWhatsAppGroupLink({ subject, groupLink });
+      setWhatsAppGroupLinks((current) => ({ ...current, [subject]: result.groupLink || '' }));
+      setWhatsAppGroupDrafts((current) => ({ ...current, [subject]: result.groupLink || '' }));
+      setStatus(result.groupLink ? `${subject} WhatsApp group link saved.` : `${subject} WhatsApp group link removed.`);
+    } catch (error) {
+      setStatus(error.message || 'Could not save the WhatsApp group link.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <AppShell title="Subjects" subtitle="Manage the subjects connected to your Examifying account." role={role} user={profile} onLogout={logout}>
       <section className="panel p-5">
@@ -289,7 +325,7 @@ export const ProfileSubjectsPage = ({ role }) => {
                     <p className="truncate text-sm font-semibold text-brand-700">
                       {subject}
                       {isTutorRole && tutorMarkBySubject.has(subject) ? (
-                        <span className="ml-2 rounded-full bg-white px-2 py-0.5 text-xs text-brand-600">{tutorMarkBySubject.get(subject)}%</span>
+                        <span className="ml-2 rounded-full border border-lime-300 bg-lime-200 px-2 py-0.5 text-xs font-semibold text-slate-900">{tutorMarkBySubject.get(subject)}%</span>
                       ) : null}
                     </p>
                     {role === ROLES.STUDENT ? (
@@ -320,6 +356,32 @@ export const ProfileSubjectsPage = ({ role }) => {
                     <span className="px-3">{isStudentSubjectActive ? 'Available' : 'Unavailable'}</span>
                     <span className={`h-6 w-6 rounded-full bg-white shadow-sm transition ${isStudentSubjectActive ? 'translate-x-0' : ''}`} />
                   </button>
+                ) : null}
+
+                {isTutorRole ? (
+                  <div className="mt-4 border-t border-lime-900/10 pt-3">
+                    <label className="grid gap-2 text-xs font-semibold text-slate-800">
+                      WhatsApp group invite link
+                      <input
+                        type="url"
+                        className="input bg-white text-slate-900 placeholder:text-slate-500"
+                        value={whatsappGroupDrafts[subject] || ''}
+                        onChange={(event) => setWhatsAppGroupDrafts((current) => ({ ...current, [subject]: event.target.value }))}
+                        placeholder={whatsappSettingsLoading ? 'Loading saved link…' : 'https://chat.whatsapp.com/...'}
+                        disabled={saving || whatsappSettingsLoading}
+                        aria-label={`${subject} WhatsApp group invite link`}
+                      />
+                    </label>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button type="button" className="btn-secondary h-9 px-3 text-xs" onClick={() => handleSaveWhatsAppGroup(subject)} disabled={saving || whatsappSettingsLoading || !whatsappGroupDrafts[subject]?.trim()}>
+                        Save group link
+                      </button>
+                      {whatsappGroupLinks[subject] ? <button type="button" className="h-9 rounded-full border border-rose-300 px-3 text-xs font-semibold text-rose-700 transition hover:bg-rose-50" onClick={() => handleSaveWhatsAppGroup(subject, true)} disabled={saving || whatsappSettingsLoading}>
+                        Remove
+                      </button> : null}
+                    </div>
+                    <p className="mt-2 text-xs text-slate-600">Only students assigned to you for this subject can receive the invite in an upcoming online group lesson.</p>
+                  </div>
                 ) : null}
               </div>
             );
@@ -367,7 +429,7 @@ export const ProfileSubjectsPage = ({ role }) => {
                   key={subject}
                   type="button"
                   onClick={() => handleRemoveSelectedSubject(subject)}
-                  className="rounded-full bg-white px-3 py-1 text-sm font-semibold text-brand-700 shadow-sm transition hover:bg-rose-50 hover:text-rose-600"
+                  className="rounded-full border border-lime-300 bg-lime-100 px-3 py-1 text-sm font-semibold text-slate-900 shadow-sm transition hover:bg-rose-50 hover:text-rose-700"
                   title="Remove subject"
                 >
                   {subject} ×

@@ -124,3 +124,39 @@ export const calculateSubscriptionQuote = ({ planId, billingPeriod = 'monthly', 
     billingCycleDays: billingPeriod === 'yearly' ? 365 : 30,
   };
 };
+
+export const calculateDiscountedAmount = (amount, percentOff) => {
+  const amountMinor = Math.round(Number(amount) * 100);
+  const percent = Number(percentOff);
+  if (!Number.isSafeInteger(amountMinor) || amountMinor < 0) throw new Error('Subscription amount is invalid.');
+  if (!Number.isInteger(percent) || percent < 1 || percent > 100) throw new Error('Discount percentage is invalid.');
+  return Math.round((amountMinor * (100 - percent)) / 100) / 100;
+};
+
+export const isSubscriptionPaymentConsistent = ({ quote, subscription, payment }) => {
+  if (!quote || !subscription || !payment) return false;
+  const percentOff = Number(payment.discountPercent);
+  const hasDiscount = Number.isInteger(percentOff) && percentOff >= 1 && percentOff <= 100;
+  if (hasDiscount && (!payment.discountCode
+    || payment.discountCode !== subscription.discountCode
+    || Number(subscription.discountPercent) !== percentOff
+    || payment.discountBillingDuration !== subscription.discountBillingDuration)) return false;
+  if (!hasDiscount && Number(subscription.discountPercent) > 0) return false;
+
+  const expectedSubscriptionAmount = hasDiscount
+    ? calculateDiscountedAmount(quote.amount, percentOff)
+    : quote.amount;
+  if (payment.subscriptionAmountDue !== null && payment.subscriptionAmountDue !== undefined
+    && Number.isFinite(Number(payment.subscriptionAmountDue))
+    && Number(payment.subscriptionAmountDue) !== expectedSubscriptionAmount) return false;
+
+  const actualAmount = Number(payment.amount);
+  if (payment.authorizationOnly === true) {
+    const authorizationAmount = Number(payment.authorizationChargeAmount);
+    return expectedSubscriptionAmount === 0
+      && Number.isFinite(authorizationAmount)
+      && authorizationAmount > 0
+      && actualAmount === authorizationAmount;
+  }
+  return actualAmount === expectedSubscriptionAmount;
+};
