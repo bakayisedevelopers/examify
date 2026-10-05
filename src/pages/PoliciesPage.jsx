@@ -155,6 +155,7 @@ export const PoliciesPage = () => {
             'Content and files: question-paper PDFs and extracted indexes, student answer images, tutor marks documents or proof, and text or images submitted for OCR, analysis, marking, or support.',
             'Parent, tutor, and staff relationships: linked parent/student accounts, tutor assignments, access history needed to manage those relationships, and tutor agreement details.',
             'Subscription and payment records: selected plan, subject count, amount, discount, billing and renewal dates, transaction references and status, and Paystack authorization details returned for recurring payments. Examifying does not receive or store a full card number or card security code, but it stores the reusable authorization token and limited card metadata such as last four digits, expiry, card type, and bank when Paystack provides them.',
+            'Notification preferences: your in-app and email choices by notification type, plus your separate optional marketing email opt-in.',
             'Device and service data: browser and user-agent details, push-notification token and permission state, timestamps, operational logs, and technical information processed by Firebase or other service providers.',
           ]} />
           <p className="text-slate-600">
@@ -200,6 +201,7 @@ export const PoliciesPage = () => {
             'A student’s linked parent or guardian, assigned tutor or teacher, and authorised Examifying administrators may see records needed for their role.',
             'An allocated peer reviewer may see the exercise and answer pages needed to complete peer marking.',
             'Google Firebase services provide authentication, database, file storage, hosting, backend functions, and push notifications.',
+            'Resend delivers account, payment, tutor-assignment, and successful exercise-generation emails. It receives the recipient email address and the message details needed to deliver each notification. Discount-offer emails are sent only when the recipient has opted in to marketing email.',
             'Paystack receives the information needed to initiate and verify payments and provide recurring-payment authorizations.',
             'Google Gemini and the configured Kilo AI service receive feature inputs when an AI feature is used.',
             'We may disclose information if required by law, to protect users or the service, or to establish or defend legal rights.',
@@ -209,7 +211,7 @@ export const PoliciesPage = () => {
           <h3 className="font-semibold text-slate-900">5. Storage outside South Africa</h3>
           <p className="text-slate-600">
             The current Firebase project is configured to store Firestore data in Google Cloud’s us-central1 region in
-            the United States. Firebase, Paystack, and AI providers may process information in other countries according
+            the United States. Firebase, Resend, Paystack, and AI providers may process information in other countries according
             to their service configuration. Before or while making a cross-border transfer, Examifying must rely on a
             condition in POPIA section 72 and put the required protection in place. Contact the privacy address above to
             ask about a particular transfer or provider.
@@ -264,9 +266,11 @@ export const PoliciesPage = () => {
 
           <h3 className="font-semibold text-slate-900">10. Marketing and service messages</h3>
           <p className="text-slate-600">
-            We send account, payment, learning, and security messages needed to operate the service. We do not treat
-            notification permission or a service-message preference as consent to direct marketing. We will send direct
-            marketing by electronic communication only where POPIA permits it, and will provide a way to opt out.
+            We send account, payment, assignment, and successful exercise-generation messages needed to operate the
+            service according to the channel preferences in Settings. We do not treat notification permission or a
+            service-message preference as consent to direct marketing. Discount offers and product updates are sent by
+            email only when you actively opt in during account creation or in Settings; you can withdraw that choice
+            there. We will send direct marketing by electronic communication only where POPIA permits it.
           </p>
 
           <h3 className="font-semibold text-slate-900">11. Changes to this notice</h3>

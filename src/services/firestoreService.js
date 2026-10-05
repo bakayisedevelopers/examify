@@ -3107,6 +3107,10 @@ export const generateExercisePlanIfEligible = async (options = {}) => {
       subscriptionPlanId: result.criteria?.subscriptionPlanId ?? 'free',
       subscriptionPlanName: result.criteria?.subscriptionPlanName ?? 'Free',
       subscriptionPaymentReference: result.criteria?.subscriptionPaymentReference ?? null,
+      generationRunId: result.generated ? `${student.uid}-${startedAtMs}` : null,
+      generatedExerciseIds: result.generated
+        ? (result.assignments ?? []).map((assignment) => assignment.id).filter(Boolean)
+        : [],
       finishedAtMs: Date.now(),
       expiresAtMs: Date.now(),
       updatedAt: serverTimestamp(),
@@ -3165,7 +3169,7 @@ export const regenerateFutureUnsubmittedExercisesForTutor = async ({ tutorId, st
   });
   if (!acquired) return { generated: false, reason: 'Exercise regeneration is already in progress for this student and subject.', assignments: [] };
 
-  const saveStatus = (status, message) => setDoc(statusRef, {
+  const saveStatus = (status, message, result = null) => setDoc(statusRef, {
     studentId: student.uid,
     tutorId,
     subjectInstanceId,
@@ -3176,6 +3180,10 @@ export const regenerateFutureUnsubmittedExercisesForTutor = async ({ tutorId, st
     status,
     message,
     updatedAt: serverTimestamp(),
+    ...(status === 'completed' ? {
+      generationRunId: `manual-${student.uid}-${startedAtMs}`,
+      generatedExerciseIds: (result?.assignments ?? []).map((assignment) => assignment.id).filter(Boolean),
+    } : {}),
     ...(status === 'processing' ? { finishedAtMs: null } : { finishedAtMs: Date.now() }),
   }, { merge: true });
 
@@ -3191,7 +3199,7 @@ export const regenerateFutureUnsubmittedExercisesForTutor = async ({ tutorId, st
       },
     });
     const status = result.generated ? 'completed' : 'failed';
-    await saveStatus(status, result.reason || (result.generated ? 'Exercises regenerated.' : 'No exercises were regenerated.'));
+    await saveStatus(status, result.reason || (result.generated ? 'Exercises regenerated.' : 'No exercises were regenerated.'), result);
     return result;
   } catch (error) {
     await saveStatus('failed', error.message || 'Exercise regeneration failed.');
@@ -3781,15 +3789,17 @@ export const getTutorBillingSummary = async (tutorId) => {
   };
 };
 
-export const updateUserSettings = async ({ uid, settings }) => {
-  if (!isFirebaseConfigured) return { uid, settings };
+export const updateUserSettings = async ({ uid, settings, marketingEmailOptIn }) => {
+  if (!isFirebaseConfigured) return { uid, settings, marketingEmailOptIn };
 
   ensureDb();
-  await updateDoc(doc(db, collections.users, uid), {
-    settings,
+  const payload = {
+    'settings.notificationPreferences': settings.notificationPreferences,
     updatedAt: serverTimestamp(),
-  });
-  return { uid, settings };
+  };
+  if (typeof marketingEmailOptIn === 'boolean') payload.marketingEmailOptIn = marketingEmailOptIn;
+  await updateDoc(doc(db, collections.users, uid), payload);
+  return { uid, settings, marketingEmailOptIn };
 };
 
 export const signTutorAgreement = async ({ tutorId, legalName, accepted }) => {

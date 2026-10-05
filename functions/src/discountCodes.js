@@ -4,6 +4,8 @@ import { logger } from 'firebase-functions';
 import { admin, getDb } from './admin.js';
 import { getPaystackConfig } from './config.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
+import { queueBrandedEmail } from './resendEmail.js';
+import { isNotificationChannelEnabled } from './notificationPreferences.js';
 import {
   calculateDiscount,
   generateDiscountCode,
@@ -18,6 +20,14 @@ import {
 const discountCodes = (db) => db.collection('discountCodes');
 const subscriptionRef = (db, studentId) => db.collection('users').doc(studentId).collection('subscriptions').doc('current');
 const redemptionRef = (db, code, reference) => discountCodes(db).doc(code).collection('redemptions').doc(reference);
+
+const findProfileForRestrictedEmail = async (db, email) => {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const normalizedMatch = await db.collection('users').where('emailLowercase', '==', normalizedEmail).limit(1).get();
+  if (!normalizedMatch.empty) return normalizedMatch.docs[0].data();
+  const legacyMatch = await db.collection('users').where('email', '==', normalizedEmail).limit(1).get();
+  return legacyMatch.empty ? null : legacyMatch.docs[0].data();
+};
 
 const requireAdmin = async (db, uid) => {
   const actor = await db.collection('users').doc(uid).get();
@@ -108,7 +118,52 @@ export const createDiscountCode = onCall({ cpu: 'gcf_gen1' }, async (request) =>
       });
       return true;
     });
-    if (created) return { code };
+    if (created) {
+      if (settings.restrictedEmail) {
+        try {
+          const recipient = await findProfileForRestrictedEmail(db, settings.restrictedEmail);
+          const recipientEmail = String(recipient?.email || '').trim().toLowerCase();
+          if (recipientEmail === settings.restrictedEmail
+            && recipient?.marketingEmailOptIn === true
+            && isNotificationChannelEnabled(recipient, 'discount.offer', 'email')) {
+            const eligiblePlans = settings.eligiblePlans.map((planId) => planId === 'circle' ? 'Circle' : 'Personalized').join(' and ');
+            const discountDuration = settings.billingDuration === 'first_payment'
+              ? 'First payment only'
+              : settings.billingDuration === 'fixed_months'
+                ? `First ${settings.discountDurationMonths} monthly billing periods`
+                : 'Recurring while the same plan selection remains active';
+            await queueBrandedEmail({
+              type: 'discount.offer',
+              eventId: `discount-${code}`,
+              to: settings.restrictedEmail,
+              name: recipient.displayName || recipient.name || '',
+              subject: `A ${settings.percentOff}% Examifying discount is available for you`,
+              heading: 'You have a subscription offer',
+              paragraphs: [
+                'Use this email-restricted code on an eligible Examifying subscription. The offer is available only while the code is active and within its redemption window.',
+                'To stop discount and product-update emails, turn off Discount offers in your Examifying Settings.',
+              ],
+              details: [
+                { label: 'Discount code', value: code },
+                { label: 'Discount', value: `${settings.percentOff}% off` },
+                { label: 'Eligible plans', value: eligiblePlans },
+                { label: 'Discount duration', value: discountDuration },
+                { label: 'Maximum subjects', value: settings.maxSubjectCount ? String(settings.maxSubjectCount) : 'No subject cap' },
+                ...(settings.expiresAt ? [{ label: 'Use by', value: settings.expiresAt.toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg' }) }] : []),
+              ],
+              actionLabel: 'View subscription plans',
+              actionUrl: `/?discountCode=${encodeURIComponent(code)}`,
+            });
+          }
+        } catch (error) {
+          logger.error('Discount code created but its opted-in email could not be queued', {
+            code,
+            error: error?.message || String(error),
+          });
+        }
+      }
+      return { code };
+    }
   }
 
   throw new HttpsError('resource-exhausted', 'Could not generate a unique discount code. Please try again.');

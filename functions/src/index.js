@@ -87,6 +87,9 @@ export {
   notifyPeerMarkingCompleted,
   notifyPaymentStatus,
   notifyTutorAssignment,
+  notifyExerciseGenerationCompleted,
   notifyTutorReport,
   notifyCompletedLesson,
 } from './notifications.js';
+
+export { processResendEmailOutbox } from './resendEmail.js';

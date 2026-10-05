@@ -21,6 +21,7 @@ export const SignupPage = () => {
     province: REGIONS[0],
     school: '',
     whatsappNumber: '',
+    marketingEmailOptIn: false,
   });
 
   const [acceptedPolicies, setAcceptedPolicies] = useState(false);
@@ -122,6 +123,7 @@ export const SignupPage = () => {
           ...(form.role === ROLES.STUDENT ? { whatsappNumber } : {}),
           ...([ROLES.TUTOR, 'teacher'].includes(form.role) ? { whatsappNumber } : {}),
           isTeacher: form.role === 'teacher',
+          marketingEmailOptIn: form.marketingEmailOptIn,
         },
       });
 
@@ -241,6 +243,18 @@ export const SignupPage = () => {
             <span className="mt-1 block text-xs text-slate-400">Include your country code. This is saved privately for assigned students.</span>
           </label>
         ) : null}
+
+        <label className="md:col-span-2 flex cursor-pointer items-start gap-3 rounded-xl border border-slate-700 bg-slate-950/40 p-4 text-xs sm:text-sm text-slate-300">
+          <input
+            type="checkbox"
+            checked={form.marketingEmailOptIn}
+            onChange={(event) => setForm((current) => ({ ...current, marketingEmailOptIn: event.target.checked }))}
+            className="mt-1 accent-lime-400"
+          />
+          <span>
+            Email me occasional discount offers and product updates. This is optional, is off by default, and can be changed later in Settings. Essential account and payment emails are separate.
+          </span>
+        </label>
 
         <div className="md:col-span-2 flex items-start gap-3 text-xs sm:text-sm text-slate-400">
           <input

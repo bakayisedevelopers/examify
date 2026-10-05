@@ -36,10 +36,11 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
     throw new Error('Please accept the current Terms of Use and acknowledge the Privacy Policy before creating an account.');
   }
   const isTutorRole = role === 'tutor' || role === 'teacher';
+  const marketingEmailOptIn = extraProfile.marketingEmailOptIn === true;
   const whatsappNumber = role === 'student' ? normalizeWhatsAppNumber(extraProfile.whatsappNumber) : '';
   const tutorWhatsAppNumber = isTutorRole ? normalizeWhatsAppNumber(extraProfile.whatsappNumber) : '';
   const safeExtraProfile = Object.fromEntries(Object.entries(extraProfile)
-    .filter(([key]) => !isTutorRole || key !== 'whatsappNumber'));
+    .filter(([key]) => key !== 'marketingEmailOptIn' && (!isTutorRole || key !== 'whatsappNumber')));
   const studentDefaults = role === 'student'
     ? {
       paymentCompleted: false,
@@ -53,8 +54,10 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
     ...studentDefaults,
     uid: credential.user.uid,
     email: credential.user.email || email.trim(),
+    emailLowercase: (credential.user.email || email.trim()).toLowerCase(),
     displayName: fullName.trim(),
     role,
+    marketingEmailOptIn,
     termsAccepted: true,
     termsAcceptedAt: serverTimestamp(),
     termsVersion: legalAcceptance.version,
