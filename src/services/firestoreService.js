@@ -3086,7 +3086,7 @@ export const generateExercisePlanIfEligible = async (options = {}) => {
   }
 
   ensureDb();
-  const episode = await getActiveSubjectEpisode(student.uid, subject);
+  const episode = await getActiveSubjectEpisode(student.uid, subject, student.subjectInstanceId ?? null);
   if (!episode?.id) throw new Error('Active subject episode not found.');
   const statusRef = doc(db, 'users', student.uid, 'subjects', episode.id, 'generationRuns', localDateKey());
   const startedAtMs = Date.now();

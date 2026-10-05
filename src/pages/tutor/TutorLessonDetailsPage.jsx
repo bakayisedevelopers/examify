@@ -390,7 +390,13 @@ export const TutorLessonDetailsPage = () => {
           const student = contexts.find((context) => context.studentId === row.studentId && context.subject === subject);
           const understandingLevel = row.understandingLevel;
           return generateExercisePlanIfEligible({
-            student: { uid: row.studentId, grade: student?.grade || row.grade, province: student?.province, paymentCompleted: student?.paymentCompleted },
+            student: {
+              ...student,
+              uid: row.studentId,
+              grade: student?.grade || row.grade,
+              subjectInstanceId: row.subjectInstanceId || student?.subjectInstanceId,
+              accessRole: student?.accessRole,
+            },
             subject,
             mode: 'weekly',
             completedLesson: row,

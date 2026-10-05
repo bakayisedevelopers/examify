@@ -264,7 +264,7 @@ export const TutorStudentDetailsPage = () => {
     try {
       const result = await regenerateFutureUnsubmittedExercisesForTutor({
         tutorId: profile.uid,
-        student: { uid: studentId, grade: student.grade, province: student.province, paymentCompleted: student.paymentCompleted },
+        student: { ...student, uid: studentId },
         subject,
         onProgress: setStatus,
       });
@@ -344,7 +344,7 @@ export const TutorStudentDetailsPage = () => {
       await deleteLessonSession({ tutorId: profile.uid, lessonRows: duplicatePlannedLessons });
     }
     const generation = await generateExercisePlanIfEligible({
-      student: { uid: studentId, grade: student?.grade, province: student?.province, paymentCompleted: student?.paymentCompleted },
+      student: { ...student, uid: studentId },
       subject,
       mode: 'weekly',
       completedLesson: lesson,
