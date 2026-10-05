@@ -21,7 +21,7 @@ export const guideContentByRole = {
         steps: [
           'Read the payment banner first so you know whether lessons and exercises are unlocked.',
           'Check the Today\'s Exercise card to see the current topic and instructions.',
-          'Review the AI recommendations and tutor support cards for learning guidance.',
+          'Review exercise details and tutor support cards for learning guidance.',
         ],
       },
       {

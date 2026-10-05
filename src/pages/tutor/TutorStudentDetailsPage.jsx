@@ -32,11 +32,11 @@ import {
 } from '../../services/firestoreService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
-import { getSevenDayWindow, isExerciseSubmitted } from '../../services/exerciseGenerationPlan';
+import { isExerciseSubmitted } from '../../services/exerciseGenerationPlan';
 import { ImagePageViewer } from '../../components/common/ImagePageViewer';
 import { TutorPeerMarkingScoreEditor } from '../../components/tutor/TutorPeerMarkingScoreEditor';
 
-const today = () => {
+  const today = () => {
   const date = new Date();
   return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
 };
@@ -228,7 +228,6 @@ export const TutorStudentDetailsPage = () => {
     }
   };
   const todayLocal = today();
-  const regenerationEndDate = getSevenDayWindow(todayLocal).at(-1);
   const regenerationInProgress = isRegenerating || (
     regenerationStatus?.status === 'processing'
     && Date.now() < Number(regenerationStatus.expiresAtMs ?? 0)
@@ -277,7 +276,7 @@ export const TutorStudentDetailsPage = () => {
       setStatus('Student access details are still loading. Reload the page and try again.');
       return;
     }
-    const confirmed = window.confirm(`Regenerate exercises for ${student.displayName || student.name || 'this student'} from today through ${regenerationEndDate}? Unsubmitted exercises in this window will be replaced, missing days can be filled, and submitted work will be kept.`);
+    const confirmed = window.confirm(`Regenerate the upcoming exercise window for ${student.displayName || student.name || 'this student'}? Unsubmitted exercises in the window will be replaced, missing days can be filled, and submitted work will be kept.`);
     if (!confirmed) return;
     setIsRegenerating(true);
     setStatus('Starting exercise regeneration...');
@@ -290,7 +289,7 @@ export const TutorStudentDetailsPage = () => {
       });
       setStatus(result.generated
         ? `${result.reason} The student can now see the updated exercises.`
-        : `No exercises were replaced: ${result.reason || 'The model returned no complete replacement set.'}`);
+        : `No exercises were replaced: ${result.reason || 'No complete replacement set was available.'}`);
       await load();
     } catch (error) {
       setStatus(error.message || 'Could not regenerate exercises.');
@@ -459,7 +458,7 @@ export const TutorStudentDetailsPage = () => {
 
       {canManage ? (
         <section className="panel space-y-4 p-5">
-          <SectionHeader eyebrow="Lesson complete" title="Save completed topics" description="Choose topics from analyzed papers, add scores, and save the lesson for AI generation." />
+          <SectionHeader eyebrow="Lesson complete" title="Save completed topics" description="Choose topics from analyzed papers, add scores, and save the lesson to generate exercises." />
           <label className="grid max-w-xl gap-2 text-sm font-semibold text-slate-700">Lesson subject
             <select
               className="input"
@@ -546,9 +545,12 @@ export const TutorStudentDetailsPage = () => {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <SectionHeader eyebrow="Exercises" title="Assigned exercises" description="Click an exercise to view details and paper links." />
             {canManage ? <button type="button" className="btn-secondary inline-flex items-center gap-2 disabled:cursor-not-allowed" onClick={regenerateExercises} disabled={regenerationInProgress}>
-              {regenerationInProgress ? <><LoaderCircle className="h-4 w-4 animate-spin text-lime-400" aria-hidden="true" /> Regenerating...</> : 'Regenerate next 7 days'}
+              {regenerationInProgress ? <><LoaderCircle className="h-4 w-4 animate-spin text-lime-400" aria-hidden="true" /> Regenerating...</> : 'Regenerate exercise window'}
             </button> : null}
           </div>
+          {exercises.some((exercise) => exercise.needsMorePaperAnalysis && String(exercise.assignmentDate ?? '') >= todayLocal) ? <div className="rounded-lg border border-amber-300/30 bg-amber-300/10 p-3 text-sm text-amber-100" role="status">
+            Some completed topics have too few analyzed paper questions to fill every exercise slot. Upload and analyze more past papers to add question coverage.
+          </div> : null}
           <div className="space-y-3">{sortedExercises.map((exercise) => (
             <div key={exercise.id} className="flex items-center gap-3 rounded-lg bg-slate-800/60 p-3">
               <button type="button" onClick={() => {

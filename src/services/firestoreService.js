@@ -24,20 +24,16 @@ import { collections, paths, subcollections } from '../firebase/schema';
 
 export { paths, subcollections };
 import { getGlobalTopicCatalogSeed, getHardcodedTopics, normalizeTopicKey as normalizeCatalogTopicKey } from '../data/topicCatalog';
-import { recommendExercises } from './aiService';
 import {
   getCurrentGenerationNumber,
   getEligibleExerciseTopics,
   getExerciseGenerationMode,
-  fillMissingPlannedQuestionsFromIndexes,
-  fillTopicSlotsToQuestionCount,
   getGenerationWeekForTrigger,
   getRegenerationState,
-  getSevenDayWindow,
   hasExerciseGeneration,
   isExerciseSubmitted,
-  selectTopicsForExerciseDay,
 } from './exerciseGenerationPlan';
+import { buildRuleBasedExercisePlan, createExerciseDateWindow, getExerciseGenerationDayCount } from './ruleBasedExerciseGenerator';
 import {
   mockCompletedLessons,
   mockDashboardData,
@@ -47,7 +43,7 @@ import {
   mockUsers,
   mockGuideQuizResults,
 } from '../data/mockData';
-import { DEFAULT_SUBJECT, MAX_AI_SOURCE_PAPERS, MAX_EXERCISES_PER_DATE, MAX_QUESTIONS_PER_EXERCISE, WEEKLY_EXERCISE_DAYS } from '../lib/constants';
+import { DEFAULT_SUBJECT, MAX_EXERCISES_PER_DATE, MAX_QUESTIONS_PER_EXERCISE, WEEKLY_EXERCISE_DAYS } from '../lib/constants';
 import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../utils/tutorSubjects';
 import { calculateSubscriptionQuote, getEffectiveSubscriptionState, isSubscriptionPaymentConsistent } from '../utils/subscriptionPlans';
 import { normalizeWhatsAppLessonLink } from '../utils/whatsapp';
@@ -108,7 +104,6 @@ const lessonRefFor = (lesson) => {
 };
 
 const GENERATION_HISTORY_LIMIT = 40;
-const MAX_EXACT_PLAN_CORRECTION_ATTEMPTS = 2;
 const EXERCISE_REGENERATION_LOCK_TIMEOUT_MS = 20 * 60 * 1000;
 const localDateKey = (date = new Date()) => [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
 const exerciseAccessWindow = (assignmentDate) => ({
@@ -651,6 +646,27 @@ export const getRoleDashboardData = async (role, options = {}) => {
   return emptyDashboardData[role] ?? { stats: [] };
 };
 
+export const getRecentExerciseGenerationWarningsForAdmin = async () => {
+  if (!isFirebaseConfigured) return [];
+  ensureDb();
+  const snapshot = await getDocs(query(
+    collectionGroup(db, 'generationRuns'),
+    orderBy('updatedAt', 'desc'),
+    limit(100),
+  ));
+  return snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .filter((item) => item.needsMorePaperAnalysis === true)
+    .sort((left, right) => {
+      const timestampMs = (entry) => {
+        if (typeof entry.updatedAt?.toMillis === 'function') return entry.updatedAt.toMillis();
+        if (Number.isFinite(Number(entry.updatedAt?.seconds))) return Number(entry.updatedAt.seconds) * 1000;
+        return Number(entry.finishedAtMs) || 0;
+      };
+      return timestampMs(right) - timestampMs(left);
+    });
+};
+
 const episodeExercises = async (studentId, subject, constraints = [], subjectInstanceId = null) => {
   const episode = await getActiveSubjectEpisode(studentId, subject, subjectInstanceId);
   if (!episode?.id) return [];
@@ -710,96 +726,6 @@ const getLastAssignmentDate = (history = []) =>
     .sort()
     .at(-1) ?? null;
 
-const groupAssignmentsByBatch = (history = []) => {
-  const sortedHistory = [...history].sort((left, right) => {
-    const leftDate = new Date(left?.createdAt?.toDate?.() ?? left?.createdAt ?? left?.assignmentDate ?? 0).getTime();
-    const rightDate = new Date(right?.createdAt?.toDate?.() ?? right?.createdAt ?? right?.assignmentDate ?? 0).getTime();
-    return rightDate - leftDate;
-  });
-
-  const groups = [];
-  const fallbackMap = new Map();
-
-  sortedHistory.forEach((assignment) => {
-    const createdAtValue = assignment?.createdAt?.toDate?.() ?? assignment?.createdAt ?? assignment?.assignmentDate ?? null;
-    const createdAt = createdAtValue ? new Date(createdAtValue) : null;
-    const explicitBatchId = assignment?.generationBatchId;
-
-    if (explicitBatchId) {
-      const existing = groups.find((group) => group.batchId === explicitBatchId);
-      if (existing) {
-        existing.assignments.push(assignment);
-        return;
-      }
-
-      groups.push({
-        batchId: explicitBatchId,
-        createdAt,
-        assignments: [assignment],
-      });
-      return;
-    }
-
-    const fallbackKey = `${assignment?.generationMode || 'legacy'}-${toDateOnly(assignment?.assignmentDate)}`;
-    const existingFallback = fallbackMap.get(fallbackKey);
-
-    if (existingFallback) {
-      existingFallback.assignments.push(assignment);
-      return;
-    }
-
-    const group = {
-      batchId: fallbackKey,
-      createdAt,
-      assignments: [assignment],
-    };
-    fallbackMap.set(fallbackKey, group);
-    groups.push(group);
-  });
-
-  return groups.sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0));
-};
-
-const getRecentGenerationSummaries = (history = [], count = 2) =>
-  groupAssignmentsByBatch(history)
-    .slice(0, count)
-    .map((group) => ({
-      batchId: group.batchId,
-      generationMode: group.assignments[0]?.generationMode ?? 'unknown',
-      paperIds: [...new Set(group.assignments.flatMap((assignment) => assignment?.paperIds ?? []))],
-      assignmentDates: group.assignments.map((assignment) => assignment?.assignmentDate).filter(Boolean),
-    }));
-
-const getRecentExerciseHistoryForAi = (history = [], days = 14) => {
-  const today = new Date();
-  const cutoff = formatISO(addDays(today, -days), { representation: 'date' });
-  return history
-    .filter((assignment) => {
-      const assignmentDate = toDateOnly(assignment?.assignmentDate);
-      return assignmentDate && assignmentDate >= cutoff;
-    })
-    .sort((left, right) => String(right.assignmentDate ?? '').localeCompare(String(left.assignmentDate ?? '')))
-    .map((assignment) => ({
-      assignmentDate: assignment.assignmentDate,
-      title: assignment.title ?? '',
-      topic: assignment.topic ?? '',
-      topicBreakdown: Array.isArray(assignment.topicBreakdown) ? assignment.topicBreakdown : [],
-      questionReferences: Array.isArray(assignment.questionReferences) ? assignment.questionReferences : [],
-      paperIds: Array.isArray(assignment.paperIds) ? assignment.paperIds : [],
-      questionLinks: Array.isArray(assignment.questionLinks)
-        ? assignment.questionLinks.map((link) => ({
-          paperId: link?.paperId ?? '',
-          pageNumber: Number(link?.pageNumber ?? 1) || 1,
-          questionReference: link?.questionReference ?? '',
-          topic: link?.topic ?? '',
-        })).filter((link) => link.paperId && link.questionReference)
-        : [],
-      generationMode: assignment.generationMode ?? '',
-      generationBatchId: assignment.generationBatchId ?? '',
-    }))
-    .slice(0, 21);
-};
-
 const isAnalyzedQuestionPaper = (paper = {}) =>
   paper.analysisStatus === 'Analyzed' && paper.availableForGeneration !== false && Array.isArray(paper.questions) && paper.questions.length > 0;
 
@@ -837,36 +763,19 @@ const questionMatchesTopics = (question = {}, completedTopics = []) => {
 const summarizePaperQuestions = (paper = {}, completedTopics = []) =>
   (Array.isArray(paper.questions) ? paper.questions : [])
     .filter((question) => questionMatchesTopics(question, completedTopics))
-    .slice(0, 80)
     .map((question) => ({
       paperId: question.paperId ?? paper.id,
-      questionReference: question.questionReference,
+      questionReference: question.questionReference ?? question.reference,
       subject: question.subject ?? paper.subject,
       topic: question.topic,
       topics: Array.isArray(question.topics) ? question.topics : [],
-      pageNumber: question.pageNumber,
+      pageNumber: question.pageNumber ?? question.page,
       marks: question.marks ?? 0,
       section: question.section ?? '',
     }))
     .filter((question) => question.questionReference && question.pageNumber);
 
-const paperMetadataForAi = (paper = {}) => ({
-  id: paper.id,
-  year: paper.year,
-  month: paper.month,
-  region: paper.region,
-  subject: paper.subject,
-  grade: paper.grade,
-  paperNumber: paper.paperNumber ?? 'Paper 1',
-  copySuffix: paper.copySuffix ?? '',
-  displayName: paper.displayName ?? '',
-  paperDocumentAnalysisPageCount: paper.paperDocumentAnalysisPageCount ?? 0,
-  questionCount: paper.questionCount ?? paper.questions?.length ?? 0,
-  topics: paper.topics ?? [],
-});
-
-const selectTopicPaperMetadata = ({ papers = [], assignmentHistory = [], completedTopics = [], topicSummaries = [] }) => {
-  const recentPaperIds = new Set(getRecentGenerationSummaries(assignmentHistory, 2).flatMap((group) => group.paperIds));
+const selectTopicPaperMetadata = ({ papers = [], completedTopics = [], topicSummaries = [] }) => {
   const analyzedPapers = papers.filter(isAnalyzedQuestionPaper);
   const selectedPaperMap = new Map();
 
@@ -879,23 +788,23 @@ const selectTopicPaperMetadata = ({ papers = [], assignmentHistory = [], complet
         questions: summarizePaperQuestions(paper, [topic]),
       }))
       .filter((item) => item.questions.length > 0);
-    const unrepeated = paperMatches.filter((item) => !recentPaperIds.has(item.paper.id));
-    const reusableTopUps = paperMatches.filter((item) => !unrepeated.some((match) => match.paper.id === item.paper.id));
-    const selected = (unrepeated.length >= MAX_AI_SOURCE_PAPERS ? unrepeated : [...unrepeated, ...reusableTopUps])
-      .slice(0, MAX_AI_SOURCE_PAPERS);
-
-    selected.forEach(({ paper }) => selectedPaperMap.set(paper.id, paper));
+    paperMatches.forEach(({ paper }) => selectedPaperMap.set(paper.id, paper));
 
     return {
       topic,
       topicStatus: topicSummary.topicStatus === 'marked' ? 'marked' : 'done',
       understandingLevel: topicSummary.understandingLevel ?? null,
-      markedTopicSuggestionLimit: topicSummary.topicStatus === 'marked' ? 2 : null,
-      paperCount: selected.length,
-      reusedRecentPapers: selected.some(({ paper }) => recentPaperIds.has(paper.id)),
-      papers: selected.map(({ paper, questions }) => ({
-        ...paperMetadataForAi(paper),
-        topics: (paper.topics ?? []).filter((paperTopic) => questionMatchesTopics({ topic: paperTopic }, [topic])),
+      paperCount: paperMatches.length,
+      papers: paperMatches.map(({ paper, questions }) => ({
+        id: paper.id,
+        year: paper.year,
+        month: paper.month,
+        region: paper.region,
+        subject: paper.subject,
+        grade: paper.grade,
+        paperNumber: paper.paperNumber ?? 'Paper 1',
+        copySuffix: paper.copySuffix ?? '',
+        displayName: paper.displayName ?? '',
         questions,
       })),
     };
@@ -907,149 +816,22 @@ const selectTopicPaperMetadata = ({ papers = [], assignmentHistory = [], complet
     topicPaperMetadata,
     topicsWithSources,
     topicsWithoutSources: topicPaperMetadata.filter((item) => item.papers.length === 0).map((item) => item.topic),
-    recentPaperIds: [...recentPaperIds],
-    reusedRecentPapers: topicPaperMetadata.some((item) => item.reusedRecentPapers),
     analyzedPaperCount: analyzedPapers.length,
     matchingAnalyzedPaperCount: selectedPapers.length,
   };
 };
 
-const buildAssignmentDates = ({ mode, assignmentHistory = [] }) => {
+const buildAssignmentDates = ({ assignmentHistory = [], dayCount = WEEKLY_EXERCISE_DAYS }) => {
   const lastAssignmentDate = getLastAssignmentDate(assignmentHistory);
   const baseDate = lastAssignmentDate ? addDays(new Date(lastAssignmentDate), 1) : new Date();
-  const daysToCreate = mode === 'weekly' ? WEEKLY_EXERCISE_DAYS : 7;
+  const daysToCreate = Math.max(WEEKLY_EXERCISE_DAYS, Math.min(30, Number(dayCount) || WEEKLY_EXERCISE_DAYS));
 
   return Array.from({ length: daysToCreate }, (_, dayIndex) =>
     formatISO(addDays(baseDate, dayIndex), { representation: 'date' }),
   );
 };
 
-const buildAiQuestionPlan = ({ topicSummaries = [], requiredQuestionCount, completedTopicCount, assignmentDates = [], generationNumber = 1, dailyExerciseCaps = {} }) => {
-  const requestedQuestionCount = Number.isFinite(Number(requiredQuestionCount))
-    ? Number(requiredQuestionCount) : topicSummaries.length;
-  const maxQuestionsPerExercise = Math.min(
-    MAX_QUESTIONS_PER_EXERCISE,
-    Math.max(0, requestedQuestionCount),
-  );
-  const getExerciseCount = (assignmentDate) => Math.max(0, Math.min(
-    MAX_EXERCISES_PER_DATE,
-    Number.isFinite(Number(dailyExerciseCaps[assignmentDate])) ? Number(dailyExerciseCaps[assignmentDate]) : 1,
-  ));
-  const perDayTopics = assignmentDates.map((assignmentDate, dayIndex) => {
-    const exerciseCount = getExerciseCount(assignmentDate);
-    const requestedCount = exerciseCount ? maxQuestionsPerExercise : 0;
-    const distinctTopics = selectTopicsForExerciseDay({
-      topicSummaries,
-      maxTopicsPerDay: Math.min(requestedCount, topicSummaries.length),
-      dayIndex,
-      generationNumber,
-    });
-    const topics = fillTopicSlotsToQuestionCount(distinctTopics, requestedCount);
-    return {
-      assignmentDate,
-      exerciseCount: exerciseCount && topics.length ? 1 : 0,
-      requiredCount: topics.length,
-      topics,
-    };
-  });
-  const highestQuestionCount = Math.max(0, ...perDayTopics.map((day) => day.requiredCount));
-  return {
-    maxExercisesPerDay: MAX_EXERCISES_PER_DATE,
-    maxQuestionsPerDay: highestQuestionCount,
-    perDayTopics,
-    rules: {
-      titleFormat: 'question-references-only',
-      distinctTopicsPerDayWhenMetadataAllows: true,
-      repeatsTopicSlotsWhenMetadataIsLimited: true,
-      oneExerciseDocumentPerDate: true,
-      maxExercisesPerDay: MAX_EXERCISES_PER_DATE,
-      maxQuestionsPerExercise,
-      exactQuestionCountPerExercise: true,
-      requiredQuestionCountUsesAllCompletedTopics: true,
-      completedTopicCountForQuestionCount: Number(completedTopicCount) || topicSummaries.length,
-      analyzedTopicCountAvailableForQuestionSelection: topicSummaries.length,
-      requiredExerciseDocumentsByDate: Object.fromEntries(perDayTopics.map((day) => [day.assignmentDate, day.exerciseCount])),
-      requiredQuestionsByDate: Object.fromEntries(perDayTopics.map((day) => [day.assignmentDate, day.requiredCount])),
-      topicEligibility: {
-        completedLessonTopicsOnly: true,
-        analyzedQuestionIndexRequired: true,
-      },
-      weightedTowardHigherUnderstandingFromFourthTopic: topicSummaries.length > 3,
-    },
-  };
-};
-
-const validateExactRecommendationPlan = ({ recommendations = [], questionPlan = {}, selectedPapers = [], validateSources = false }) => {
-  const expectedByDate = new Map((questionPlan.perDayTopics ?? []).map((day) => [day.assignmentDate, {
-    exerciseCount: Number(day.exerciseCount),
-    requiredCount: Number(day.requiredCount),
-    topics: day.topics ?? [],
-  }]));
-  const actualByDate = new Map();
-  if (!expectedByDate.size) return { valid: false, reason: 'No exercise dates were planned.' };
-
-  const inconsistentDay = [...expectedByDate.entries()].find(([, day]) =>
-    !Number.isInteger(day.exerciseCount) || day.exerciseCount < 0 || day.exerciseCount > 1
-    || !Number.isInteger(day.requiredCount) || day.requiredCount < 0 || day.requiredCount !== day.topics.length
-    || day.exerciseCount !== (day.requiredCount > 0 ? 1 : 0));
-  if (inconsistentDay) {
-    return { valid: false, reason: `The exercise and question counts do not match the topic slots for ${inconsistentDay[0]}.` };
-  }
-  for (const recommendation of recommendations) {
-    const assignmentDate = String(recommendation?.assignmentDate || '');
-    if (!expectedByDate.has(assignmentDate) || !Array.isArray(recommendation?.questions)) {
-      return { valid: false, reason: `The AI returned an incomplete or unplanned exercise for ${assignmentDate || 'an unknown date'}.` };
-    }
-    const items = actualByDate.get(assignmentDate) ?? [];
-    items.push(recommendation);
-    actualByDate.set(assignmentDate, items);
-  }
-
-  for (const [assignmentDate, plannedDay] of expectedByDate) {
-    const exercises = actualByDate.get(assignmentDate) ?? [];
-    if (exercises.length !== plannedDay.exerciseCount) {
-      return {
-        valid: false,
-        reason: `The AI returned ${exercises.length} exercise documents for ${assignmentDate}; exactly ${plannedDay.exerciseCount} were required.`,
-        ...(plannedDay.exerciseCount === 1 && exercises.length === 0
-          ? { shortDay: { assignmentDate, returnedQuestionCount: 0, requiredQuestionCount: plannedDay.requiredCount, topics: plannedDay.topics } }
-          : {}),
-      };
-    }
-    if (plannedDay.exerciseCount === 0) continue;
-    if (exercises.length !== 1) return { valid: false, reason: `The AI must return one exercise document for ${assignmentDate}.` };
-    const actual = exercises[0].questions;
-    if (actual.length !== plannedDay.requiredCount) {
-      return {
-        valid: false,
-        reason: `The exercise for ${assignmentDate} contains ${actual.length} questions; exactly ${plannedDay.requiredCount} were required.`,
-        shortDay: { assignmentDate, returnedQuestionCount: actual.length, requiredQuestionCount: plannedDay.requiredCount, topics: plannedDay.topics },
-      };
-    }
-    if (actual.some((item) => !item?.topic || !item?.questionReference || !item?.paperId || !(Number(item?.pageNumber) > 0))) {
-      return { valid: false, reason: `The exercise for ${assignmentDate} contains an incomplete question reference.` };
-    }
-    const plannedTopics = plannedDay.topics;
-    const expectedKeys = plannedTopics.map(normalizeTopicKey).sort();
-    const actualKeys = actual.map((item) => normalizeTopicKey(item.topic)).sort();
-    if (expectedKeys.some((topic, index) => topic !== actualKeys[index])) {
-      return { valid: false, reason: `The AI did not follow the exact topic plan for ${assignmentDate}.` };
-    }
-    if (validateSources) {
-      const allQuestionsAreIndexed = actual.every((item) => selectedPapers.some((paper) =>
-        paper.id === item.paperId && (paper.questions ?? []).some((question) =>
-          String(question.questionReference || question.reference || '').trim() === item.questionReference
-          && Number(question.pageNumber) === item.pageNumber
-          && questionMatchesTopics(question, [item.topic]))));
-      if (!allQuestionsAreIndexed) {
-        return { valid: false, reason: `The AI returned a question that is not present in the selected analyzed paper indexes for ${assignmentDate}.` };
-      }
-    }
-  }
-  return { valid: true, reason: '' };
-};
-
-const buildAssignmentsFromAiRecommendations = ({
+const buildAssignmentsFromRuleBasedRecommendations = ({
   recommendations = [],
   student,
   subscriptionTrace = {},
@@ -1111,7 +893,7 @@ const buildAssignmentsFromAiRecommendations = ({
       instruction: recommendation.instruction || recommendation.reason || 'Answer the referenced question number(s) only.',
       subject,
       grade,
-      generatedBy: 'frontend-ai-service',
+      generatedBy: 'local-question-index-planner',
       generationMode: mode,
       generationBatchId,
       generationWeek,
@@ -2699,11 +2481,6 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       },
     ]
     : studentState.completedLessons;
-  const subjectTutorReports = [
-    ...(Array.isArray(studentState.tutorReports) ? studentState.tutorReports
-      .filter((report) => report?.reportType !== 'initial').map((report) => report?.note).filter(Boolean) : []),
-    studentState.latestTutorReport?.note ?? '',
-  ].filter(Boolean);
   const replacesExerciseWindow = overrideFutureUnsubmitted || Boolean(readyCompletedLesson);
   const lessonCompletionIsEligible = Boolean(readyCompletedLesson)
     && subscriptionTrace.paidSubscriptionActive
@@ -2724,24 +2501,6 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
   }
 
   let assignmentHistory = await getAssignmentHistory(student?.uid, subject, GENERATION_HISTORY_LIMIT, student?.subjectInstanceId);
-  const assignmentDates = targetAssignmentDates ?? (replacesExerciseWindow
-    ? getSevenDayWindow(getLocalDate())
-    : buildAssignmentDates({ mode: generationMode, assignmentHistory }));
-  if (replacesExerciseWindow && isFirebaseConfigured && student?.uid) {
-    const activeEpisode = await getActiveSubjectEpisode(student.uid, subject, student.subjectInstanceId);
-    if (!activeEpisode?.id) throw new Error('Active subject episode not found.');
-    const windowSnapshot = await getDocs(query(
-      collection(db, 'users', student.uid, 'subjects', activeEpisode.id, 'exercises'),
-      where('assignmentDate', '>=', assignmentDates[0]),
-      where('assignmentDate', '<=', assignmentDates.at(-1)),
-      orderBy('assignmentDate', 'asc'),
-    ));
-    const historyById = new Map(assignmentHistory.map((assignment) => [assignment.id, assignment]));
-    windowSnapshot.docs.forEach((item) => historyById.set(item.id, { id: item.id, ...item.data(), documentPath: item.ref.path, subjectInstanceId: activeEpisode.id }));
-    assignmentHistory = [...historyById.values()];
-  }
-  const recentExerciseHistory = getRecentExerciseHistoryForAi(assignmentHistory, 28);
-
   const topicSummaryByKey = new Map(
     (Array.isArray(studentState.completedTopicSummaries) ? studentState.completedTopicSummaries : [])
       .map((summary) => [normalizeCatalogTopicKey(summary.topic), summary]),
@@ -2756,50 +2515,55 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       topicSummaryByKey.set(key, { ...saved, topicStatus: 'done', attendanceStatus: 'attended' });
     }
   });
-  const topicSummaries = [...topicSummaryByKey.values()].filter((summary) => summary.topicStatus === 'done');
+  const topicSummaries = [...topicSummaryByKey.values()].filter((summary) => ['done', 'marked'].includes(summary.topicStatus));
   const eligibleTopicSummaries = getEligibleExerciseTopics(topicSummaries);
   if (!eligibleTopicSummaries.length) {
     return { generated: false, reason: 'No topics from completed, attended lessons are available for exercise generation.', assignments: [], criteria: studentState.generationStatus };
   }
+  const completedTopicCount = eligibleTopicSummaries.filter((summary) => summary.topicStatus === 'done').length;
+  const generationDayCount = getExerciseGenerationDayCount(completedTopicCount);
+  const assignmentDates = targetAssignmentDates ?? (replacesExerciseWindow
+    ? createExerciseDateWindow(getLocalDate(), generationDayCount)
+    : buildAssignmentDates({ mode: generationMode, assignmentHistory, dayCount: generationDayCount }));
+  if (replacesExerciseWindow && isFirebaseConfigured && student?.uid) {
+    const activeEpisode = await getActiveSubjectEpisode(student.uid, subject, student.subjectInstanceId);
+    if (!activeEpisode?.id) throw new Error('Active subject episode not found.');
+    const windowSnapshot = await getDocs(query(
+      collection(db, 'users', student.uid, 'subjects', activeEpisode.id, 'exercises'),
+      where('assignmentDate', '>=', assignmentDates[0]),
+      where('assignmentDate', '<=', assignmentDates.at(-1)),
+      orderBy('assignmentDate', 'asc'),
+    ));
+    const historyById = new Map(assignmentHistory.map((assignment) => [assignment.id, assignment]));
+    windowSnapshot.docs.forEach((item) => historyById.set(item.id, { id: item.id, ...item.data(), documentPath: item.ref.path, subjectInstanceId: activeEpisode.id }));
+    assignmentHistory = [...historyById.values()];
+  }
   const {
     selectedPapers,
-    topicPaperMetadata,
     topicsWithSources,
     topicsWithoutSources,
-    recentPaperIds,
-    reusedRecentPapers,
     analyzedPaperCount,
     matchingAnalyzedPaperCount,
   } = selectTopicPaperMetadata({
     papers,
-    assignmentHistory,
     topicSummaries: eligibleTopicSummaries,
   });
   if (!topicsWithSources.length) {
     return {
       generated: false,
-      reason: 'No analyzed question metadata matched the eligible topics.',
+      reason: 'No analyzed question metadata matched the eligible topics. Analyze more past papers to make exercises available.',
       criteria: {
         ...studentState.generationStatus,
         ...subscriptionTrace,
-        excludedRecentPaperIds: recentPaperIds,
-        reusedRecentPapers,
         analyzedPaperCount,
         matchingAnalyzedPaperCount,
         topicsWithoutSources,
+        needsMorePaperAnalysis: true,
       },
       assignments: [],
     };
   }
-  const sourceTopicKeys = new Set(topicsWithSources.map((item) => normalizeCatalogTopicKey(item.topic)));
-  const generationTopicSummaries = eligibleTopicSummaries.filter((summary) => sourceTopicKeys.has(normalizeCatalogTopicKey(summary.topic)));
-  const eligibleTopics = generationTopicSummaries.map((item) => item.topic);
-  const completedTopics = eligibleTopics;
-  const completedTopicCount = eligibleTopicSummaries.length;
-  const requiredQuestionCount = Math.min(MAX_QUESTIONS_PER_EXERCISE, completedTopicCount);
-  const topicPaperMetadataWithSources = topicPaperMetadata.filter((item) => item.papers.length > 0);
-
-  onProgress?.(`Using topic metadata from ${selectedPapers.length} analyzed question papers [Generating exercises]`);
+  onProgress?.('Generating...');
 
   const currentGenerationNumber = generationMode === 'weekly'
     ? getCurrentGenerationNumber(assignmentHistory, studentState.generationRunStatus?.generationWeek)
@@ -2826,110 +2590,6 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     ...dailyExerciseCaps,
   };
   const effectiveOverrideExerciseIdsByDate = { ...regenerationState.overrideExerciseIdsByDate, ...overrideExerciseIdsByDate };
-  const aiPlan = buildAiQuestionPlan({
-    topicSummaries: generationTopicSummaries,
-    requiredQuestionCount,
-    completedTopicCount,
-    assignmentDates,
-    generationNumber,
-    dailyExerciseCaps: effectiveDailyExerciseCaps,
-  });
-  if (aiPlan.perDayTopics.every((day) => day.requiredCount === 0)) {
-    return { generated: false, reason: 'There are no remaining exercise slots under the daily topic limit.', assignments: [], criteria: studentState.generationStatus };
-  }
-  const generationBatchId = `${generationMode}-${student.uid}-${Date.now()}`;
-  const aiPayload = {
-    studentId: student.uid,
-    grade: student?.grade,
-    region: student?.province,
-    subject,
-    mode: generationMode,
-    assignmentDates,
-    completedTopics,
-    eligibleTopics,
-    completedTopicCount,
-    excludedCompletedTopicCount: completedTopicCount - generationTopicSummaries.length,
-    tutorReports: [...new Set([
-      ...subjectTutorReports,
-      ...completedLessons.map((lesson) => lesson.topicReport ?? lesson.note).filter(Boolean),
-    ])],
-    tutorNotes: studentState.latestTutorReport?.note ?? '',
-    pastMarks: [student?.latestMark, student?.previousYearMark].filter((value) => value !== undefined && value !== null),
-    questionPaperMetadata: selectedPapers.map((paper) => ({
-      ...paperMetadataForAi(paper),
-      topics: (paper.topics ?? []).filter((topic) => questionMatchesTopics({ topic }, eligibleTopics)),
-    })),
-    topicPaperMetadata: topicPaperMetadataWithSources,
-    selectedPapers: selectedPapers.map((paper) => ({
-      id: paper.id,
-      year: paper.year,
-      month: paper.month,
-      region: paper.region,
-      grade: paper.grade,
-      paperNumber: paper.paperNumber ?? 'Paper 1',
-      copySuffix: paper.copySuffix ?? '',
-      displayName: paper.displayName ?? '',
-      paperMetadata: paper.paperMetadata ?? {},
-      topics: (paper.topics ?? []).filter((topic) => questionMatchesTopics({ topic }, eligibleTopics)),
-      questions: summarizePaperQuestions(paper, eligibleTopics),
-    })),
-    selectedPaperIds: selectedPapers.map((paper) => paper.id),
-    maxExercisesPerDay: aiPlan.maxExercisesPerDay,
-    dailyExerciseCaps: effectiveDailyExerciseCaps,
-    maxQuestionsPerDay: aiPlan.maxQuestionsPerDay,
-    questionPlanRules: aiPlan,
-    lessonHistory: completedLessons.flatMap((lesson, lessonIndex) => {
-      const topicEntries = getLessonTopicEntries(lesson, lessonIndex)
-        .filter((entry) => sourceTopicKeys.has(normalizeCatalogTopicKey(entry.topic)));
-      if (!topicEntries.length) return [];
-      return [{
-        topic: topicEntries.map((entry) => entry.topic).join(' | '),
-        topicReport: lesson.topicReport ?? lesson.note ?? '',
-        understandingLevel: lessonScoreToRatio(lesson.understandingLevel ?? understandingLevel ?? 0.5) ?? 0.5,
-        topicUnderstandingScores: topicEntries.map((entry) => ({
-          topic: entry.topic,
-          topicReport: entry.reportSnippet,
-          understandingLevel: lessonScoreToRatio(entry.understandingLevel) ?? 0.5,
-        })),
-        completedOn: lesson.completedOn ?? lesson.createdAt ?? '',
-      }];
-    }),
-    understandingByTopic: generationTopicSummaries.map((summary) => ({
-      topic: summary.topic,
-      understandingLevel: summary.understandingLevel,
-      completedOn: summary.completedOn,
-      topicStatus: summary.topicStatus,
-    })),
-    recentExerciseHistory,
-    previousGenerationSummaries: getRecentGenerationSummaries(assignmentHistory, 2),
-    reusedRecentPapers,
-  };
-  let aiResponse = await recommendExercises(aiPayload);
-
-  let exactPlan = validateExactRecommendationPlan({
-    recommendations: aiResponse?.recommendations ?? [],
-    questionPlan: aiPlan,
-    selectedPapers,
-    validateSources: isFirebaseConfigured,
-  });
-  for (let correctionAttempt = 0; !exactPlan.valid && exactPlan.shortDay
-    && correctionAttempt < MAX_EXACT_PLAN_CORRECTION_ATTEMPTS; correctionAttempt += 1) {
-    const { assignmentDate, returnedQuestionCount, requiredQuestionCount, topics: requiredTopics } = exactPlan.shortDay;
-    const missingCount = Math.max(0, requiredQuestionCount - returnedQuestionCount);
-    const correctionInstruction = `The previous full plan failed validation: ${assignmentDate} returned ${returnedQuestionCount} question objects but this date requires exactly ${requiredQuestionCount}. You must return the FULL plan again, with one parent exercise for this date and exactly ${requiredQuestionCount} question objects, including one for every planned topic slot ${JSON.stringify(requiredTopics)}. A topic may appear in multiple slots when fewer topics have analyzed indexes than the completed-topic question quota. Do not lower the count, omit a slot, stop early, or add parent exercise documents. ${missingCount ? `There are ${missingCount} missing question slot(s).` : 'Remove excess question objects while preserving every planned topic slot.'} If a topic has no unused unique question left in this generation, repeat an exact indexed question for that same topic on another date; if a repeated topic slot has no distinct indexed question, reuse its exact indexed reference in that exercise. Use only indexed references, paper ids, and page numbers.`;
-    try {
-      aiResponse = await recommendExercises({ ...aiPayload, correctionInstruction });
-    } catch (error) {
-      console.warn('[Examifying][AI] exact question-count correction request failed:', error?.message || error);
-      break;
-    }
-    exactPlan = validateExactRecommendationPlan({
-      recommendations: aiResponse?.recommendations ?? [],
-      questionPlan: aiPlan,
-      selectedPapers,
-      validateSources: isFirebaseConfigured,
-    });
-  }
   const usedQuestionReferences = assignmentHistory.flatMap((assignment) => [
     ...(assignment.questionLinks ?? []),
     ...(assignment.questions ?? []),
@@ -2938,36 +2598,35 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       paperId: assignment.paperIds?.[index] || assignment.paperIds?.[0],
     })),
   ]);
-  const repairedPlan = fillMissingPlannedQuestionsFromIndexes({
-    recommendations: aiResponse?.recommendations ?? [],
-    questionPlan: aiPlan,
-    selectedPapers,
-    previouslyUsedQuestionReferences: usedQuestionReferences,
-    isQuestionForTopic: (question, topic) => questionMatchesTopics(question, [topic]),
+  const targetQuestionCount = Math.min(MAX_QUESTIONS_PER_EXERCISE, eligibleTopicSummaries.length);
+  const indexedQuestions = selectedPapers.flatMap((paper) => summarizePaperQuestions(paper, eligibleTopicSummaries.map((item) => item.topic)));
+  const localPlan = buildRuleBasedExercisePlan({
+    topicSummaries: eligibleTopicSummaries,
+    indexedQuestions,
+    assignmentDates,
+    dailyExerciseCaps: effectiveDailyExerciseCaps,
+    targetQuestionsPerExercise: targetQuestionCount,
+    recentlyUsedQuestionKeys: usedQuestionReferences,
+    matchesTopic: (question, topic) => questionMatchesTopics(question, [topic]),
   });
-  aiResponse = { ...aiResponse, recommendations: repairedPlan.recommendations };
-  exactPlan = validateExactRecommendationPlan({
-    recommendations: aiResponse.recommendations,
-    questionPlan: aiPlan,
-    selectedPapers,
-    validateSources: isFirebaseConfigured,
-  });
-  if (repairedPlan.filledCount) {
-    console.info('[Examifying][AI] enforced planned per-exercise question counts from selected paper indexes', {
-      repairedQuestionSlots: repairedPlan.filledCount,
-    });
-  }
-  if (!exactPlan.valid) {
+  if (!localPlan.recommendations.length) {
     return {
       generated: false,
-      reason: `The AI exercise plan was rejected. ${exactPlan.reason}`,
+      reason: 'No distinct analyzed question references are available for the eligible topics. Analyze more past papers and try again.',
       assignments: [],
-      criteria: { ...studentState.generationStatus, ...subscriptionTrace },
+      criteria: {
+        ...studentState.generationStatus,
+        ...subscriptionTrace,
+        needsMorePaperAnalysis: true,
+        topicsWithoutSources: localPlan.topicsWithoutSources,
+        selectedPaperIds: selectedPapers.map((paper) => paper.id),
+        indexedQuestionCount: localPlan.indexedQuestionCount,
+      },
     };
   }
-
-  const assignments = buildAssignmentsFromAiRecommendations({
-    recommendations: aiResponse?.recommendations ?? [],
+  const generationBatchId = `${generationMode}-${student.uid}-${Date.now()}`;
+  const assignments = buildAssignmentsFromRuleBasedRecommendations({
+    recommendations: localPlan.recommendations,
     student,
     subscriptionTrace,
     selectedPapers,
@@ -2975,12 +2634,22 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     mode: generationMode,
     subject,
     topicSummaries: eligibleTopicSummaries,
-    maxExercisesPerDay: aiPlan.maxExercisesPerDay,
+    maxExercisesPerDay: MAX_EXERCISES_PER_DATE,
     dailyExerciseCaps: effectiveDailyExerciseCaps,
     allowedAssignmentDates: assignmentDates,
     grade: student?.grade,
     generationWeek: generationNumber,
-  }).filter((assignment) => Boolean(assignment.assignmentDate));
+  }).filter((assignment) => Boolean(assignment.assignmentDate)).map((assignment) => {
+    const dayPlan = localPlan.perDayTopics.find((day) => day.assignmentDate === assignment.assignmentDate);
+    return {
+      ...assignment,
+      targetQuestionCount: localPlan.targetQuestionsPerExercise,
+      generationWindowDays: assignmentDates.length,
+      needsMorePaperAnalysis: Boolean(localPlan.needsMorePaperAnalysis),
+      questionShortageCount: dayPlan?.shortageCount ?? 0,
+      topicsWithoutAnalyzedQuestions: localPlan.topicsWithoutSources,
+    };
+  });
 
   const builtCounts = new Map();
   assignments.forEach((assignment) => {
@@ -2988,27 +2657,32 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     items.push(assignment);
     builtCounts.set(assignment.assignmentDate, items);
   });
-  const hasExactBuiltCount = aiPlan.perDayTopics.every((day) => {
+  const hasExactBuiltCount = localPlan.perDayTopics.every((day) => {
     const dayAssignments = builtCounts.get(day.assignmentDate) ?? [];
     return dayAssignments.length === day.exerciseCount
       && dayAssignments.every((assignment) => assignment.questionCount === day.requiredCount);
   });
   if (!hasExactBuiltCount) {
-    return { generated: false, reason: 'The exercise plan did not produce one parent exercise per date with the exact required number of questions. No exercises were written.', assignments: [] };
+    return { generated: false, reason: 'The local exercise planner produced inconsistent question references. No exercises were written.', assignments: [] };
   }
 
   if (!isFirebaseConfigured) {
     return {
       generated: assignments.length > 0,
-      reason: 'Demo generation complete',
+      reason: `Demo generation complete${localPlan.needsMorePaperAnalysis ? '. More analyzed past paper questions are needed to fully cover the current topic set.' : ''}`,
       assignments,
       criteria: {
         ...studentState.generationStatus,
         ...subscriptionTrace,
         selectedPaperIds: selectedPapers.map((paper) => paper.id),
-        excludedRecentPaperIds: recentPaperIds,
-        reusedRecentPapers,
-        topicsWithoutSources,
+        topicsWithoutSources: localPlan.topicsWithoutSources,
+        needsMorePaperAnalysis: Boolean(localPlan.needsMorePaperAnalysis),
+        indexedQuestionCount: localPlan.indexedQuestionCount,
+        repeatedRecentQuestionCount: localPlan.repeatedRecentQuestionCount,
+        uniqueQuestionCount: localPlan.uniqueQuestionCount,
+        targetQuestionsPerExercise: localPlan.targetQuestionsPerExercise,
+        generatedWindowDays: assignmentDates.length,
+        totalQuestionShortage: localPlan.totalQuestionShortage,
       },
     };
   }
@@ -3055,6 +2729,13 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
         generatedAt: serverTimestamp(),
         mode: generationMode,
         status: 'completed',
+        needsMorePaperAnalysis: Boolean(localPlan.needsMorePaperAnalysis),
+        topicsWithoutSources: localPlan.topicsWithoutSources,
+        indexedQuestionCount: localPlan.indexedQuestionCount,
+        targetQuestionCount: localPlan.targetQuestionsPerExercise,
+        questionCount: assignment.questionCount,
+        questionShortageCount: localPlan.perDayTopics.find((day) => day.assignmentDate === assignmentDate)?.shortageCount ?? 0,
+        generationWindowDays: assignmentDates.length,
       }, { merge: true });
     }
     existingCounts.set(assignmentDate, (existingCounts.get(assignmentDate) ?? 0) + 1);
@@ -3073,7 +2754,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       for (const assignmentDate of assignmentDates) {
         const oldIds = effectiveOverrideExerciseIdsByDate[assignmentDate] ?? [];
         const replacements = replacementsByDate.get(assignmentDate) ?? [];
-        const cap = effectiveDailyExerciseCaps[assignmentDate] ?? aiPlan.maxExercisesPerDay;
+        const cap = effectiveDailyExerciseCaps[assignmentDate] ?? MAX_EXERCISES_PER_DATE;
         if (replacements.length !== cap) continue;
         const currentSnapshots = await Promise.all(oldIds.map((id) => transaction.get(doc(db, 'users', student.uid, 'subjects', episode.id, 'exercises', id))));
         const currentExercises = currentSnapshots.filter((item) => item.exists()).map((item) => ({ id: item.id, ...item.data() }));
@@ -3101,27 +2782,54 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       return rows;
     });
     if (!replacementRows.length) {
-      return { generated: false, reason: 'The model did not return a complete replacement set. Existing exercises were kept.', assignments: [] };
+      return { generated: false, reason: 'No replacement exercises could be built from analyzed question indexes. Existing exercises were kept. Analyze more past papers and try again.', assignments: [], criteria: { needsMorePaperAnalysis: true, topicsWithoutSources: localPlan.topicsWithoutSources } };
     }
+    const shortageMessage = localPlan.totalQuestionShortage > 0
+      ? ` ${localPlan.totalQuestionShortage} question slot(s) could not be filled with distinct indexed questions; upload and analyze more past papers to fill them.`
+      : localPlan.topicsWithoutSources.length
+        ? ` No analyzed questions were found for: ${localPlan.topicsWithoutSources.join(', ')}. Upload and analyze more past papers for those topics.`
+        : '';
     return {
       generated: true,
-      reason: `Regenerated ${replacementRows.length} uncompleted exercises within the next 7 days.`,
+      reason: `Regenerated ${replacementRows.length} uncompleted exercises in the ${assignmentDates.length}-day window.${shortageMessage}`,
       assignments: replacementRows,
-      criteria: { ...studentState.generationStatus, ...subscriptionTrace, selectedPaperIds: selectedPapers.map((paper) => paper.id) },
+      criteria: {
+        ...studentState.generationStatus,
+        ...subscriptionTrace,
+        selectedPaperIds: selectedPapers.map((paper) => paper.id),
+        needsMorePaperAnalysis: Boolean(localPlan.needsMorePaperAnalysis),
+        topicsWithoutSources: localPlan.topicsWithoutSources,
+        indexedQuestionCount: localPlan.indexedQuestionCount,
+        repeatedRecentQuestionCount: localPlan.repeatedRecentQuestionCount,
+        uniqueQuestionCount: localPlan.uniqueQuestionCount,
+        targetQuestionsPerExercise: localPlan.targetQuestionsPerExercise,
+        generatedWindowDays: assignmentDates.length,
+        totalQuestionShortage: localPlan.totalQuestionShortage,
+      },
     };
   }
 
+  const shortageMessage = localPlan.totalQuestionShortage > 0
+    ? ` ${localPlan.totalQuestionShortage} question slot(s) could not be filled with distinct indexed questions; upload and analyze more past papers to fill them.`
+    : localPlan.topicsWithoutSources.length
+      ? ` No analyzed questions were found for: ${localPlan.topicsWithoutSources.join(', ')}. Upload and analyze more past papers for those topics.`
+      : '';
   return {
     generated: createdAssignments.length > 0,
-    reason: `${mode} generation complete`,
+    reason: `${generationMode} generation complete.${shortageMessage}`,
     assignments: createdAssignments,
     criteria: {
       ...studentState.generationStatus,
       ...subscriptionTrace,
       selectedPaperIds: selectedPapers.map((paper) => paper.id),
-      excludedRecentPaperIds: recentPaperIds,
-      reusedRecentPapers,
-      topicsWithoutSources,
+      topicsWithoutSources: localPlan.topicsWithoutSources,
+      needsMorePaperAnalysis: Boolean(localPlan.needsMorePaperAnalysis),
+      indexedQuestionCount: localPlan.indexedQuestionCount,
+      repeatedRecentQuestionCount: localPlan.repeatedRecentQuestionCount,
+      uniqueQuestionCount: localPlan.uniqueQuestionCount,
+      targetQuestionsPerExercise: localPlan.targetQuestionsPerExercise,
+      generatedWindowDays: assignmentDates.length,
+      totalQuestionShortage: localPlan.totalQuestionShortage,
     },
   };
 };
@@ -3191,11 +2899,19 @@ export const generateExercisePlanIfEligible = async (options = {}) => {
     await setDoc(statusRef, {
       status: result.generated ? 'completed' : 'failed',
       message: result.reason || (result.generated ? 'Exercise generation completed.' : 'Exercise generation did not produce assignments.'),
+      grade: student?.grade ?? null,
+      region: student?.province ?? null,
       paidSubscriptionActive: Boolean(result.criteria?.paidSubscriptionActive),
       subscriptionId: result.criteria?.subscriptionId ?? null,
       subscriptionPlanId: result.criteria?.subscriptionPlanId ?? 'free',
       subscriptionPlanName: result.criteria?.subscriptionPlanName ?? 'Free',
       subscriptionPaymentReference: result.criteria?.subscriptionPaymentReference ?? null,
+      needsMorePaperAnalysis: result.criteria?.needsMorePaperAnalysis === true,
+      topicsWithoutSources: result.criteria?.topicsWithoutSources ?? [],
+      indexedQuestionCount: result.criteria?.indexedQuestionCount ?? null,
+      targetQuestionCount: result.criteria?.targetQuestionsPerExercise ?? null,
+      questionShortageCount: result.criteria?.totalQuestionShortage ?? 0,
+      generationWindowDays: result.criteria?.generatedWindowDays ?? null,
       generationRunId: result.generated ? `${student.uid}-${startedAtMs}` : null,
       generatedExerciseIds: result.generated
         ? (result.assignments ?? []).map((assignment) => assignment.id).filter(Boolean)
@@ -3266,9 +2982,19 @@ export const regenerateFutureUnsubmittedExercisesForTutor = async ({ tutorId, st
     dateKey,
     mode: 'weekly',
     lastTrigger: 'manual',
+    grade: student?.grade ?? null,
+    region: student?.province ?? null,
     status,
     message,
     updatedAt: serverTimestamp(),
+    ...(result ? {
+      needsMorePaperAnalysis: result.criteria?.needsMorePaperAnalysis === true,
+      topicsWithoutSources: result.criteria?.topicsWithoutSources ?? [],
+      indexedQuestionCount: result.criteria?.indexedQuestionCount ?? null,
+      targetQuestionCount: result.criteria?.targetQuestionsPerExercise ?? null,
+      questionShortageCount: result.criteria?.totalQuestionShortage ?? 0,
+      generationWindowDays: result.criteria?.generatedWindowDays ?? null,
+    } : {}),
     ...(status === 'completed' ? {
       generationRunId: `manual-${student.uid}-${startedAtMs}`,
       generatedExerciseIds: (result?.assignments ?? []).map((assignment) => assignment.id).filter(Boolean),
@@ -3512,7 +3238,7 @@ export const getTutorReportsForAssignedStudents = async (tutorId) => {
 export const getTutorExercisesForAssignedStudents = async (tutorId) => {
   const contexts = await getTutorAssignedStudentContexts(tutorId);
   const snapshots = await Promise.all(contexts.map((context) => getDocs(query(
-    collection(db, 'users', context.studentId, 'subjects', context.subjectInstanceId, 'exercises'), limit(40)))));
+    collection(db, 'users', context.studentId, 'subjects', context.subjectInstanceId, 'exercises'), orderBy('assignmentDate', 'desc'), limit(40)))));
   return snapshots.flatMap((snapshot, index) => snapshot.docs.map((item) => ({ id: item.id, ...item.data(),
     documentPath: item.ref.path, subjectInstanceId: contexts[index].subjectInstanceId,
     studentName: contexts[index].displayName || 'Student' }))).sort((a, b) => String(b.assignmentDate).localeCompare(String(a.assignmentDate)));

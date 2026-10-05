@@ -72,7 +72,7 @@ export const PoliciesPage = () => {
 
           <h3 className="font-semibold text-slate-900">2. Learning features, AI, and peer marking</h3>
           <p className="text-slate-600">
-            Exercise recommendations and paper analysis may use automated tools and AI models. They support learning and
+            Past-paper analysis and related topic resolution may use automated tools and AI models. They support learning and
             are not formal school marks, admissions decisions, or professional advice. AI can make mistakes; students,
             parents, and tutors should review outputs and report errors. Tutors remain responsible for their professional
             feedback and recorded lesson or marking scores.
@@ -169,7 +169,7 @@ export const PoliciesPage = () => {
             'Create and secure accounts, confirm roles, link parents and students, and provide the requested learning and tutoring service.',
             'Schedule lessons, assign exercises and peer-marking work, record results, and show educational progress to the student and authorised linked parent, tutor, teacher, or administrator.',
             'Process subscriptions and payments, verify transactions, prevent fraud, manage renewals, and keep records required for accounting or legal claims.',
-            'Run document extraction, past-paper analysis, topic resolution, exercise recommendations, and answer-image review requested as part of the service.',
+            'Run document extraction, past-paper analysis, topic resolution, and answer-image review requested as part of the service.',
             'Protect the service, investigate misuse, provide support, and maintain reliability.',
           ]} />
           <p className="text-slate-600">

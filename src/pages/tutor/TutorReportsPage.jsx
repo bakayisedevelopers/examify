@@ -41,7 +41,7 @@ export const TutorReportsPage = () => {
           {subjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
         </select>
       </div>
-      <SectionHeader eyebrow="Guidance" title="Tutor report history" description="Filter reports by all, student, or subject. These reports feed subject-specific AI generation." />
+      <SectionHeader eyebrow="Guidance" title="Tutor report history" description="Filter reports by student or subject to review the guidance shared with each learner." />
       <div className="grid gap-4">
         {filteredReports.map((report) => (
           <div key={report.id} className="panel p-5">
