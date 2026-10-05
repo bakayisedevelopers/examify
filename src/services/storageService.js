@@ -9,7 +9,7 @@ import {
   updateDoc,
   writeBatch,
 } from 'firebase/firestore';
-import { db, isFirebaseConfigured, storage } from '../firebase/config';
+import { auth, db, isFirebaseConfigured, storage } from '../firebase/config';
 import { callKiloImage, callKiloText } from './kiloService';
 import { extractDocumentText } from './documentExtractionService';
 import { collections } from '../firebase/schema';
@@ -17,13 +17,43 @@ import { SUBJECTS } from '../lib/constants';
 import { extractTutorSubjectMarks, getApprovedTutorSubjects, getNewEligibleTutorSubjects, mergeBestTutorSubjectMarks } from '../utils/tutorSubjects';
 
 const uploadFile = async ({ file, path }) => {
+  const contentType = getImageContentType(file);
+  if (!contentType) throw new Error('Only image files can be uploaded. Choose JPG, PNG, or HEIC files.');
+  if (Number(file.size) > MAX_SUBMISSION_IMAGE_BYTES) throw new Error(`${file.name || 'This image'} exceeds the 25 MiB upload limit. Choose a smaller image.`);
   const storageRef = ref(storage, `${path}/${Date.now()}-${file.name}`);
-  await uploadBytes(storageRef, file, { contentType: file.type });
+  await uploadBytes(storageRef, file, { contentType });
   const url = await getDownloadURL(storageRef);
   return { 
     fileName: file.name, 
     url,
   };
+};
+
+const MAX_SUBMISSION_IMAGE_BYTES = 25 * 1024 * 1024;
+const IMAGE_MIME_BY_EXTENSION = {
+  bmp: 'image/bmp', gif: 'image/gif', heic: 'image/heic', heif: 'image/heif',
+  jpeg: 'image/jpeg', jpg: 'image/jpeg', png: 'image/png', tif: 'image/tiff', tiff: 'image/tiff', webp: 'image/webp',
+};
+const getImageContentType = (file) => {
+  const declaredType = String(file?.type ?? '').trim().toLowerCase();
+  if (declaredType.startsWith('image/')) return declaredType;
+  if (declaredType) return '';
+  const extension = String(file?.name ?? '').split('.').pop()?.toLowerCase();
+  return IMAGE_MIME_BY_EXTENSION[extension] ?? '';
+};
+const getSouthAfricanDateKey = (date = new Date()) => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Johannesburg',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}`;
+};
+const asDate = (value) => {
+  const parsed = value?.toDate ? value.toDate() : value instanceof Date ? value : value ? new Date(value) : null;
+  return parsed && Number.isFinite(parsed.getTime()) ? parsed : null;
 };
 
 const fileToDataUrl = (file) => new Promise((resolve, reject) => {
@@ -48,26 +78,39 @@ export const uploadSubmissionImages = async ({ files, studentId, exerciseId, sub
 
   const uploadedFiles = [];
   try {
-    const uploadBasePath = `users/${studentId}/subjects/${subjectInstanceId}/exercises/${exerciseId}/submissions`;
-
-    const uploads = await Promise.all(imageFiles.map(async (file, index) => {
-      const namedFile = new File([file], `page-${index + 1}-${file.name || 'submission.png'}`, { type: file.type || 'image/png' });
-      const upload = await uploadFile({ file: namedFile, path: uploadBasePath });
-      uploadedFiles[index] = upload;
-      return upload;
-    }));
-    const submittedImages = uploads.map((upload, index) => ({ ...upload, pageNumber: index + 1 }));
-    const firstImage = submittedImages[0];
+    if (!auth?.currentUser || auth.currentUser.uid !== studentId) {
+      throw new Error('Sign in with the student account that owns this exercise before uploading answers.');
+    }
     const exerciseRef = doc(db, 'users', studentId, 'subjects', subjectInstanceId, 'exercises', exerciseId);
     const exerciseSnapshot = await getDoc(exerciseRef);
-    const resolvedSubjectInstanceId = subjectInstanceId;
-
     if (!exerciseSnapshot.exists()) throw new Error('This exercise could not be found.');
     const exercise = exerciseSnapshot.data();
     if (exercise.studentId && exercise.studentId !== studentId) throw new Error('This exercise belongs to another student.');
     if (exercise.submittedImageUrl || exercise.submitted === 'Yes' || exercise.submissionStatus === 'submitted') {
       throw new Error('Work has already been submitted for this exercise.');
     }
+    const opensAt = asDate(exercise.assignmentOpensAt);
+    const locksAt = asDate(exercise.locksAt);
+    const isOpen = opensAt && locksAt
+      ? opensAt <= new Date() && new Date() < locksAt
+      : String(exercise.assignmentDate ?? '').slice(0, 10) === getSouthAfricanDateKey();
+    if (!isOpen) throw new Error('This upload is outside the exercise submission window. Only today’s exercise can be submitted.');
+    const invalidImage = imageFiles.find((file) => !getImageContentType(file));
+    if (invalidImage) throw new Error(`${invalidImage.name || 'A selected file'} is not an image. Choose JPG, PNG, or HEIC files.`);
+    const oversizedImage = imageFiles.find((file) => file.size > MAX_SUBMISSION_IMAGE_BYTES);
+    if (oversizedImage) throw new Error(`${oversizedImage.name || 'An image'} exceeds the 25 MiB upload limit. Choose a smaller image.`);
+
+    const uploadBasePath = `users/${studentId}/subjects/${subjectInstanceId}/exercises/${exerciseId}/submissions`;
+
+    const uploads = await Promise.all(imageFiles.map(async (file, index) => {
+      const namedFile = new File([file], `page-${index + 1}-${file.name || 'submission.png'}`, { type: getImageContentType(file) });
+      const upload = await uploadFile({ file: namedFile, path: uploadBasePath });
+      uploadedFiles[index] = upload;
+      return upload;
+    }));
+    const submittedImages = uploads.map((upload, index) => ({ ...upload, pageNumber: index + 1 }));
+    const firstImage = submittedImages[0];
+    const resolvedSubjectInstanceId = subjectInstanceId;
 
     const submittedAt = serverTimestamp();
     const fileNames = submittedImages.map((image) => image.fileName);

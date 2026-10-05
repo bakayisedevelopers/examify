@@ -8,16 +8,22 @@ service firebase.storage {
       return firestore.get(/databases/(default)/documents/users/$(studentId)/subjects/$(subjectInstanceId)).data;
     }
     function isStaff(studentId, subjectInstanceId) {
-      return signedIn() && request.auth.uid in episode(studentId, subjectInstanceId).activeStaffIds;
+      return signedIn() && request.auth.uid in episode(studentId, subjectInstanceId).get('activeStaffIds', []);
+    }
+    function isPrimaryTutor(studentId, subjectInstanceId) {
+      return signedIn() && episode(studentId, subjectInstanceId).get('status', '') == 'active'
+        && episode(studentId, subjectInstanceId).get('primaryTutorId', '') == request.auth.uid;
     }
     function canMark(studentId, subjectInstanceId) {
-      return isStaff(studentId, subjectInstanceId)
-        && episode(studentId, subjectInstanceId).staffByUid[request.auth.uid] in ['co-owner', 'marker'];
+      return isPrimaryTutor(studentId, subjectInstanceId)
+        || (isStaff(studentId, subjectInstanceId)
+          && episode(studentId, subjectInstanceId).get('staffByUid', {}).get(request.auth.uid, '') in ['co-owner', 'marker']);
     }
-    function validImage() { return request.resource.size < 15 * 1024 * 1024 && request.resource.contentType.matches('image/.*'); }
+    function validImage() { return request.resource.size <= 25 * 1024 * 1024 && request.resource.contentType.matches('image/.*'); }
     function assignmentIsToday(assignmentDate) {
-      let parts = assignmentDate.split('-');
-      return assignmentDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+      let parts = assignmentDate is string ? assignmentDate.split('-') : [];
+      return assignmentDate is string
+        && assignmentDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
         && timestamp.date(int(parts[0]), int(parts[1]), int(parts[2]))
           == (request.time + duration.value(2, 'h')).date();
     }
@@ -37,14 +43,16 @@ service firebase.storage {
       allow write: if signedIn() && (request.auth.uid == uploaderId || isAdmin());
     }
     match /users/{studentId}/subjects/{subjectInstanceId}/exercises/{exerciseId}/submissions/{fileName} {
-      allow read: if signedIn() && (request.auth.uid == studentId || isStaff(studentId, subjectInstanceId) || isAdmin()
+      allow read: if signedIn() && (request.auth.uid == studentId || isStaff(studentId, subjectInstanceId)
+        || isPrimaryTutor(studentId, subjectInstanceId) || isAdmin()
         || firestore.exists(/databases/(default)/documents/users/$(studentId)/subjects/$(subjectInstanceId)/exercises/$(exerciseId)/peerMarkingAssignments/$(request.auth.uid)));
       allow create: if signedIn() && request.auth.uid == studentId && validImage()
         && exerciseSubmissionIsOpen(studentId, subjectInstanceId, exerciseId);
       allow update, delete: if false;
     }
     match /users/{studentId}/subjects/{subjectInstanceId}/exercises/{exerciseId}/{folder}/{fileName} {
-      allow read: if signedIn() && (request.auth.uid == studentId || isStaff(studentId, subjectInstanceId) || isAdmin());
+      allow read: if signedIn() && (request.auth.uid == studentId || isStaff(studentId, subjectInstanceId)
+        || isPrimaryTutor(studentId, subjectInstanceId) || isAdmin());
       allow create: if validImage() && ((folder == 'tutor-marking' && (canMark(studentId, subjectInstanceId) || isAdmin()))
         || (folder == 'peer-reviews' && signedIn() && request.auth.uid == studentId));
       allow update, delete: if folder in ['tutor-marking', 'peer-reviews']
