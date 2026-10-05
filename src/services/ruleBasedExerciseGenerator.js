@@ -155,7 +155,16 @@ export const buildRuleBasedExercisePlan = ({
   assignmentDates.forEach((assignmentDate, dayIndex) => {
     const exerciseCount = Number(dailyExerciseCaps[assignmentDate] ?? 1) > 0 ? 1 : 0;
     if (!exerciseCount) {
-      perDayTopics.push({ assignmentDate, exerciseCount: 0, requiredCount: 0, topics: [] });
+      perDayTopics.push({
+        assignmentDate,
+        exerciseCount: 0,
+        requiredCount: 0,
+        targetCount,
+        topics: [],
+        hasQuestionShortage: false,
+        shortageCount: 0,
+        markedTopicSuggestionCount: 0,
+      });
       return;
     }
     const selected = [];

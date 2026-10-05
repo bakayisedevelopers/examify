@@ -145,6 +145,31 @@ test('question indexes with non-integer page numbers are discarded', () => {
   assert.equal(plan.totalQuestionShortage, 1);
 });
 
+test('skipped dates with no remaining exercise capacity do not poison shortage totals', () => {
+  const plan = buildRuleBasedExercisePlan({
+    topicSummaries: [{ topic: 'Algebra', topicStatus: 'done', understandingLevel: 0.7 }],
+    indexedQuestions: topicQuestions('Algebra', 1),
+    assignmentDates: dates.slice(0, 2),
+    dailyExerciseCaps: { [dates[0]]: 0, [dates[1]]: 1 },
+    targetQuestionsPerExercise: 1,
+    matchesTopic: (question, topic) => question.topic === topic,
+  });
+
+  assert.equal(plan.totalTargetSlots, 1);
+  assert.equal(plan.totalQuestionShortage, 0);
+  assert.equal(plan.needsMorePaperAnalysis, false);
+  assert.deepEqual(plan.perDayTopics[0], {
+    assignmentDate: dates[0],
+    exerciseCount: 0,
+    requiredCount: 0,
+    targetCount: 1,
+    topics: [],
+    hasQuestionShortage: false,
+    shortageCount: 0,
+    markedTopicSuggestionCount: 0,
+  });
+});
+
 test('question-count reduction is the final fallback after all distinct indexed pairs are exhausted', () => {
   const plan = buildRuleBasedExercisePlan({
     topicSummaries: [{ topic: 'Geometry', topicStatus: 'done', understandingLevel: 0.5 }],
