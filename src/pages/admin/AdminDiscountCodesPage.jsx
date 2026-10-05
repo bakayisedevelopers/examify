@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Copy, Link2, RefreshCw, Tag } from 'lucide-react';
+import { Check, Copy, Link2, RefreshCw, Tag, X } from 'lucide-react';
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
-import { createDiscountCode, listDiscountCodes, setDiscountCodeActive } from '../../services/discountCodesService';
+import { createDiscountCode, listDiscountCodes, setDiscountCodeActive, updateDiscountCodeTitle } from '../../services/discountCodesService';
 
 const localDateTimeValue = (date) => {
   const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
@@ -10,6 +10,7 @@ const localDateTimeValue = (date) => {
 };
 
 const defaultForm = () => ({
+  title: '',
   percentOff: '10',
   maxRedemptions: '1',
   maxSubjectCount: 'unlimited',
@@ -41,6 +42,9 @@ export const AdminDiscountCodesPage = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [workingCode, setWorkingCode] = useState('');
+  const [editingTitleCode, setEditingTitleCode] = useState('');
+  const [titleDraft, setTitleDraft] = useState('');
+  const [savingTitleCode, setSavingTitleCode] = useState('');
 
   const refresh = useCallback(async () => {
     setIsLoading(true);
@@ -65,6 +69,7 @@ export const AdminDiscountCodesPage = () => {
     setStatus('');
     try {
       const payload = {
+        title: form.title.trim(),
         percentOff: Number(form.percentOff),
         maxRedemptions: form.maxRedemptions.trim() ? Number(form.maxRedemptions) : null,
         maxSubjectCount: form.maxSubjectCount === 'unlimited' ? null : Number(form.maxSubjectCount),
@@ -84,7 +89,7 @@ export const AdminDiscountCodesPage = () => {
       };
       const result = await createDiscountCode(payload);
       setForm(defaultForm());
-      setStatus(`Discount code ${result.code} created.`);
+      setStatus(`${form.title.trim()} (${result.code}) created.`);
       await refresh();
     } catch (error) {
       setStatus(error?.message || 'Could not create the discount code.');
@@ -103,6 +108,39 @@ export const AdminDiscountCodesPage = () => {
       setStatus(error?.message || 'Could not update the discount code.');
     } finally {
       setWorkingCode('');
+    }
+  };
+
+  const beginTitleEdit = (code) => {
+    setEditingTitleCode(code.code);
+    setTitleDraft(code.title || '');
+    setStatus('');
+  };
+
+  const cancelTitleEdit = () => {
+    setEditingTitleCode('');
+    setTitleDraft('');
+  };
+
+  const saveTitle = async (code) => {
+    const title = titleDraft.trim();
+    if (!title || title.length > 80) {
+      setStatus('Enter a discount title between 1 and 80 characters.');
+      return;
+    }
+    setSavingTitleCode(code.code);
+    setStatus('');
+    try {
+      const result = await updateDiscountCodeTitle({ code: code.code, title });
+      setCodes((current) => current.map((entry) => (
+        entry.code === result.code ? { ...entry, title: result.title } : entry
+      )));
+      cancelTitleEdit();
+      setStatus(`Updated title for ${code.code}.`);
+    } catch (error) {
+      setStatus(error?.message || 'Could not update the discount title.');
+    } finally {
+      setSavingTitleCode('');
     }
   };
 
@@ -137,6 +175,7 @@ export const AdminDiscountCodesPage = () => {
         </div>
 
         <form onSubmit={handleCreate} className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <label className="block"><span className="label">Discount title</span><input className="input" type="text" maxLength="80" required value={form.title} onChange={updateForm('title')} placeholder="e.g. Spring launch offer" /><span className="mt-1 block text-xs text-slate-400">An admin-facing label to help identify this discount in the list.</span></label>
           <label className="block"><span className="label">Discount percentage</span><div className="relative"><input className="input pr-10" type="number" min="1" max="100" step="1" required value={form.percentOff} onChange={updateForm('percentOff')} /><span className="absolute right-3 top-3 text-slate-400">%</span></div></label>
           <label className="block"><span className="label">Maximum successful redemptions</span><input className="input" type="number" min="1" step="1" value={form.maxRedemptions} onChange={updateForm('maxRedemptions')} placeholder="Leave blank for unlimited" /><span className="mt-1 block text-xs text-slate-400">In-progress checkouts reserve capacity but do not count as successful.</span></label>
           <label className="block"><span className="label">Maximum subjects per subscription</span><select className="input" value={form.maxSubjectCount} onChange={updateForm('maxSubjectCount')}><option value="unlimited">Unlimited</option>{Array.from({ length: 20 }, (_, index) => index + 1).map((count) => <option key={count} value={count}>{count} {count === 1 ? 'subject' : 'subjects'}</option>)}</select><span className="mt-1 block text-xs text-slate-400">The code applies only when the selected subscription has no more than this many subjects.</span></label>
@@ -165,11 +204,11 @@ export const AdminDiscountCodesPage = () => {
         {status ? <p role="status" className="border-b border-slate-800 px-5 py-3 text-sm text-lime-200">{status}</p> : null}
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1180px] text-left text-sm">
-            <thead className="bg-slate-900/70 text-xs uppercase tracking-wide text-slate-400"><tr><th className="px-5 py-3">Code / discount</th><th className="px-5 py-3">Status</th><th className="px-5 py-3">Subscription plan</th><th className="px-5 py-3">Subject cap</th><th className="px-5 py-3">Account eligibility</th><th className="px-5 py-3">Billing duration</th><th className="px-5 py-3">Starts / expires</th><th className="px-5 py-3">Redemptions</th><th className="px-5 py-3">Remaining</th><th className="px-5 py-3">Action</th></tr></thead>
+            <thead className="bg-slate-900/70 text-xs uppercase tracking-wide text-slate-400"><tr><th className="px-5 py-3">Discount title / code</th><th className="px-5 py-3">Status</th><th className="px-5 py-3">Subscription plan</th><th className="px-5 py-3">Subject cap</th><th className="px-5 py-3">Account eligibility</th><th className="px-5 py-3">Billing duration</th><th className="px-5 py-3">Starts / expires</th><th className="px-5 py-3">Redemptions</th><th className="px-5 py-3">Remaining</th><th className="px-5 py-3">Action</th></tr></thead>
             <tbody className="divide-y divide-slate-800">
               {codes.map((code) => (
                 <tr key={code.code}>
-                  <td className="px-5 py-4"><button type="button" className="inline-flex items-center gap-2 font-mono font-bold tracking-wider text-lime-300" onClick={() => copyCode(code.code)}>{code.code}<Copy className="h-3.5 w-3.5" /></button><p className="mt-1 text-xs text-slate-400">{code.percentOff}% off</p><button type="button" className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-lime-300 hover:text-lime-200" onClick={() => copyShareLink(code.code)}><Link2 className="h-3.5 w-3.5" />Copy share link</button></td>
+                  <td className="px-5 py-4">{editingTitleCode === code.code ? <input className="input min-w-56" type="text" maxLength="80" required aria-label={`Title for ${code.code}`} value={titleDraft} onChange={(event) => setTitleDraft(event.target.value)} /> : <p className="font-semibold text-white">{code.title || 'Untitled discount'}</p>}<button type="button" className="mt-1 inline-flex items-center gap-2 font-mono font-bold tracking-wider text-lime-300" onClick={() => copyCode(code.code)}>{code.code}<Copy className="h-3.5 w-3.5" /></button><p className="mt-1 text-xs text-slate-400">{code.percentOff}% off</p><button type="button" className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-lime-300 hover:text-lime-200" onClick={() => copyShareLink(code.code)}><Link2 className="h-3.5 w-3.5" />Copy share link</button></td>
                   <td className="px-5 py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${code.status === 'Active' ? 'bg-lime-400/10 text-lime-300' : 'bg-slate-700 text-slate-300'}`}>{code.status}</span></td>
                   <td className="px-5 py-4 text-slate-300">{(code.eligiblePlans || ['circle', 'personalized']).length === 2 ? 'Circle and Personalized' : (code.eligiblePlans || ['circle', 'personalized'])[0] === 'circle' ? 'Circle only' : 'Personalized only'}</td>
                   <td className="px-5 py-4 text-slate-300">{code.maxSubjectCount == null ? 'Unlimited' : `Up to ${code.maxSubjectCount}`}</td>
@@ -178,7 +217,7 @@ export const AdminDiscountCodesPage = () => {
                   <td className="px-5 py-4 text-slate-300">{formatDate(code.startsAt)}<br /><span className="text-xs text-slate-500">{formatDate(code.expiresAt)}</span></td>
                   <td className="px-5 py-4 text-slate-300">{code.successfulRedemptions}{code.reservedRedemptions ? <span className="block text-xs text-amber-300">{code.reservedRedemptions} checkout(s) or plan change(s) pending</span> : null}</td>
                   <td className="px-5 py-4 text-slate-300">{formatRemaining(code)}</td>
-                  <td className="px-5 py-4"><button type="button" className="btn-secondary whitespace-nowrap" disabled={workingCode === code.code || code.status === 'Expired' || code.status === 'Exhausted'} onClick={() => toggleCode(code)}>{workingCode === code.code ? 'Saving…' : code.active ? 'Deactivate' : 'Activate'}</button></td>
+                  <td className="px-5 py-4"><div className="flex flex-col items-start gap-2">{editingTitleCode === code.code ? <><button type="button" className="btn-secondary inline-flex items-center gap-1.5 whitespace-nowrap" disabled={savingTitleCode === code.code || !titleDraft.trim()} onClick={() => saveTitle(code)}><Check className="h-4 w-4" />{savingTitleCode === code.code ? 'Saving…' : 'Save title'}</button><button type="button" className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-white" disabled={savingTitleCode === code.code} onClick={cancelTitleEdit}><X className="h-4 w-4" />Cancel</button></> : <button type="button" className="btn-secondary whitespace-nowrap" onClick={() => beginTitleEdit(code)}>Edit title</button>}<button type="button" className="btn-secondary whitespace-nowrap" disabled={workingCode === code.code || code.status === 'Expired' || code.status === 'Exhausted'} onClick={() => toggleCode(code)}>{workingCode === code.code ? 'Saving…' : code.active ? 'Deactivate' : 'Activate'}</button></div></td>
                 </tr>
               ))}
               {!isLoading && codes.length === 0 ? <tr><td colSpan="10" className="px-5 py-10 text-center text-slate-400">No discount codes created yet.</td></tr> : null}

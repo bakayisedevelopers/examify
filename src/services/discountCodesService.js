@@ -10,5 +10,6 @@ const callDiscountFunction = async (name, payload = {}) => {
 export const createDiscountCode = (settings) => callDiscountFunction('createDiscountCode', settings);
 export const listDiscountCodes = () => callDiscountFunction('listDiscountCodes');
 export const setDiscountCodeActive = ({ code, active }) => callDiscountFunction('setDiscountCodeActive', { code, active });
+export const updateDiscountCodeTitle = ({ code, title }) => callDiscountFunction('updateDiscountCodeTitle', { code, title });
 export const validateDiscountCode = (payload) => callDiscountFunction('validateDiscountCode', payload);
 export const previewDiscountCode = (payload) => callDiscountFunction('previewDiscountCode', payload);

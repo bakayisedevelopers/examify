@@ -18,6 +18,7 @@ export {
   createDiscountCode,
   listDiscountCodes,
   setDiscountCodeActive,
+  updateDiscountCodeTitle,
   validateDiscountCode,
   previewDiscountCode,
   reconcileDiscountCodeReservations,

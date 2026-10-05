@@ -54,6 +54,9 @@ export const getDiscountBillingPeriodError = ({ billingDuration, billingPeriod }
 );
 
 export const validateDiscountSettings = (settings) => {
+  const title = String(settings.title ?? '').trim();
+  if (title.length > 80) throw new Error('Discount title must be 80 characters or fewer.');
+
   const percentOff = Number(settings.percentOff);
   if (!Number.isInteger(percentOff) || percentOff < 1 || percentOff > 100) {
     throw new Error('Discount percentage must be a whole number from 1 to 100.');
@@ -134,7 +137,7 @@ export const validateDiscountSettings = (settings) => {
   }
 
   return {
-    percentOff, maxRedemptions, maxSubjectCount, restrictedEmail, restrictedAccountId, eligiblePlans: normalizedEligiblePlans, startsAt, expiresAt,
+    title: title || null, percentOff, maxRedemptions, maxSubjectCount, restrictedEmail, restrictedAccountId, eligiblePlans: normalizedEligiblePlans, startsAt, expiresAt,
     redemptionExpiryMode, redemptionWindowMonths, billingDuration, discountDurationMonths,
   };
 };

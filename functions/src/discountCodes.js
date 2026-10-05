@@ -182,6 +182,7 @@ export const listDiscountCodes = onCall({ cpu: 'gcf_gen1' }, async (request) => 
       const uses = getDiscountUseCounts(data);
       return {
         code: data.code || doc.id,
+        title: data.title || null,
         percentOff: data.percentOff,
         maxRedemptions: data.maxRedemptions ?? null,
         maxSubjectCount: data.maxSubjectCount ?? null,
@@ -221,6 +222,28 @@ export const setDiscountCodeActive = onCall({ cpu: 'gcf_gen1' }, async (request)
     transaction.update(ref, { active: request.data.active, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
   });
   return { code, active: request.data.active };
+});
+
+export const updateDiscountCodeTitle = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Sign in as an admin to edit discount titles.');
+  const code = normalizeDiscountCode(request.data?.code);
+  const title = String(request.data?.title ?? '').trim();
+  if (!/^[A-Z0-9]{10}$/.test(code)) {
+    throw new HttpsError('invalid-argument', 'Enter a valid discount code.');
+  }
+  if (!title || title.length > 80) {
+    throw new HttpsError('invalid-argument', 'Discount title must contain 1 to 80 characters.');
+  }
+  const db = getDb();
+  await requireAdmin(db, uid);
+  const ref = discountCodes(db).doc(code);
+  await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) throw new HttpsError('not-found', 'Discount code not found.');
+    transaction.update(ref, { title, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+  });
+  return { code, title };
 });
 
 export const getDiscountQuoteForCheckout = async ({ db, code: rawCode, uid, email, studentId, planId, billingPeriod, subjectCount }) => {
