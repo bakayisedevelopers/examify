@@ -862,7 +862,7 @@ const buildAssignmentsFromRuleBasedRecommendations = ({
         || selectedPapers.map((paper) => `${paper.year} ${paper.region} ${paper.month} paper`).join('; '),
       instruction: recommendation.instruction || recommendation.reason || 'Answer the referenced question number(s) only.',
       subject,
-      grade,
+      grade: grade ?? null,
       generatedBy: 'local-question-index-planner',
       generationMode: mode,
       generationBatchId,
@@ -2533,7 +2533,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       assignments: [],
     };
   }
-  onProgress?.('Generating...');
+  await onProgress?.('Generating...');
 
   const currentGenerationNumber = generationMode === 'weekly'
     ? getCurrentGenerationNumber(assignmentHistory, studentState.generationRunStatus?.generationWeek)
@@ -2663,7 +2663,6 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     if (episode?.id) assignment.subjectInstanceId = episode.id;
   });
   const createdAssignments = [];
-  const existingCounts = new Map();
   if (!replacesExerciseWindow) {
     for (const assignmentDate of assignmentDates) {
       const snapshot = await getDocs(query(
@@ -2680,17 +2679,17 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
           assignments: [],
         };
       }
-      existingCounts.set(assignmentDate, count);
     }
   }
+  const writeBatchForGeneration = writeBatch(db);
   for (const assignment of assignments) {
     const assignmentDate = assignment.assignmentDate;
     if (replacesExerciseWindow) continue;
     const ref = doc(collection(db, 'users', student.uid, 'subjects', episode.id, 'exercises'));
     const exercisePayload = { ...assignment, exerciseId: ref.id, ...exerciseAccessWindow(assignment.assignmentDate), createdAt: serverTimestamp() };
-    await setDoc(ref, exercisePayload);
+    writeBatchForGeneration.set(ref, exercisePayload);
     if (episode?.id) {
-      await setDoc(doc(db, 'users', student.uid, 'subjects', episode.id, 'generationRuns', assignmentDate), {
+      writeBatchForGeneration.set(doc(db, 'users', student.uid, 'subjects', episode.id, 'generationRuns', assignmentDate), {
         studentId: student.uid,
         subjectInstanceId: episode.id,
         subject,
@@ -2708,8 +2707,11 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
         generationWindowDays: assignmentDates.length,
       }, { merge: true });
     }
-    existingCounts.set(assignmentDate, (existingCounts.get(assignmentDate) ?? 0) + 1);
     createdAssignments.push({ id: ref.id, ...assignment });
+  }
+
+  if (!replacesExerciseWindow && createdAssignments.length) {
+    await writeBatchForGeneration.commit();
   }
 
   if (replacesExerciseWindow) {
@@ -2733,7 +2735,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       }
 
       const rows = [];
-      safeDates.forEach(({ currentExercises, replacements }) => {
+      safeDates.forEach(({ assignmentDate, currentExercises, replacements }) => {
         const sourceGeneration = currentExercises[0];
         currentExercises.forEach((item) => transaction.delete(doc(db, 'users', student.uid, 'subjects', episode.id, 'exercises', item.id)));
         replacements.forEach((item) => {
@@ -2748,6 +2750,24 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
             ...exerciseAccessWindow(replacement.assignmentDate), createdAt: serverTimestamp() });
           rows.push({ id: ref.id, ...replacement });
         });
+        transaction.set(doc(db, 'users', student.uid, 'subjects', episode.id, 'generationRuns', assignmentDate), {
+          studentId: student.uid,
+          subjectInstanceId: episode.id,
+          subject,
+          dateKey: assignmentDate,
+          targetCount: MAX_EXERCISES_PER_DATE,
+          generatedAt: serverTimestamp(),
+          mode: generationMode,
+          lastTrigger: overrideFutureUnsubmitted ? 'manual' : readyCompletedLesson ? 'lesson' : generationMode,
+          status: 'completed',
+          needsMorePaperAnalysis: Boolean(localPlan.needsMorePaperAnalysis),
+          topicsWithoutSources: localPlan.topicsWithoutSources,
+          indexedQuestionCount: localPlan.indexedQuestionCount,
+          targetQuestionCount: localPlan.targetQuestionsPerExercise,
+          questionCount: replacements[0]?.questionCount ?? 0,
+          questionShortageCount: localPlan.perDayTopics.find((day) => day.assignmentDate === assignmentDate)?.shortageCount ?? 0,
+          generationWindowDays: assignmentDates.length,
+        }, { merge: true });
       });
       return rows;
     });
@@ -2822,6 +2842,9 @@ export const generateExercisePlanIfEligible = async (options = {}) => {
     lessonCompleted: Boolean(completedLesson),
     history: generationHistory,
   });
+  if (plannedGenerationMode === 'initial' && hasExerciseGeneration(generationHistory)) {
+    return { generated: false, reason: 'Initial exercises have already been generated for this subject.', assignments: [] };
+  }
   const historyWeek = getCurrentGenerationNumber(generationHistory);
   const acquiredGenerationWeek = await runTransaction(db, async (transaction) => {
     const snapshot = await transaction.get(statusRef);

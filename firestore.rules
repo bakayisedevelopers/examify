@@ -4,7 +4,7 @@ service cloud.firestore {
     function signedIn() { return request.auth != null; }
     function profile(uid) { return get(/databases/$(database)/documents/users/$(uid)).data; }
     function isAdmin() { return signedIn() && profile(request.auth.uid).role == 'admin'; }
-    function isParentOf(studentId) { return signedIn() && profile(studentId).parentId == request.auth.uid; }
+    function isParentOf(studentId) { return signedIn() && profile(studentId).get('parentId', '') == request.auth.uid; }
     function validSelfProfileUpdate(userId) {
       return signedIn() && request.auth.uid == userId
         && request.resource.data.uid == resource.data.uid
@@ -30,24 +30,24 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(studentId)/subjects/$(subjectInstanceId)).data;
     }
     function isEpisodeStaff(studentId, subjectInstanceId) {
-      return signedIn() && request.auth.uid in episode(studentId, subjectInstanceId).activeStaffIds;
+      return signedIn() && request.auth.uid in episode(studentId, subjectInstanceId).get('activeStaffIds', []);
     }
     function isPrimaryTutor(studentId, subjectInstanceId) {
-      return signedIn() && episode(studentId, subjectInstanceId).status == 'active'
-        && episode(studentId, subjectInstanceId).primaryTutorId == request.auth.uid;
+      return signedIn() && episode(studentId, subjectInstanceId).get('status', '') == 'active'
+        && episode(studentId, subjectInstanceId).get('primaryTutorId', '') == request.auth.uid;
     }
     function isHistoricalEpisodeStaff(studentId, subjectInstanceId) {
-      return signedIn() && request.auth.uid in episode(studentId, subjectInstanceId).historicalStaffIds;
+      return signedIn() && request.auth.uid in episode(studentId, subjectInstanceId).get('historicalStaffIds', []);
     }
     function canTeach(studentId, subjectInstanceId) {
       return isPrimaryTutor(studentId, subjectInstanceId)
         || (isEpisodeStaff(studentId, subjectInstanceId)
-          && episode(studentId, subjectInstanceId).staffByUid[request.auth.uid] == 'co-owner');
+          && episode(studentId, subjectInstanceId).get('staffByUid', {}).get(request.auth.uid, '') == 'co-owner');
     }
     function canMark(studentId, subjectInstanceId) {
       return canTeach(studentId, subjectInstanceId)
         || (isEpisodeStaff(studentId, subjectInstanceId)
-          && episode(studentId, subjectInstanceId).staffByUid[request.auth.uid] == 'marker');
+          && episode(studentId, subjectInstanceId).get('staffByUid', {}).get(request.auth.uid, '') == 'marker');
     }
     function validStudentGenerationRun(studentId, subjectInstanceId) {
       return signedIn() && request.auth.uid == studentId
@@ -65,10 +65,11 @@ service cloud.firestore {
       return resource.data.assignmentOpensAt <= request.time && request.time < resource.data.locksAt;
     }
     function hasPaidAccess(studentId) {
-      let subscription = get(/databases/$(database)/documents/users/$(studentId)/subscriptions/current).data;
-      return subscription.planId in ['circle', 'personalized']
-        && ((subscription.status == 'active' && subscription.renewalDate > request.time)
-          || (subscription.status == 'past_due' && subscription.graceEndsAt > request.time));
+      let subscriptionPath = /databases/$(database)/documents/users/$(studentId)/subscriptions/current;
+      return exists(subscriptionPath)
+        && get(subscriptionPath).data.planId in ['circle', 'personalized']
+        && ((get(subscriptionPath).data.status == 'active' && get(subscriptionPath).data.renewalDate > request.time)
+          || (get(subscriptionPath).data.status == 'past_due' && get(subscriptionPath).data.graceEndsAt > request.time));
     }
     function lessonIdentityIsUnchanged(subjectInstanceId) {
       return request.resource.data.get('studentId', '') == resource.data.get('studentId', '')
