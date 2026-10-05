@@ -15,6 +15,11 @@ export const getCurrentGenerationNumber = (history = [], storedGenerationNumber 
   return Math.max(1, batches.size, Number(storedGenerationNumber) || 1);
 };
 
+export const hasExerciseGeneration = (history = []) => Array.isArray(history) && history.length > 0;
+
+export const getExerciseGenerationMode = ({ mode, lessonCompleted = false, history = [] } = {}) =>
+  lessonCompleted && !hasExerciseGeneration(history) ? 'initial' : mode;
+
 export const getGenerationWeekForTrigger = (currentWeek, { initial = false, lessonCompleted = false } = {}) => {
   const week = Math.max(1, Number(currentWeek) || 1);
   if (initial) return 1;

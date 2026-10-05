@@ -6,7 +6,7 @@ import { ExerciseCard } from '../../components/dashboard/ExerciseCard';
 import { useAuth } from '../../hooks/useAuth';
 import { deleteExerciseAssignmentForTutor, getExerciseAssignmentById, getStudentTopicScoresForTutor, getTutorAssignedStudentContexts, getTutorAssignmentHistoryContexts, getTutorAssignmentHistoryData } from '../../services/firestoreService';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
-import { getExerciseAvailability } from '../../utils/exerciseRules';
+import { getExerciseAvailability, getExerciseStatusLabels } from '../../utils/exerciseRules';
 import { useEffectiveRole } from '../../utils/effectiveRole';
 
 export const TutorExerciseDetailsPage = () => {
@@ -61,6 +61,7 @@ export const TutorExerciseDetailsPage = () => {
   }, [exerciseId, profile?.uid, periodId, studentId, subjectInstanceId]);
 
   const availability = exercise ? getExerciseAvailability(exercise.assignmentDate, Boolean(exercise.submittedImageUrl || exercise.submitted === 'Yes')) : null;
+  const exerciseStatus = exercise ? getExerciseStatusLabels(exercise) : null;
 
   const removeExercise = async () => {
     if (!exercise || !window.confirm(`Delete “${exercise.title || 'this exercise'}”? This cannot be undone.`)) return;
@@ -83,7 +84,7 @@ export const TutorExerciseDetailsPage = () => {
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Link to={`${basePath}/exercises`} className="btn-secondary inline-flex w-fit">Back to exercises</Link>
-            {accessRole === 'co-owner' ? <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={removeExercise} disabled={isDeleting}>
+            {accessRole === 'co-owner' && !isHistorical && !exerciseStatus?.isToday ? <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={removeExercise} disabled={isDeleting}>
               <Trash2 className="h-4 w-4" aria-hidden="true" /> {isDeleting ? 'Deleting...' : 'Delete exercise'}
             </button> : null}
           </div>

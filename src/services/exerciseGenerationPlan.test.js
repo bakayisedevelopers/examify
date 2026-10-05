@@ -3,9 +3,11 @@ import test from 'node:test';
 import {
   getCurrentGenerationNumber,
   getEligibleExerciseTopics,
+  getExerciseGenerationMode,
   getGenerationWeekForTrigger,
   getRegenerationState,
   getSevenDayWindow,
+  hasExerciseGeneration,
   selectTopicsForExerciseDay,
 } from './exerciseGenerationPlan.js';
 
@@ -17,6 +19,18 @@ test('generation week advances from the greatest recorded week', () => {
     { generationMode: 'weekly', generationBatchId: 'weekly-1' },
   ]), 2);
   assert.equal(getCurrentGenerationNumber([], 4), 4);
+});
+
+test('any existing exercise documents count as a prior generation, including legacy records', () => {
+  assert.equal(hasExerciseGeneration([]), false);
+  assert.equal(hasExerciseGeneration([{ id: 'legacy-exercise' }]), true);
+  assert.equal(hasExerciseGeneration([{ generationMode: 'initial' }]), true);
+});
+
+test('lesson completion starts initial generation when no exercises exist and refreshes legacy exercise history', () => {
+  assert.equal(getExerciseGenerationMode({ mode: 'weekly', lessonCompleted: true, history: [] }), 'initial');
+  assert.equal(getExerciseGenerationMode({ mode: 'weekly', lessonCompleted: true, history: [{ id: 'legacy-exercise' }] }), 'weekly');
+  assert.equal(getExerciseGenerationMode({ mode: 'initial', lessonCompleted: false, history: [] }), 'initial');
 });
 
 test('seven-day regeneration window starts today and crosses month boundaries', () => {

@@ -352,7 +352,9 @@ export const TutorStudentDetailsPage = () => {
       onProgress: setStatus,
     });
     setLessonForm(emptyLessonForm);
-    setStatus(generation.generated ? 'Lesson completed and exercises generated.' : 'Lesson completed and saved for future AI generation.');
+    setStatus(generation.generated
+      ? 'Lesson completed and exercises regenerated.'
+      : `Lesson completed and saved. Exercise generation did not start: ${generation.reason || 'unknown reason'}`);
     await load();
   };
 

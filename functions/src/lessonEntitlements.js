@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { logger } from 'firebase-functions';
 import { admin, getDb } from './admin.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
 import { normalizeSupportedSubject } from './subjects.js';
@@ -435,7 +436,18 @@ const scheduleLessons = async ({ request, sessionStatus }) => {
 };
 
 export const createPlannedLessonSession = onCall({ cpu: 'gcf_gen1' }, async (request) => {
-  return { lessons: await scheduleLessons({ request, sessionStatus: 'planned' }) };
+  try {
+    return { lessons: await scheduleLessons({ request, sessionStatus: 'planned' }) };
+  } catch (error) {
+    logger.error('Planned lesson creation failed', {
+      code: error?.code ?? 'unknown',
+      message: error?.message ?? String(error),
+      subject: request.data?.subject ?? null,
+      sessionMode: request.data?.sessionMode ?? null,
+      studentCount: Array.isArray(request.data?.students) ? request.data.students.length : 0,
+    });
+    throw error;
+  }
 });
 
 export const reserveCompletedLessonLog = onCall({ cpu: 'gcf_gen1' }, async (request) => {

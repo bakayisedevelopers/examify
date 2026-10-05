@@ -385,9 +385,8 @@ export const TutorLessonDetailsPage = () => {
         participants: lessonRows.map((row) => ({ lessonId: row.id, ...(participants[row.id] || emptyParticipant()) })),
       });
       setLessonRows(savedRows);
-      const generationResults = await Promise.allSettled(savedRows
-        .filter((row) => row.attended)
-        .map((row) => {
+      const attendedRows = savedRows.filter((row) => row.attended);
+      const generationResults = await Promise.allSettled(attendedRows.map((row) => {
           const student = contexts.find((context) => context.studentId === row.studentId && context.subject === subject);
           const understandingLevel = row.understandingLevel;
           return generateExercisePlanIfEligible({
@@ -398,10 +397,28 @@ export const TutorLessonDetailsPage = () => {
             understandingLevel,
           });
         }));
-      const generationFailures = generationResults.filter((result) => result.status === 'rejected').length;
-      setStatus(generationFailures
-        ? 'Lesson records saved. Exercise planning could not be refreshed for some students.'
-        : `Lesson records saved for ${savedRows.length} student${savedRows.length === 1 ? '' : 's'}.`);
+      const generatedCount = generationResults.filter((result) => result.status === 'fulfilled' && result.value?.generated).length;
+      const generationIssues = generationResults.flatMap((result, index) => {
+        if (result.status === 'rejected') {
+          return [`${attendedRows[index]?.studentName || 'A student'}: ${result.reason?.message || 'generation failed.'}`];
+        }
+        if (!result.value?.generated) {
+          return [`${attendedRows[index]?.studentName || 'A student'}: ${result.value?.reason || 'generation did not start.'}`];
+        }
+        return [];
+      });
+      if (generationIssues.length) {
+        const visibleIssues = generationIssues.slice(0, 3).join(' ');
+        const remainingIssues = generationIssues.length > 3 ? ` ${generationIssues.length - 3} more student(s) need review.` : '';
+        setStatus(`Lesson records saved. Exercise generation did not complete for ${generationIssues.length} student(s). ${visibleIssues}${remainingIssues}`);
+        setStatusTone('error');
+      } else if (attendedRows.length) {
+        setStatus(`Lesson records saved. Exercises refreshed for ${generatedCount} student${generatedCount === 1 ? '' : 's'}.`);
+        setStatusTone('success');
+      } else {
+        setStatus(`Lesson records saved for ${savedRows.length} student${savedRows.length === 1 ? '' : 's'}; no students attended.`);
+        setStatusTone('info');
+      }
     } catch (error) {
       setStatus(error.message || 'Could not save the lesson records.');
     } finally {

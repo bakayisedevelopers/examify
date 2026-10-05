@@ -28,9 +28,11 @@ import { recommendExercises } from './aiService';
 import {
   getCurrentGenerationNumber,
   getEligibleExerciseTopics,
+  getExerciseGenerationMode,
   getGenerationWeekForTrigger,
   getRegenerationState,
   getSevenDayWindow,
+  hasExerciseGeneration,
   isExerciseSubmitted,
   selectTopicsForExerciseDay,
 } from './exerciseGenerationPlan';
@@ -602,7 +604,7 @@ const buildStudentDashboard = (studentId, subject = DEFAULT_SUBJECT) => {
     subscriptionId: student?.uid ?? null,
     subscriptionPaymentReference,
     completedLessons: mockCompletedLessons.filter((lesson) => lesson.studentId === student?.uid && (lesson.subject ?? DEFAULT_SUBJECT) === subject),
-    hasInitialGeneration: assignmentHistory.some((assignment) => assignment?.generationMode === 'initial'),
+    hasInitialGeneration: hasExerciseGeneration(assignmentHistory),
   });
 
   return {
@@ -1346,7 +1348,7 @@ export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT) 
       subscriptionId: subscriptionState.subscriptionId,
       subscriptionPaymentReference: subscriptionState.subscriptionPaymentReference,
       completedLessons,
-      hasInitialGeneration: assignmentHistory.some((assignment) => assignment?.generationMode === 'initial'),
+      hasInitialGeneration: hasExerciseGeneration(assignmentHistory),
     });
 
     return {
@@ -1365,7 +1367,7 @@ export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT) 
       tutorReports: subjectReports,
       latestTutorReport,
       latestGeneratedAssignments: assignmentHistory,
-      hasInitialGeneration: assignmentHistory.some((assignment) => assignment?.generationMode === 'initial'),
+      hasInitialGeneration: hasExerciseGeneration(assignmentHistory),
     };
   }
 
@@ -1401,7 +1403,7 @@ export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT) 
     subscriptionId: subscriptionState.subscriptionId,
     subscriptionPaymentReference: subscriptionState.subscriptionPaymentReference,
     completedLessons: lessons,
-    hasInitialGeneration: assignmentHistory.some((assignment) => assignment?.generationMode === 'initial'),
+    hasInitialGeneration: hasExerciseGeneration(assignmentHistory),
   });
 
   return {
@@ -1420,7 +1422,7 @@ export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT) 
     tutorReports: subjectReports,
     latestTutorReport,
     latestGeneratedAssignments: assignmentHistory,
-    hasInitialGeneration: assignmentHistory.some((assignment) => assignment?.generationMode === 'initial'),
+    hasInitialGeneration: hasExerciseGeneration(assignmentHistory),
   };
 };
 
@@ -2636,7 +2638,7 @@ export const deleteExerciseAssignmentForTutor = async ({ tutorId, exerciseId }) 
 
 export const getSubmissionForExercise = async (exerciseId) => getSubmissionById(exerciseId);
 
-const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_SUBJECT, completedLesson, understandingLevel, availablePapers, onProgress, overrideFutureUnsubmitted = false, targetAssignmentDates = null, dailyExerciseCaps = {}, overrideExerciseIdsByDate = {}, plannedGenerationWeek = null }) => {
+const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_SUBJECT, completedLesson, understandingLevel, availablePapers, onProgress, overrideFutureUnsubmitted = false, targetAssignmentDates = null, dailyExerciseCaps = {}, overrideExerciseIdsByDate = {}, plannedGenerationWeek = null, plannedGenerationMode = null }) => {
   const studentState = await getStudentAccessState(student, subject);
   const subscriptionTrace = {
     paidSubscriptionActive: Boolean(studentState.paidSubscriptionActive && studentState.subscriptionPaymentVerified),
@@ -2656,6 +2658,13 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
 
   const papers = availablePapers ?? studentState.matchingQuestionPapers;
   const readyCompletedLesson = completedLesson && isCompletedLessonReadyForGeneration(completedLesson) ? completedLesson : null;
+  const hasPriorExerciseGeneration = studentState.hasInitialGeneration
+    || hasExerciseGeneration(studentState.latestGeneratedAssignments);
+  const generationMode = plannedGenerationMode || getExerciseGenerationMode({
+    mode,
+    lessonCompleted: Boolean(readyCompletedLesson),
+    history: studentState.latestGeneratedAssignments,
+  });
   const completedLessons = readyCompletedLesson
     ? [
       ...studentState.completedLessons.filter((lesson) => !readyCompletedLesson.id || lesson.id !== readyCompletedLesson.id),
@@ -2673,14 +2682,19 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     studentState.latestTutorReport?.note ?? '',
   ].filter(Boolean);
   const replacesExerciseWindow = overrideFutureUnsubmitted || Boolean(readyCompletedLesson);
-  const ready = overrideFutureUnsubmitted || (mode === 'initial'
-    ? Boolean(studentState.initialGenerationReady && !studentState.hasInitialGeneration)
-    : Boolean(studentState.weeklyGenerationReady && studentState.hasInitialGeneration));
+  const lessonCompletionIsEligible = Boolean(readyCompletedLesson)
+    && subscriptionTrace.paidSubscriptionActive
+    && papers.length >= 2;
+  const ready = overrideFutureUnsubmitted || (lessonCompletionIsEligible
+    ? true
+    : generationMode === 'initial'
+      ? Boolean(studentState.initialGenerationReady && !hasPriorExerciseGeneration)
+      : Boolean(studentState.weeklyGenerationReady && hasPriorExerciseGeneration));
 
   if (!ready) {
     return {
       generated: false,
-      reason: `Criteria not met for ${mode} generation`,
+      reason: `Criteria not met for ${generationMode} generation`,
       criteria: { ...studentState.generationStatus, ...subscriptionTrace },
       assignments: [],
     };
@@ -2689,7 +2703,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
   let assignmentHistory = await getAssignmentHistory(student?.uid, subject, GENERATION_HISTORY_LIMIT, student?.subjectInstanceId);
   const assignmentDates = targetAssignmentDates ?? (replacesExerciseWindow
     ? getSevenDayWindow(getLocalDate())
-    : buildAssignmentDates({ mode, assignmentHistory }));
+    : buildAssignmentDates({ mode: generationMode, assignmentHistory }));
   if (replacesExerciseWindow && isFirebaseConfigured && student?.uid) {
     const activeEpisode = await getActiveSubjectEpisode(student.uid, subject, student.subjectInstanceId);
     if (!activeEpisode?.id) throw new Error('Active subject episode not found.');
@@ -2705,9 +2719,23 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
   }
   const recentExerciseHistory = getRecentExerciseHistoryForAi(assignmentHistory, 28);
 
-  const topicSummaries = Array.isArray(studentState.completedTopicSummaries)
-    ? studentState.completedTopicSummaries
-    : getTopicSummary(completedLessons);
+  const topicSummaryByKey = new Map(
+    (Array.isArray(studentState.completedTopicSummaries) ? studentState.completedTopicSummaries : [])
+      .map((summary) => [normalizeCatalogTopicKey(summary.topic), summary]),
+  );
+  const currentLessonTopicKeys = new Set((readyCompletedLesson?.topicUnderstandingScores ?? [])
+    .map((entry) => normalizeCatalogTopicKey(entry.topic)).filter(Boolean));
+  getTopicSummary(completedLessons).forEach((summary) => {
+    const key = normalizeCatalogTopicKey(summary.topic);
+    if (!key) return;
+    const saved = topicSummaryByKey.get(key);
+    if (!saved) {
+      topicSummaryByKey.set(key, { ...summary, topicStatus: 'done', attendanceStatus: 'attended' });
+    } else if (currentLessonTopicKeys.has(key)) {
+      topicSummaryByKey.set(key, { ...saved, topicStatus: 'done', attendanceStatus: 'attended' });
+    }
+  });
+  const topicSummaries = [...topicSummaryByKey.values()];
   const eligibleTopicSummaries = getEligibleExerciseTopics(topicSummaries);
   if (!eligibleTopicSummaries.length) {
     return { generated: false, reason: 'No completed or sufficiently understood marked topics are available for exercise generation.', assignments: [], criteria: studentState.generationStatus };
@@ -2756,10 +2784,10 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
 
   onProgress?.(`Using topic metadata from ${selectedPapers.length} analyzed question papers [Generating exercises]`);
 
-  const currentGenerationNumber = mode === 'weekly'
+  const currentGenerationNumber = generationMode === 'weekly'
     ? getCurrentGenerationNumber(assignmentHistory, studentState.generationRunStatus?.generationWeek)
     : 1;
-  const generationNumber = mode === 'initial'
+  const generationNumber = generationMode === 'initial'
     ? 1
     : Number(plannedGenerationWeek) || (readyCompletedLesson ? currentGenerationNumber + 1 : currentGenerationNumber);
   const regenerationState = replacesExerciseWindow
@@ -2801,13 +2829,13 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
   if (aiPlan.perDayTopics.every((day) => day.requiredCount === 0)) {
     return { generated: false, reason: 'There are no remaining exercise slots under the daily topic limit.', assignments: [], criteria: studentState.generationStatus };
   }
-  const generationBatchId = `${mode}-${student.uid}-${Date.now()}`;
+  const generationBatchId = `${generationMode}-${student.uid}-${Date.now()}`;
   const aiPayload = {
     studentId: student.uid,
     grade: student?.grade,
     region: student?.province,
     subject,
-    mode,
+    mode: generationMode,
     assignmentDates,
     completedTopics,
     eligibleTopics,
@@ -2897,7 +2925,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
     subscriptionTrace,
     selectedPapers,
     generationBatchId,
-    mode,
+    mode: generationMode,
     subject,
     topicSummaries: eligibleTopicSummaries,
     maxExercisesPerDay: aiPlan.maxExercisesPerDay,
@@ -2978,7 +3006,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
         dateKey: assignmentDate,
         targetCount: MAX_EXERCISES_PER_DATE,
         generatedAt: serverTimestamp(),
-        mode,
+        mode: generationMode,
         status: 'completed',
       }, { merge: true });
     }
@@ -3014,7 +3042,7 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
           const ref = doc(collection(db, 'users', student.uid, 'subjects', episode.id, 'exercises'));
           const replacement = {
             ...item,
-            generationMode: readyCompletedLesson ? mode : sourceGeneration?.generationMode || item.generationMode,
+            generationMode: readyCompletedLesson ? generationMode : sourceGeneration?.generationMode || item.generationMode,
             generationBatchId: readyCompletedLesson ? generationBatchId : sourceGeneration?.generationBatchId || item.generationBatchId || generationBatchId,
             generationWeek: generationNumber,
           };
@@ -3063,20 +3091,29 @@ export const generateExercisePlanIfEligible = async (options = {}) => {
   const statusRef = doc(db, 'users', student.uid, 'subjects', episode.id, 'generationRuns', localDateKey());
   const startedAtMs = Date.now();
   const lastTrigger = completedLesson ? 'lesson' : mode === 'initial' ? 'initial' : 'weekly';
-  const historyWeek = getCurrentGenerationNumber(await getAssignmentHistory(student.uid, subject));
+  const generationHistory = await getAssignmentHistory(student.uid, subject, GENERATION_HISTORY_LIMIT, episode.id);
+  const plannedGenerationMode = getExerciseGenerationMode({
+    mode,
+    lessonCompleted: Boolean(completedLesson),
+    history: generationHistory,
+  });
+  const historyWeek = getCurrentGenerationNumber(generationHistory);
   const acquiredGenerationWeek = await runTransaction(db, async (transaction) => {
     const snapshot = await transaction.get(statusRef);
     const current = snapshot.exists() ? snapshot.data() : null;
     const lockIsFresh = startedAtMs - Number(current?.startedAtMs ?? 0) < EXERCISE_REGENERATION_LOCK_TIMEOUT_MS;
     if (current?.status === 'processing' && lockIsFresh) return null;
     const currentWeek = Math.max(historyWeek, Number(current?.generationWeek) || 1);
-    const generationWeek = getGenerationWeekForTrigger(currentWeek, { initial: mode === 'initial', lessonCompleted: Boolean(completedLesson) });
+    const generationWeek = getGenerationWeekForTrigger(currentWeek, {
+      initial: plannedGenerationMode === 'initial',
+      lessonCompleted: Boolean(completedLesson) && plannedGenerationMode !== 'initial',
+    });
     transaction.set(statusRef, {
       studentId: student.uid,
       subjectInstanceId: episode.id,
       dateKey: localDateKey(),
       subject,
-      mode,
+      mode: plannedGenerationMode,
       lastTrigger,
       generationWeek,
       status: 'processing',
@@ -3098,7 +3135,12 @@ export const generateExercisePlanIfEligible = async (options = {}) => {
   };
 
   try {
-    const result = await generateExercisePlanUnlocked({ ...options, plannedGenerationWeek: acquiredGenerationWeek, onProgress: reportProgress });
+    const result = await generateExercisePlanUnlocked({
+      ...options,
+      plannedGenerationWeek: acquiredGenerationWeek,
+      plannedGenerationMode,
+      onProgress: reportProgress,
+    });
     await setDoc(statusRef, {
       status: result.generated ? 'completed' : 'failed',
       message: result.reason || (result.generated ? 'Exercise generation completed.' : 'Exercise generation did not produce assignments.'),
