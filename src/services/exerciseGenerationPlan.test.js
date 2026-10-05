@@ -4,6 +4,7 @@ import {
   getCurrentGenerationNumber,
   getEligibleExerciseTopics,
   getExerciseGenerationMode,
+  fillMissingPlannedQuestionsFromIndexes,
   getGenerationWeekForTrigger,
   getRegenerationState,
   getSevenDayWindow,
@@ -31,6 +32,39 @@ test('lesson completion starts initial generation when no exercises exist and re
   assert.equal(getExerciseGenerationMode({ mode: 'weekly', lessonCompleted: true, history: [] }), 'initial');
   assert.equal(getExerciseGenerationMode({ mode: 'weekly', lessonCompleted: true, history: [{ id: 'legacy-exercise' }] }), 'weekly');
   assert.equal(getExerciseGenerationMode({ mode: 'initial', lessonCompleted: false, history: [] }), 'initial');
+});
+
+test('a missing topic question is filled from selected analyzed paper indexes without repeating an unused question', () => {
+  const plan = {
+    perDayTopics: [{ assignmentDate: '2026-10-10', exerciseCount: 1, topics: ['Fractions', 'Decimals', 'Algebra', 'Geometry', 'Measurement'], requiredCount: 5 }],
+  };
+  const selectedPapers = [{
+    id: 'paper-1',
+    questions: [
+      { topic: 'Fractions', questionReference: 'Q1', pageNumber: 2 },
+      { topic: 'Decimals', questionReference: 'Q2', pageNumber: 3 },
+      { topic: 'Algebra', questionReference: 'Q3', pageNumber: 4 },
+      { topic: 'Geometry', questionReference: 'Q4', pageNumber: 5 },
+      { topic: 'Measurement', questionReference: 'Q5', pageNumber: 6 },
+      { topic: 'Measurement', questionReference: 'Q6', pageNumber: 7 },
+    ],
+  }];
+  const result = fillMissingPlannedQuestionsFromIndexes({
+    recommendations: [{ assignmentDate: '2026-10-10', questions: [
+      { topic: 'Fractions', questionReference: 'Q1', paperId: 'paper-1', pageNumber: 2 },
+      { topic: 'Decimals', questionReference: 'Q2', paperId: 'paper-1', pageNumber: 3 },
+      { topic: 'Algebra', questionReference: 'Q3', paperId: 'paper-1', pageNumber: 4 },
+      { topic: 'Geometry', questionReference: 'Q4', paperId: 'paper-1', pageNumber: 5 },
+    ] }],
+    questionPlan: plan,
+    selectedPapers,
+    previouslyUsedQuestionReferences: [{ paperId: 'paper-1', questionReference: 'Q5' }],
+    isQuestionForTopic: (question, topic) => question.topic === topic,
+  });
+
+  assert.equal(result.filledCount, 1);
+  assert.deepEqual(result.recommendations[0].questions.map((question) => question.topic), plan.perDayTopics[0].topics);
+  assert.equal(result.recommendations[0].questions[4].questionReference, 'Q6');
 });
 
 test('seven-day regeneration window starts today and crosses month boundaries', () => {

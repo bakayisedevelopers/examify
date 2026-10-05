@@ -17,6 +17,76 @@ export const getCurrentGenerationNumber = (history = [], storedGenerationNumber 
 
 export const hasExerciseGeneration = (history = []) => Array.isArray(history) && history.length > 0;
 
+const normalizeQuestionTopic = (value) => String(value ?? '').trim().toLocaleLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const questionReferenceKey = (paperId, reference) => `${String(paperId ?? '').trim()}::${String(reference ?? '').trim()}`;
+
+export const fillMissingPlannedQuestionsFromIndexes = ({
+  recommendations = [],
+  questionPlan = {},
+  selectedPapers = [],
+  previouslyUsedQuestionReferences = [],
+  isQuestionForTopic = (question, topic) => normalizeQuestionTopic(question?.topic) === normalizeQuestionTopic(topic),
+} = {}) => {
+  const rows = recommendations.map((recommendation) => ({
+    ...recommendation,
+    questions: Array.isArray(recommendation?.questions) ? [...recommendation.questions] : [],
+  }));
+  const questionKey = (question) => questionReferenceKey(
+    question?.paperId,
+    question?.questionReference ?? question?.reference,
+  );
+  const used = new Set(previouslyUsedQuestionReferences
+    .map((question) => questionReferenceKey(question?.paperId, question?.questionReference ?? question?.reference))
+    .filter((key) => !key.endsWith('::')));
+  rows.forEach((recommendation) => recommendation.questions.forEach((question) => {
+    const key = questionKey(question);
+    if (!key.endsWith('::')) used.add(key);
+  }));
+
+  let filledCount = 0;
+  for (const day of questionPlan.perDayTopics ?? []) {
+    if (Number(day.exerciseCount) !== 1 || !Array.isArray(day.topics)) continue;
+    let recommendation = rows.find((item) => String(item.assignmentDate) === String(day.assignmentDate));
+    if (!recommendation) {
+      recommendation = { assignmentDate: day.assignmentDate, questions: [] };
+      rows.push(recommendation);
+    }
+
+    const plannedTopicKeys = new Set(day.topics.map(normalizeQuestionTopic));
+    const retainedTopicKeys = new Set();
+    recommendation.questions = recommendation.questions.filter((question) => {
+      const topicKey = normalizeQuestionTopic(question?.topic);
+      if (!plannedTopicKeys.has(topicKey)) return true;
+      if (retainedTopicKeys.has(topicKey)) return false;
+      retainedTopicKeys.add(topicKey);
+      return true;
+    });
+    const coveredTopics = new Set(recommendation.questions.map((question) => normalizeQuestionTopic(question?.topic)).filter(Boolean));
+    for (const topic of day.topics) {
+      const topicKey = normalizeQuestionTopic(topic);
+      if (!topicKey || coveredTopics.has(topicKey)) continue;
+      const candidates = selectedPapers.flatMap((paper) => (paper.questions ?? [])
+        .filter((question) => isQuestionForTopic(question, topic))
+        .map((question) => ({
+          topic,
+          questionReference: String(question.questionReference || question.reference || '').trim(),
+          paperId: String(paper.id || '').trim(),
+          pageNumber: Number(question.pageNumber ?? question.page),
+          marks: Number(question.marks) || 0,
+        }))
+        .filter((question) => question.questionReference && question.paperId && Number.isFinite(question.pageNumber) && question.pageNumber > 0));
+      const sourceQuestion = candidates.find((question) => !used.has(questionKey(question))) || candidates[0];
+      if (!sourceQuestion) continue;
+      recommendation.questions.push(sourceQuestion);
+      used.add(questionKey(sourceQuestion));
+      coveredTopics.add(topicKey);
+      filledCount += 1;
+    }
+  }
+
+  return { recommendations: rows, filledCount };
+};
+
 export const getExerciseGenerationMode = ({ mode, lessonCompleted = false, history = [] } = {}) =>
   lessonCompleted && !hasExerciseGeneration(history) ? 'initial' : mode;
 

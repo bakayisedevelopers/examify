@@ -29,6 +29,7 @@ import {
   getCurrentGenerationNumber,
   getEligibleExerciseTopics,
   getExerciseGenerationMode,
+  fillMissingPlannedQuestionsFromIndexes,
   getGenerationWeekForTrigger,
   getRegenerationState,
   getSevenDayWindow,
@@ -224,6 +225,12 @@ const persistLessonOutcome = async ({
     }];
   })).values()];
 
+  const lessonOutcomeFields = new Set([
+    'lessonId', 'topics', 'topic', 'topicReport', 'note', 'topicUnderstandingScores',
+    'understandingLevel', 'status', 'attendanceStatus', 'attended', 'completedOn',
+    'lessonType', 'whatsappLessonLink', 'locationDetails', 'assignmentPeriodId', 'updatedAt',
+  ]);
+
   await runTransaction(db, async (transaction) => {
     const [subjectSnapshot, lessonSnapshot, ...topicAndScoreSnapshots] = await Promise.all([
       transaction.get(subjectRef),
@@ -234,7 +241,9 @@ const persistLessonOutcome = async ({
     if (createLesson && lessonSnapshot.exists()) throw new Error('This lesson already exists.');
     if (!createLesson && !lessonSnapshot.exists()) throw new Error('The lesson no longer exists.');
 
-    const persistedLessonData = { ...lessonData };
+    const persistedLessonData = createLesson
+      ? { ...lessonData }
+      : Object.fromEntries(Object.entries(lessonData).filter(([field]) => lessonOutcomeFields.has(field)));
     delete persistedLessonData.topicUnderstandingScores;
     delete persistedLessonData.understandingLevel;
     const lessonWrite = {
@@ -2909,6 +2918,32 @@ const generateExercisePlanUnlocked = async ({ student, mode, subject = DEFAULT_S
       selectedPapers,
       validateSources: isFirebaseConfigured,
     });
+  }
+  if (!exactPlan.valid && exactPlan.shortDay && exactPlan.shortDay.returnedQuestionCount < exactPlan.shortDay.requiredQuestionCount) {
+    const usedQuestionReferences = assignmentHistory.flatMap((assignment) => [
+      ...(assignment.questionLinks ?? []),
+      ...(assignment.questions ?? []),
+      ...(assignment.questionReferences ?? []).map((questionReference, index) => ({
+        questionReference,
+        paperId: assignment.paperIds?.[index] || assignment.paperIds?.[0],
+      })),
+    ]);
+    const repairedPlan = fillMissingPlannedQuestionsFromIndexes({
+      recommendations: aiResponse?.recommendations ?? [],
+      questionPlan: aiPlan,
+      selectedPapers,
+      previouslyUsedQuestionReferences: usedQuestionReferences,
+      isQuestionForTopic: (question, topic) => questionMatchesTopics(question, [topic]),
+    });
+    if (repairedPlan.filledCount) {
+      aiResponse = { ...aiResponse, recommendations: repairedPlan.recommendations };
+      exactPlan = validateExactRecommendationPlan({
+        recommendations: aiResponse.recommendations,
+        questionPlan: aiPlan,
+        selectedPapers,
+        validateSources: isFirebaseConfigured,
+      });
+    }
   }
   if (!exactPlan.valid) {
     return {
