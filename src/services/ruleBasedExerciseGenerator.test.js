@@ -24,6 +24,12 @@ test('exercise window expands in seven-day blocks from completed topic count and
   assert.deepEqual(createExerciseDateWindow('2026-09-29', 3), ['2026-09-29', '2026-09-30', '2026-10-01']);
 });
 
+test('exercise date window rejects malformed dates and non-finite lengths instead of normalizing them', () => {
+  assert.deepEqual(createExerciseDateWindow('2026-02-30', 7), []);
+  assert.deepEqual(createExerciseDateWindow('2026-10-5', 7), []);
+  assert.deepEqual(createExerciseDateWindow('2026-10-05', Number.POSITIVE_INFINITY), []);
+});
+
 test('planner fills all target slots by reusing recent questions across dates, never within one exercise', () => {
   const questions = [...topicQuestions('Algebra', 4), ...topicQuestions('Fractions', 4)];
   const recent = questions.map(({ paperId, questionReference }) => ({ paperId, questionReference }));
@@ -79,6 +85,64 @@ test('planner can use analyzed questions from more than four source papers', () 
 
   assert.equal(plan.recommendations[0].questions.length, 7);
   assert.equal(new Set(plan.recommendations[0].questions.map((question) => question.paperId)).size, 7);
+});
+
+test('planner prefers a fresh topic when doing so preserves the weighted topic quotas', () => {
+  const recentQuestion = { topic: 'Strong topic', paperId: 'paper-strong', questionReference: 'Q1', pageNumber: 1 };
+  const freshQuestion = { topic: 'Developing topic', paperId: 'paper-developing', questionReference: 'Q1', pageNumber: 1 };
+  const plan = buildRuleBasedExercisePlan({
+    topicSummaries: [
+      { topic: 'Strong topic', topicStatus: 'done', understandingLevel: 0.5 },
+      { topic: 'Developing topic', topicStatus: 'done', understandingLevel: 0.5 },
+    ],
+    indexedQuestions: [recentQuestion, freshQuestion],
+    assignmentDates: dates.slice(0, 2),
+    targetQuestionsPerExercise: 1,
+    recentlyUsedQuestionKeys: [{ paperId: recentQuestion.paperId, questionReference: recentQuestion.questionReference }],
+    matchesTopic: (question, topic) => question.topic === topic,
+  });
+
+  const selectedTopics = plan.recommendations.map((day) => day.questions[0].topic).sort();
+  assert.deepEqual(selectedTopics, ['Developing topic', 'Strong topic']);
+  assert.equal(plan.recommendations[0].questions[0].topic, 'Developing topic');
+  assert.equal(plan.repeatedRecentQuestionCount, 1);
+});
+
+test('topics without a recorded understanding score receive a neutral weight', () => {
+  const plan = buildRuleBasedExercisePlan({
+    topicSummaries: [
+      { topic: 'Scored topic', topicStatus: 'done', understandingLevel: 0.5 },
+      { topic: 'Unscored topic', topicStatus: 'done', understandingLevel: null },
+    ],
+    indexedQuestions: [
+      ...topicQuestions('Scored topic', 7),
+      ...topicQuestions('Unscored topic', 7),
+    ],
+    assignmentDates: dates,
+    targetQuestionsPerExercise: 2,
+    matchesTopic: (question, topic) => question.topic === topic,
+  });
+  const counts = plan.recommendations.flatMap((day) => day.questions).reduce((result, question) => {
+    result[question.topic] = (result[question.topic] ?? 0) + 1;
+    return result;
+  }, {});
+
+  assert.equal(counts['Scored topic'], 7);
+  assert.equal(counts['Unscored topic'], 7);
+});
+
+test('question indexes with non-integer page numbers are discarded', () => {
+  const plan = buildRuleBasedExercisePlan({
+    topicSummaries: [{ topic: 'Algebra', topicStatus: 'done', understandingLevel: 0.7 }],
+    indexedQuestions: [{ topic: 'Algebra', paperId: 'paper-1', questionReference: 'Q1', pageNumber: 1.5 }],
+    assignmentDates: [dates[0]],
+    targetQuestionsPerExercise: 1,
+    matchesTopic: (question, topic) => question.topic === topic,
+  });
+
+  assert.equal(plan.indexedQuestionCount, 0);
+  assert.equal(plan.recommendations.length, 0);
+  assert.equal(plan.totalQuestionShortage, 1);
 });
 
 test('question-count reduction is the final fallback after all distinct indexed pairs are exhausted', () => {

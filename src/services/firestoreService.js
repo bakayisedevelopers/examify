@@ -34,6 +34,7 @@ import {
   isExerciseSubmitted,
 } from './exerciseGenerationPlan';
 import { buildRuleBasedExercisePlan, createExerciseDateWindow, getExerciseGenerationDayCount } from './ruleBasedExerciseGenerator';
+import { questionMatchesTopics } from './exerciseTopicMatching';
 import {
   mockCompletedLessons,
   mockDashboardData,
@@ -728,37 +729,6 @@ const getLastAssignmentDate = (history = []) =>
 
 const isAnalyzedQuestionPaper = (paper = {}) =>
   paper.analysisStatus === 'Analyzed' && paper.availableForGeneration !== false && Array.isArray(paper.questions) && paper.questions.length > 0;
-
-const normalizeTopicKey = (value = '') => String(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-const topicStopWords = new Set(['and', 'or', 'of', 'the', 'a', 'an', 'to', 'in', 'on', 'with', 'for']);
-const topicTokens = (value = '') => normalizeTopicKey(value)
-  .split(' ')
-  .map((token) => token.trim())
-  .filter((token) => token.length >= 3 && !topicStopWords.has(token));
-
-const topicKeysMatch = (left = '', right = '') => {
-  const leftKey = normalizeTopicKey(left);
-  const rightKey = normalizeTopicKey(right);
-  if (!leftKey || !rightKey) return false;
-  if (leftKey.includes(rightKey) || rightKey.includes(leftKey)) return true;
-  const leftTokens = topicTokens(leftKey);
-  const rightTokens = topicTokens(rightKey);
-  return leftTokens.some((leftToken) =>
-    rightTokens.some((rightToken) => leftToken === rightToken || leftToken.includes(rightToken) || rightToken.includes(leftToken)),
-  );
-};
-
-const questionMatchesTopics = (question = {}, completedTopics = []) => {
-  if (!completedTopics.length) return true;
-  const completed = completedTopics.map((topic) => String(topic ?? '').trim()).filter(Boolean);
-  const questionTopics = [
-    question.topic,
-    ...(Array.isArray(question.topics) ? question.topics : []),
-  ].map((topic) => String(topic ?? '').trim()).filter(Boolean);
-  return questionTopics.some((topic) =>
-    completed.some((completedTopic) => topicKeysMatch(topic, completedTopic)),
-  );
-};
 
 const summarizePaperQuestions = (paper = {}, completedTopics = []) =>
   (Array.isArray(paper.questions) ? paper.questions : [])

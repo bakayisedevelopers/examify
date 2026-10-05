@@ -9,6 +9,7 @@ import {
 const normalizeTopic = (value) => String(value ?? '').trim().toLocaleLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const questionKey = (question) => `${String(question?.paperId ?? '').trim()}::${String(question?.questionReference ?? question?.reference ?? '').trim().toLocaleLowerCase()}`;
 const clampUnderstanding = (value) => {
+  if (value === null || value === undefined || String(value).trim() === '') return 0.5;
   const score = Number(value);
   return Number.isFinite(score) && score >= 0 && score <= 1 ? score : 0.5;
 };
@@ -20,9 +21,16 @@ export const getExerciseGenerationDayCount = (completedTopicCount = 0) => {
 };
 
 export const createExerciseDateWindow = (startDate, dayCount = WEEKLY_EXERCISE_DAYS) => {
-  const [year, month, day] = String(startDate).slice(0, 10).split('-').map(Number);
+  const dateKey = String(startDate ?? '').trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return [];
+  const [year, month, day] = dateKey.split('-').map(Number);
   if (![year, month, day].every(Number.isFinite)) return [];
-  return Array.from({ length: Math.max(0, Math.min(MAX_EXERCISE_GENERATION_DAYS, Math.floor(Number(dayCount) || 0))) }, (_, offset) => {
+  const start = new Date(year, month - 1, day);
+  if (start.getFullYear() !== year || start.getMonth() !== month - 1 || start.getDate() !== day) return [];
+  const requestedDayCount = Number(dayCount);
+  if (!Number.isFinite(requestedDayCount)) return [];
+  const boundedDayCount = Math.max(0, Math.min(MAX_EXERCISE_GENERATION_DAYS, Math.floor(requestedDayCount)));
+  return Array.from({ length: boundedDayCount }, (_, offset) => {
     const date = new Date(year, month - 1, day + offset);
     return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
   });
@@ -108,14 +116,14 @@ export const buildRuleBasedExercisePlan = ({
     const paperId = String(question?.paperId ?? '').trim();
     const reference = String(question?.questionReference ?? question?.reference ?? '').trim();
     const pageNumber = Number(question?.pageNumber ?? question?.page);
-    if (!paperId || !reference || !Number.isFinite(pageNumber) || pageNumber <= 0) return;
+    if (!paperId || !reference || !Number.isInteger(pageNumber) || pageNumber <= 0) return;
     const key = questionKey({ paperId, questionReference: reference });
     const candidate = {
       topic: String(question?.topic ?? '').trim(),
       paperId,
       questionReference: reference,
       pageNumber,
-      marks: Number(question?.marks) || 0,
+      marks: Number.isFinite(Number(question?.marks)) && Number(question?.marks) > 0 ? Number(question.marks) : 0,
       key,
     };
     const indexed = candidateByKey.get(key) ?? candidate;
@@ -162,14 +170,30 @@ export const buildRuleBasedExercisePlan = ({
         if (topic.topicStatus !== 'marked') return true;
         const usedCount = markedCountsInBlock.get(topicKey) ?? 0;
         return usedCount < MARKED_TOPIC_SUGGESTIONS_PER_SEVEN_EXERCISES;
-      }).filter((topic) => (candidatesByTopic.get(normalizeTopic(topic.topic)) ?? [])
-        .some((candidate) => !usedForDate.has(candidate.key)));
+      }).map((topic) => ({
+        topic,
+        candidates: (candidatesByTopic.get(normalizeTopic(topic.topic)) ?? [])
+          .filter((candidate) => !usedForDate.has(candidate.key)),
+      })).filter(({ candidates }) => candidates.length > 0);
       if (!eligibleForSlot.length) break;
 
+      // Prefer fresh questions among topics that still have weighted quota.
+      // Keeping this selection quota-aware prevents recency from overriding
+      // the understanding-based distribution across the generation.
+      const candidatePriority = (candidate) => (usedRecently.has(candidate.key) ? 2 : 0) + (usedInPlan.has(candidate.key) ? 1 : 0);
       const allocatedSoFar = [...assignedTopicSlots.values()].reduce((sum, count) => sum + count, 0);
-      const quotaEligible = eligibleForSlot.filter((topic) =>
+      const quotaEligible = eligibleForSlot.filter(({ topic }) =>
         (assignedTopicSlots.get(normalizeTopic(topic.topic)) ?? 0) < (quotas.get(normalizeTopic(topic.topic)) ?? 0));
-      const topicsForSlot = quotaEligible.length ? quotaEligible : eligibleForSlot;
+      const priorityScope = quotaEligible.length ? quotaEligible : eligibleForSlot;
+      let bestAvailablePriority = Number.POSITIVE_INFINITY;
+      priorityScope.forEach(({ candidates }) => candidates.forEach((candidate) => {
+        bestAvailablePriority = Math.min(bestAvailablePriority, candidatePriority(candidate));
+      }));
+      const freshnessEligible = priorityScope
+        .filter(({ candidates }) => candidates.some((candidate) => candidatePriority(candidate) === bestAvailablePriority))
+        .map(({ topic }) => topic);
+
+      const topicsForSlot = freshnessEligible;
       const nextSlotNumber = Math.min(totalTargetSlots, allocatedSoFar + 1);
       const topic = [...topicsForSlot].sort((left, right) => {
         const leftKey = normalizeTopic(left.topic);
@@ -186,9 +210,9 @@ export const buildRuleBasedExercisePlan = ({
       const candidates = [...(candidatesByTopic.get(topicKey) ?? [])]
         .filter((candidate) => !usedForDate.has(candidate.key))
         .sort((left, right) => {
-          const priority = (candidate) => (usedRecently.has(candidate.key) ? 2 : 0) + (usedInPlan.has(candidate.key) ? 1 : 0);
-          return priority(left) - priority(right)
-            || stableHash(`${assignmentDate}:${left.key}`) - stableHash(`${assignmentDate}:${right.key}`);
+          return candidatePriority(left) - candidatePriority(right)
+            || stableHash(`${assignmentDate}:${left.key}`) - stableHash(`${assignmentDate}:${right.key}`)
+            || left.key.localeCompare(right.key);
         });
       const question = candidates[0];
       if (!question) break;
