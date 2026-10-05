@@ -15,6 +15,21 @@ service firebase.storage {
         && episode(studentId, subjectInstanceId).staffByUid[request.auth.uid] in ['co-owner', 'marker'];
     }
     function validImage() { return request.resource.size < 15 * 1024 * 1024 && request.resource.contentType.matches('image/.*'); }
+    function assignmentIsToday(assignmentDate) {
+      let parts = assignmentDate.split('-');
+      return assignmentDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && timestamp.date(int(parts[0]), int(parts[1]), int(parts[2]))
+          == (request.time + duration.value(2, 'h')).date();
+    }
+    function exerciseSubmissionIsOpen(studentId, subjectInstanceId, exerciseId) {
+      let exercise = firestore.get(/databases/(default)/documents/users/$(studentId)/subjects/$(subjectInstanceId)/exercises/$(exerciseId)).data;
+      let hasAccessWindow = exercise.keys().hasAll(['assignmentOpensAt', 'locksAt'])
+        && exercise.assignmentOpensAt is timestamp
+        && exercise.locksAt is timestamp;
+      return hasAccessWindow
+        ? exercise.assignmentOpensAt <= request.time && request.time < exercise.locksAt
+        : assignmentIsToday(exercise.get('assignmentDate', ''));
+    }
 
     match /questionPaperAnalysis/{allPaths=**} { allow read, write: if false; }
     match /questionPapers/{uploaderId}/{allPaths=**} {
@@ -25,8 +40,7 @@ service firebase.storage {
       allow read: if signedIn() && (request.auth.uid == studentId || isStaff(studentId, subjectInstanceId) || isAdmin()
         || firestore.exists(/databases/(default)/documents/users/$(studentId)/subjects/$(subjectInstanceId)/exercises/$(exerciseId)/peerMarkingAssignments/$(request.auth.uid)));
       allow create: if signedIn() && request.auth.uid == studentId && validImage()
-        && firestore.get(/databases/(default)/documents/users/$(studentId)/subjects/$(subjectInstanceId)/exercises/$(exerciseId)).data.assignmentOpensAt <= request.time
-        && request.time < firestore.get(/databases/(default)/documents/users/$(studentId)/subjects/$(subjectInstanceId)/exercises/$(exerciseId)).data.locksAt;
+        && exerciseSubmissionIsOpen(studentId, subjectInstanceId, exerciseId);
       allow update, delete: if false;
     }
     match /users/{studentId}/subjects/{subjectInstanceId}/exercises/{exerciseId}/{folder}/{fileName} {

@@ -111,6 +111,19 @@ const exerciseAccessWindow = (assignmentDate) => ({
   assignmentOpensAt: new Date(`${assignmentDate}T00:00:00+02:00`),
   locksAt: new Date(`${assignmentDate}T23:59:59.999+02:00`),
 });
+const completedLessonGenerationSignature = (lesson = {}) => JSON.stringify({
+  status: lesson.status,
+  attended: lesson.attended,
+  attendanceStatus: lesson.attendanceStatus,
+  completedOn: lesson.completedOn,
+  topics: lesson.topics ?? [],
+  scores: (lesson.topicUnderstandingScores ?? []).map((entry) => ({
+    topic: String(entry?.topic ?? '').trim(),
+    understandingLevel: Number(entry?.understandingLevel),
+  })),
+  report: lesson.topicReport ?? lesson.note ?? '',
+  understandingLevel: lesson.understandingLevel ?? null,
+});
 const meanUnderstandingScore = (entries = []) => entries.length
   ? Math.round((entries.reduce((sum, entry) => sum + Number(entry.understandingLevel), 0) / entries.length) * 10000) / 10000
   : null;
@@ -2836,6 +2849,8 @@ export const generateExercisePlanIfEligible = async (options = {}) => {
   const statusRef = doc(db, 'users', student.uid, 'subjects', episode.id, 'generationRuns', localDateKey());
   const startedAtMs = Date.now();
   const lastTrigger = completedLesson ? 'lesson' : mode === 'initial' ? 'initial' : 'weekly';
+  const sourceLessonId = completedLesson?.id ?? null;
+  const sourceLessonSignature = completedLesson ? completedLessonGenerationSignature(completedLesson) : null;
   const generationHistory = await getAssignmentHistory(student.uid, subject, GENERATION_HISTORY_LIMIT, episode.id);
   const plannedGenerationMode = getExerciseGenerationMode({
     mode,
@@ -2863,6 +2878,8 @@ export const generateExercisePlanIfEligible = async (options = {}) => {
       subject,
       mode: plannedGenerationMode,
       lastTrigger,
+      ...(sourceLessonId ? { sourceLessonId } : {}),
+      ...(sourceLessonSignature ? { sourceLessonSignature } : {}),
       generationWeek,
       status: 'processing',
       message: lastTrigger === 'lesson' ? 'Preparing exercises for the newly completed lesson.' : 'Preparing exercise generation.',
@@ -2892,6 +2909,8 @@ export const generateExercisePlanIfEligible = async (options = {}) => {
     await setDoc(statusRef, {
       status: result.generated ? 'completed' : 'failed',
       message: result.reason || (result.generated ? 'Exercise generation completed.' : 'Exercise generation did not produce assignments.'),
+      ...(sourceLessonId ? { sourceLessonId } : {}),
+      ...(sourceLessonSignature ? { sourceLessonSignature } : {}),
       grade: student?.grade ?? null,
       region: student?.province ?? null,
       paidSubscriptionActive: Boolean(result.criteria?.paidSubscriptionActive),

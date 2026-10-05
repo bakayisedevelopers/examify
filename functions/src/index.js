@@ -95,3 +95,10 @@ export {
 } from './notifications.js';
 
 export { processResendEmailOutbox } from './resendEmail.js';
+
+export {
+  queueExerciseGenerationAfterLesson,
+  queueInitialExerciseGenerationAfterSubscription,
+  queuePendingInitialGenerationAfterPaperAnalysis,
+  runAutomaticExerciseGeneration,
+} from './exerciseGeneration.js';
