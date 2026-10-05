@@ -1,6 +1,7 @@
 import { HttpsError } from 'firebase-functions/v2/https';
 import { getDb } from './admin.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
+import { isSavedSubscriptionPaymentConsistent } from './paystackPricingCore.js';
 
 const normalizeSubject = (value = '') => {
   const normalized = String(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -110,8 +111,8 @@ export const assertPaidExerciseGenerationAccess = async ({ authUid, studentId, s
     && payment.planId === subscription.planId
     && payment.billingPeriod === subscription.billingPeriod
     && Number(payment.subjectCount) === expectedQuote.subjectCount
-    && Number(payment.amount) === expectedQuote.amount
-    && payment.currency === expectedQuote.currency);
+    && payment.currency === expectedQuote.currency
+    && isSavedSubscriptionPaymentConsistent({ quote: expectedQuote, subscription, payment }));
   if (!paymentMatchesSubscription) {
     throw new HttpsError('failed-precondition', 'The active subscription does not have a matching successful payment.');
   }

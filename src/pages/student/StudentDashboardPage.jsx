@@ -62,7 +62,8 @@ const ExerciseGenerationProgressBar = ({ progress = 65, indeterminate = false })
 
 
 const ReadinessChecklist = ({ rows, studentName }) => {
-  if (!rows.length) return null;
+  const unmetRows = rows.filter((row) => Object.values(row.checks ?? {}).some((passed) => !passed));
+  if (!unmetRows.length) return null;
   const labels = {
     paidSubscriptionActive: 'Paid subscription active',
     minimumQuestionPaperCountMet: 'At least 2 analyzed papers available',
@@ -75,7 +76,7 @@ const ReadinessChecklist = ({ rows, studentName }) => {
         <h2 className="text-xl font-bold text-slate-950">Subjects missing requirements</h2>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
-        {rows.map((row) => (
+        {unmetRows.map((row) => (
           <details key={`${row.subject}-${row.mode}`} className="group rounded-2xl bg-slate-50 p-4">
             <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3">
               <span className="min-w-0 font-semibold text-slate-950">{studentName} • {row.subject}</span>
