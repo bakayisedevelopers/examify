@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from 'react';
 import { Save, LoaderCircle } from 'lucide-react';
 import { updateStudentTopicScoreForTutor } from '../../services/firestoreService';
 
@@ -9,7 +9,7 @@ const asQuestion = (question, index) => ({
   totalMarks: Number(question?.marks ?? question?.totalMarks) || 0,
 });
 
-export const TutorTopicScoreEditor = ({
+export const TutorTopicScoreEditor = forwardRef(({
   tutorId,
   studentId,
   subject,
@@ -18,26 +18,34 @@ export const TutorTopicScoreEditor = ({
   peerAssignmentId,
   questions = [],
   value,
+  initialQuestionScores = [],
+  compact = false,
+  hideSaveButton = false,
+  onActionStateChange,
   onSaved,
-}) => {
+}, ref) => {
   const normalizedQuestions = useMemo(() => (questions.length ? questions : [{}]).map(asQuestion), [questions]);
+  const initialScoresKey = JSON.stringify(initialQuestionScores);
   const [marks, setMarks] = useState({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
   useEffect(() => {
-    setMarks({});
+    const savedScores = JSON.parse(initialScoresKey || '[]');
+    setMarks(Object.fromEntries(normalizedQuestions.map((question, index) => {
+      const saved = savedScores.find((entry) => entry.questionReference === question.questionReference
+        && (!entry.paperId || !question.paperId || entry.paperId === question.paperId));
+      return [index, saved ? { earnedMarks: String(saved.earnedMarks) } : {}];
+    })));
     setMessage('');
-  }, [topic, exerciseId, peerAssignmentId]);
+  }, [topic, exerciseId, peerAssignmentId, normalizedQuestions, initialScoresKey]);
 
   const questionMarks = normalizedQuestions.map((question, index) => ({
     questionReference: question.questionReference,
     paperId: question.paperId,
     pageNumber: question.pageNumber,
     earnedMarks: marks[index]?.earnedMarks === '' || marks[index]?.earnedMarks === undefined ? NaN : Number(marks[index].earnedMarks),
-    totalMarks: marks[index]?.totalMarks === '' || marks[index]?.totalMarks === undefined
-      ? question.totalMarks
-      : Number(marks[index].totalMarks),
+    totalMarks: question.totalMarks,
   }));
   const allMarksValid = questionMarks.every((item) => Number.isFinite(item.earnedMarks)
     && Number.isFinite(item.totalMarks) && item.totalMarks > 0 && item.earnedMarks >= 0 && item.earnedMarks <= item.totalMarks);
@@ -53,7 +61,7 @@ export const TutorTopicScoreEditor = ({
 
   const save = async () => {
     if (!allMarksValid) {
-      setMessage('Enter marks earned and available marks for every question.');
+      setMessage('Enter marks earned for every question with an available mark allocation.');
       return;
     }
     setSaving(true);
@@ -78,58 +86,53 @@ export const TutorTopicScoreEditor = ({
     }
   };
 
+  const saveDisabled = saving || !tutorId || !allMarksValid;
+  useImperativeHandle(ref, () => ({ save }), [save]);
+  useEffect(() => {
+    onActionStateChange?.({ disabled: saveDisabled, saving });
+  }, [onActionStateChange, saveDisabled, saving]);
+
   return (
-    <div className="space-y-3 rounded-md border border-slate-700/70 bg-slate-900/75 p-3 text-slate-200">
-      <div>
-        <p className="text-sm font-semibold text-slate-700">{topic} · topic marks</p>
-        <p className="mt-1 text-xs text-slate-500">For each question, its score is marks earned ÷ that question’s available marks. Each question score is saved under this topic and linked to this exercise.</p>
-      </div>
-      <div className="space-y-2">
-        {normalizedQuestions.map((question, index) => {
-          const available = marks[index]?.totalMarks ?? (question.totalMarks > 0 ? String(question.totalMarks) : '');
-          const hasPaperTotal = question.totalMarks > 0;
-          return (
-            <div key={`${question.questionReference}-${index}`} className="grid gap-2 rounded-md border border-slate-700/70 bg-slate-950/60 p-3 sm:grid-cols-[1fr_7rem_7rem] sm:items-end">
-              <p className="text-sm font-medium text-slate-200">{question.questionReference}{question.pageNumber > 0 ? ` · page ${question.pageNumber}` : ''}</p>
-              <label className="grid gap-1 text-xs font-semibold text-slate-300">
-                Marks earned
+    <div className={compact ? 'space-y-2' : 'space-y-3 rounded-md border border-slate-700/70 bg-slate-900/75 p-3 text-slate-200'}>
+      {!compact ? (
+        <div>
+          <p className="text-sm font-semibold text-slate-700">{topic} · topic marks</p>
+          <p className="mt-1 text-xs text-slate-500">Enter marks earned. Available marks come from the question allocation.</p>
+        </div>
+      ) : null}
+      <div className={compact ? 'space-y-2' : 'space-y-2'}>
+        {normalizedQuestions.map((question, index) => (
+          <div key={`${question.questionReference}-${index}`} className={compact ? 'flex flex-wrap items-center gap-2' : 'grid gap-2 rounded-md border border-slate-700/70 bg-slate-950/60 p-3 sm:grid-cols-[1fr_10rem] sm:items-end'}>
+            <p className={compact ? 'min-w-16 text-xs font-medium text-slate-600' : 'text-sm font-medium text-slate-200'}>{question.questionReference}{question.pageNumber > 0 ? ` · page ${question.pageNumber}` : ''}</p>
+            <label className={compact ? 'flex items-center gap-2 text-xs font-semibold text-slate-600' : 'grid gap-1 text-xs font-semibold text-slate-300'}>
+              {!compact ? 'Marks earned' : null}
+              <span className="inline-flex items-center gap-2">
                 <input
                   type="number"
                   min="0"
-                  max={available || undefined}
+                  max={question.totalMarks || undefined}
                   step="0.5"
-                  className="input py-2"
+                  className={compact ? 'input w-20 py-1.5 text-sm' : 'input py-2'}
                   value={marks[index]?.earnedMarks ?? ''}
                   onChange={(event) => updateMark(index, { earnedMarks: event.target.value })}
+                  disabled={question.totalMarks <= 0}
                   aria-label={`${topic}, ${question.questionReference}, marks earned`}
                 />
-              </label>
-              <label className="grid gap-1 text-xs font-semibold text-slate-300">
-                Available marks
-                <input
-                  type="number"
-                  min="0.5"
-                  step="0.5"
-                  className="input py-2"
-                  value={available}
-                  readOnly={hasPaperTotal}
-                  onChange={(event) => updateMark(index, { totalMarks: event.target.value })}
-                  aria-label={`${topic}, ${question.questionReference}, available marks`}
-                />
-              </label>
-            </div>
-          );
-        })}
+                <span className="whitespace-nowrap text-slate-500">/ {question.totalMarks > 0 ? question.totalMarks : '—'}</span>
+              </span>
+            </label>
+          </div>
+        ))}
       </div>
-      <div className="flex flex-wrap items-center gap-3">
-        <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={save} disabled={saving || !tutorId || !allMarksValid}>
-          {saving ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Save className="h-4 w-4" aria-hidden="true" />}
-          {saving ? 'Saving...' : 'Save topic marks'}
+      {!hideSaveButton ? <div className="flex flex-wrap items-center gap-2">
+        <button type="button" className={`btn-primary inline-flex items-center gap-1.5 ${compact ? 'px-3 py-1.5 text-xs' : ''}`} onClick={save} disabled={saveDisabled}>
+          {saving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <Save className="h-3.5 w-3.5" aria-hidden="true" />}
+          {saving ? 'Saving...' : 'Save'}
         </button>
-        {calculatedScore !== null ? <p className="text-sm font-semibold text-slate-200">Calculated understanding: {Math.round(calculatedScore * 100)}%</p> : null}
-        {value !== undefined && value !== null && Number(value) <= 1 ? <p className="text-xs text-slate-500">Current 28-day average: {Math.round(Number(value) * 100)}%</p> : null}
-      </div>
+        {!compact && calculatedScore !== null ? <p className="text-sm font-semibold text-slate-200">Calculated understanding: {Math.round(calculatedScore * 100)}%</p> : null}
+        {!compact && value !== undefined && value !== null && Number(value) <= 1 ? <p className="text-xs text-slate-500">Current 28-day average: {Math.round(Number(value) * 100)}%</p> : null}
+      </div> : null}
       {message ? <p role="status" className="text-xs text-slate-600">{message}</p> : null}
     </div>
   );
-};
+});

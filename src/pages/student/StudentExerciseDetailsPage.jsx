@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { ExerciseCard } from '../../components/dashboard/ExerciseCard';
 import { useAuth } from '../../hooks/useAuth';
-import { getExerciseAssignmentById, getStudentAccessState } from '../../services/firestoreService';
+import { getCompletedPeerMarkingAssignmentsForStudent, getExerciseAssignmentById, getStudentAccessState, getTopicUnderstandingQuestionScores } from '../../services/firestoreService';
 import { getExerciseAvailability } from '../../utils/exerciseRules';
 
 export const StudentExerciseDetailsPage = () => {
@@ -12,6 +12,8 @@ export const StudentExerciseDetailsPage = () => {
   const [exercise, setExercise] = useState(null);
   const [paymentLocked, setPaymentLocked] = useState(false);
   const [status, setStatus] = useState('Loading exercise...');
+  const [completedMarkingAssignments, setCompletedMarkingAssignments] = useState([]);
+  const [scoreEntries, setScoreEntries] = useState([]);
 
   useEffect(() => {
     let active = true;
@@ -27,6 +29,24 @@ export const StudentExerciseDetailsPage = () => {
         const access = await getStudentAccessState(profile, assignment.subject);
         if (!active) return;
         setPaymentLocked(!access.paymentCompleted);
+        const markingAssignments = await getCompletedPeerMarkingAssignmentsForStudent(profile?.uid, assignment.subject).catch(() => []);
+        if (!active) return;
+        const topicNames = [...new Set([
+          ...(assignment.questionLinks ?? []).map((item) => item.topic),
+          ...(assignment.topicBreakdown ?? []).map((item) => item.topic),
+          ...String(assignment.topic ?? '').split('|'),
+          ...markingAssignments.flatMap((item) => [
+            ...(item.topics ?? []), item.topic, ...(item.questionLinks ?? []).map((link) => link.topic),
+          ]),
+        ].map((topic) => String(topic ?? '').trim()).filter(Boolean))];
+        const questionScores = await getTopicUnderstandingQuestionScores({
+          studentId: assignment.studentId || profile?.uid,
+          subjectInstanceId: assignment.subjectInstanceId,
+          topics: topicNames,
+        }).catch(() => []);
+        if (!active) return;
+        setCompletedMarkingAssignments(markingAssignments);
+        setScoreEntries(questionScores);
         setStatus('');
       } catch (error) {
         if (!active) return;
@@ -45,7 +65,15 @@ export const StudentExerciseDetailsPage = () => {
       {exercise && availability ? (
         <div className="space-y-4">
           <Link to="/student" className="btn-secondary inline-flex w-fit">Back to today’s exercises</Link>
-          <ExerciseCard exercise={exercise} availability={availability} paymentLocked={paymentLocked} studentId={profile?.uid} showQuestionLinks />
+          <ExerciseCard
+            exercise={exercise}
+            availability={availability}
+            paymentLocked={paymentLocked}
+            studentId={profile?.uid}
+            scoreEntries={scoreEntries}
+            completedMarkingAssignments={completedMarkingAssignments}
+            showQuestionLinks
+          />
         </div>
       ) : null}
     </AppShell>

@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, CreditCard } from 'lucide-react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { MarkingCanvas as ImageEditor } from '../../components/canvas/pictureEditorCanvas';
-import { SectionHeader } from '../../components/common/SectionHeader';
 import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
 import { useAuth } from '../../hooks/useAuth';
 import { canOpenExercise } from '../../utils/exerciseRules';
@@ -102,11 +101,9 @@ const ReadinessChecklist = ({ rows, studentName }) => {
 export const StudentDashboardPage = () => {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
   const [availableSubjects, setAvailableSubjects] = useState([]);
   const [todayExercises, setTodayExercises] = useState([]);
   const [peerAssignments, setPeerAssignments] = useState([]);
-  const [activeTab, setActiveTab] = useState(searchParams.get('tab') === 'mark' ? 'mark' : 'exercises');
   const [reviewingAssignment, setReviewingAssignment] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [paymentLocked, setPaymentLocked] = useState(true);
@@ -139,15 +136,6 @@ export const StudentDashboardPage = () => {
     }));
     return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
   }, [profile?.uid, availableSubjects]);
-
-  useEffect(() => {
-    setActiveTab(searchParams.get('tab') === 'mark' ? 'mark' : 'exercises');
-  }, [searchParams]);
-
-  const selectTab = (tab) => {
-    setActiveTab(tab);
-    setSearchParams(tab === 'mark' ? { tab: 'mark' } : {});
-  };
 
   useEffect(() => {
     let active = true;
@@ -417,52 +405,46 @@ export const StudentDashboardPage = () => {
         </div>
       ) : null}
 
-      <div className="panel mx-auto flex w-fit justify-center gap-2 p-2">
-        <button type="button" className={activeTab === 'exercises' ? 'btn-primary' : 'btn-secondary'} onClick={() => selectTab('exercises')}>Exercises</button>
-        <button type="button" className={activeTab === 'mark' ? 'btn-primary' : 'btn-secondary'} onClick={() => selectTab('mark')}>Mark</button>
-      </div>
+      <section className="space-y-4">
+        <div className="rounded-2xl bg-gradient-to-r from-lime-300 via-lime-400 to-emerald-400 p-5 text-slate-950 shadow-soft sm:p-6">
+          <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-950/70">Exercises</p>
+          <h2 className="mt-1 text-2xl font-extrabold tracking-tight">Work to Complete</h2>
+          <p className="mt-2 max-w-2xl text-sm text-emerald-950/80">Open today’s exercise to view the question pages and submit your work.</p>
+        </div>
+        <div className="grid gap-4 lg:grid-cols-2">
+          {isLoadingExercises || isCheckingAccess ? (
+            <div className="panel col-span-full flex min-h-40 items-center justify-center gap-3 p-6 text-sm text-slate-500" role="status">
+              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-lime-500 border-r-transparent" aria-hidden="true" />
+              Loading today’s exercises...
+            </div>
+          ) : isGenerating ? null : !paymentLocked && todayExercises.length ? todayExercises.map((exercise) => (
+            <TodayExerciseCard key={exercise.id} exercise={exercise} onOpen={() => navigate(`/student/exercises/${exercise.id}`)} />
+          )) : (
+            <div className="panel col-span-full flex min-h-40 items-center justify-center p-6 text-center text-sm text-slate-500">
+              {paymentLocked ? 'Exercises are locked until payment is complete.' : 'No exercises have been assigned for today yet.'}
+            </div>
+          )}
+        </div>
+        {!isGenerating ? <ReadinessChecklist rows={readinessRows} studentName={profile?.displayName || profile?.name || profile?.email || 'Student'} /> : null}
+      </section>
 
-      {activeTab === 'exercises' ? (
-        <>
-          <SectionHeader
-            eyebrow="Exercises"
-            title="Due today"
-            description="Each card shows the subject and opens the exercise details page for uploads and paper links."
-          />
-          <section className="grid gap-4 lg:grid-cols-2">
-            {isLoadingExercises || isCheckingAccess ? (
-              <div className="panel col-span-full flex min-h-40 items-center justify-center gap-3 p-6 text-sm text-slate-500" role="status">
-                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-lime-500 border-r-transparent" aria-hidden="true" />
-                Loading today’s exercises...
-              </div>
-            ) : isGenerating ? null : !paymentLocked && todayExercises.length ? todayExercises.map((exercise) => (
-              <TodayExerciseCard
-                key={exercise.id}
-                exercise={exercise}
-                onOpen={() => navigate(`/student/exercises/${exercise.id}`)}
-              />
-            )) : (
-              <div className="panel col-span-full flex min-h-72 items-center justify-center p-6 text-center text-sm text-slate-500">
-                {paymentLocked ? 'Exercises are locked until payment is complete.' : 'No exercises have been assigned for today yet.'}
-              </div>
-            )}
-          </section>
-          {!isGenerating ? <ReadinessChecklist rows={readinessRows} studentName={profile?.displayName || profile?.name || profile?.email || 'Student'} /> : null}
-        </>
-      ) : (
-        <>
-          <SectionHeader eyebrow="Peer marking" title="Work to mark" description="Mark submitted work from learners in your grade and subject." />
-          <section className="grid gap-4">
-            {isLoadingPeerAssignments ? <div className="panel flex min-h-32 items-center justify-center gap-3 p-5 text-sm text-slate-500" role="status"><span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-lime-500 border-r-transparent" aria-hidden="true" />Loading marking work...</div> : null}
-            {!isLoadingPeerAssignments ? peerAssignments.map((assignment) => (
-              <div key={assignment.id} className="panel p-4">
+      {!isLoadingPeerAssignments && peerAssignments.length ? (
+        <section className="space-y-4">
+          <div className="rounded-2xl bg-gradient-to-r from-lime-300 via-lime-400 to-emerald-400 p-5 text-slate-950 shadow-soft sm:p-6">
+            <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-950/70">Peer marking</p>
+            <h2 className="mt-1 text-2xl font-extrabold tracking-tight">Work to Mark</h2>
+            <p className="mt-2 max-w-2xl text-sm text-emerald-950/80">Mark the submitted work assigned to you.</p>
+          </div>
+          <div className="grid gap-4">
+            {peerAssignments.map((assignment) => (
+              <div key={assignment.id} className="panel p-4 sm:p-5">
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div>
                     <p className="font-semibold text-slate-950">{assignment.title || 'Exercise submission'}</p>
                     <p className="mt-1 text-sm text-slate-500">{assignment.subject} • {assignment.grade} • {assignment.assignmentDate}</p>
                     <p className="mt-1 text-sm text-slate-600">{assignment.topic}</p>
                   </div>
-                  <button type="button" className="btn-primary" onClick={() => setReviewingAssignment((current) => current?.id === assignment.id ? null : assignment)}>{reviewingAssignment?.id === assignment.id ? 'Close marking' : 'Mark work'}</button>
+                  <button type="button" className="btn-primary px-4 py-2" onClick={() => setReviewingAssignment((current) => current?.id === assignment.id ? null : assignment)}>{reviewingAssignment?.id === assignment.id ? 'Close marking' : 'Open Marking'}</button>
                 </div>
                 {reviewingAssignment?.id === assignment.id ? (
                   <div className="mt-4">
@@ -470,12 +452,10 @@ export const StudentDashboardPage = () => {
                   </div>
                 ) : null}
               </div>
-            )) : null}
-            {!isLoadingPeerAssignments && !peerAssignments.length ? <div className="panel p-5 text-sm text-slate-500">No one to mark for yet. When learners in your grade and subject submit, marking work will appear here.</div> : null}
-          </section>
-          {!isGenerating ? <ReadinessChecklist rows={readinessRows} studentName={profile?.displayName || profile?.name || profile?.email || 'Student'} /> : null}
-        </>
-      )}
+            ))}
+          </div>
+        </section>
+      ) : null}
     </AppShell>
   );
 };

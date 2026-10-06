@@ -2404,6 +2404,32 @@ export const getCompletedPeerMarkingWorkForTutor = async ({ tutorId, studentId, 
   return (await callable({ studentId, subject })).data;
 };
 
+export const getCompletedPeerMarkingAssignmentsForStudent = async (reviewerId, subject = DEFAULT_SUBJECT) => {
+  if (!reviewerId || !isFirebaseConfigured) return [];
+  ensureDb();
+  const snapshot = await getDocs(query(collectionGroup(db, 'peerMarkingAssignments'),
+    where('reviewerId', '==', reviewerId), where('status', '==', 'completed')));
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data(), assignmentPath: item.ref.path }))
+    .filter((item) => item.subject === subject && (item.reviewImages?.length || item.reviewImageUrl))
+    .sort((left, right) => String(right.assignmentDate ?? '').localeCompare(String(left.assignmentDate ?? '')));
+};
+
+export const getTopicUnderstandingQuestionScores = async ({ studentId, subjectInstanceId, topics = [] }) => {
+  if (!studentId || !subjectInstanceId || !isFirebaseConfigured || !topics.length) return [];
+  ensureDb();
+  const requestedTopics = new Set(topics.map((topic) => String(topic ?? '').trim().toLocaleLowerCase()).filter(Boolean));
+  const topicSnapshot = await getDocs(collection(db, 'users', studentId, 'subjects', subjectInstanceId, 'topics'));
+  const matchingTopics = topicSnapshot.docs.filter((item) => requestedTopics.has(
+    String(item.data().topicName || item.id).trim().toLocaleLowerCase(),
+  ));
+  const scoreSnapshots = await Promise.all(matchingTopics.map((topic) => getDocs(collection(topic.ref, 'understandingScores'))));
+  return scoreSnapshots.flatMap((snapshot, index) => snapshot.docs.map((score) => ({
+    topic: matchingTopics[index].data().topicName || matchingTopics[index].id,
+    id: score.id,
+    ...score.data(),
+  })));
+};
+
 export const deleteExerciseAssignmentForTutor = async ({ tutorId, exerciseId }) => {
   const exercise = await getExerciseAssignmentById(exerciseId, { tutorId });
   if (!exercise) throw new Error('Exercise assignment not found.');

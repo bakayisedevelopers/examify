@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { AppShell } from '../../components/common/AppShell';
 import { ExerciseCard } from '../../components/dashboard/ExerciseCard';
 import { useAuth } from '../../hooks/useAuth';
-import { deleteExerciseAssignmentForTutor, getExerciseAssignmentById, getStudentTopicScoresForTutor, getTutorAssignedStudentContexts, getTutorAssignmentHistoryContexts, getTutorAssignmentHistoryData } from '../../services/firestoreService';
+import { deleteExerciseAssignmentForTutor, getCompletedPeerMarkingWorkForTutor, getExerciseAssignmentById, getStudentTopicScoresForTutor, getTopicUnderstandingQuestionScores, getTutorAssignedStudentContexts, getTutorAssignmentHistoryContexts, getTutorAssignmentHistoryData } from '../../services/firestoreService';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
 import { getExerciseAvailability, getExerciseStatusLabels } from '../../utils/exerciseRules';
 import { useEffectiveRole } from '../../utils/effectiveRole';
@@ -24,6 +24,8 @@ export const TutorExerciseDetailsPage = () => {
   const [topicScores, setTopicScores] = useState({});
   const [accessRole, setAccessRole] = useState('viewer');
   const [isHistorical, setIsHistorical] = useState(false);
+  const [completedMarkingAssignments, setCompletedMarkingAssignments] = useState([]);
+  const [scoreEntries, setScoreEntries] = useState([]);
 
   useEffect(() => {
     getExerciseAssignmentById(exerciseId, { tutorId: profile?.uid, studentId, subjectInstanceId, periodId })
@@ -40,6 +42,17 @@ export const TutorExerciseDetailsPage = () => {
           if (!archivedExercise) throw new Error('This exercise is not part of the selected assignment period.');
           setExercise(archivedExercise);
           setTopicScores(Object.fromEntries((archivedExercise.topicUnderstandingScores ?? []).map((entry) => [entry.topic, entry.understandingLevel])));
+          setCompletedMarkingAssignments([]);
+          const archivedTopics = [...new Set([
+            ...(archivedExercise.questionLinks ?? []).map((item) => item.topic),
+            ...(archivedExercise.topicBreakdown ?? []).map((item) => item.topic),
+            ...String(archivedExercise.topic ?? '').split('|'),
+          ].map((topic) => String(topic ?? '').trim()).filter(Boolean))];
+          setScoreEntries(await getTopicUnderstandingQuestionScores({
+            studentId: archivedExercise.studentId || result.studentId,
+            subjectInstanceId: archivedExercise.subjectInstanceId || result.subjectInstanceId,
+            topics: archivedTopics,
+          }).catch(() => []));
           setAccessRole('viewer');
           setIsHistorical(true);
           setStatus('');
@@ -49,12 +62,27 @@ export const TutorExerciseDetailsPage = () => {
         setExercise(result);
         setStatus('');
         if (profile?.uid) {
-          const [scores, contexts] = await Promise.all([
+          const [scores, contexts, markingAssignments] = await Promise.all([
             getStudentTopicScoresForTutor({ tutorId: profile.uid, studentId: result.studentId, subject: result.subject }),
             getTutorAssignedStudentContexts(profile.uid),
+            getCompletedPeerMarkingWorkForTutor({ tutorId: profile.uid, studentId: result.studentId, subject: result.subject }).catch(() => []),
           ]);
           setTopicScores(scores);
           setAccessRole(contexts.find((context) => context.studentId === result.studentId && context.subject === result.subject)?.accessRole || 'viewer');
+          const topicNames = [...new Set([
+            ...(result.questionLinks ?? []).map((item) => item.topic),
+            ...(result.topicBreakdown ?? []).map((item) => item.topic),
+            ...String(result.topic ?? '').split('|'),
+            ...markingAssignments.flatMap((item) => [
+              ...(item.topics ?? []), item.topic, ...(item.questionLinks ?? []).map((link) => link.topic),
+            ]),
+          ].map((topic) => String(topic ?? '').trim()).filter(Boolean))];
+          setCompletedMarkingAssignments(markingAssignments);
+          setScoreEntries(await getTopicUnderstandingQuestionScores({
+            studentId: result.studentId,
+            subjectInstanceId: result.subjectInstanceId,
+            topics: topicNames,
+          }).catch(() => []));
         }
       })
       .catch((error) => setStatus(error.message || 'Could not load exercise.'));
@@ -88,7 +116,21 @@ export const TutorExerciseDetailsPage = () => {
               <Trash2 className="h-4 w-4" aria-hidden="true" /> {isDeleting ? 'Deleting...' : 'Delete exercise'}
             </button> : null}
           </div>
-          <ExerciseCard exercise={exercise} availability={availability} paymentLocked={false} studentId={exercise.studentId} tutorId={profile?.uid} topicScores={topicScores} onTopicScoreSaved={(topic, score) => setTopicScores((current) => ({ ...current, [topic]: score }))} showQuestionLinks viewerRole="tutor" accessRole={accessRole} />
+          <ExerciseCard
+            exercise={exercise}
+            availability={availability}
+            paymentLocked={false}
+            studentId={exercise.studentId}
+            tutorId={profile?.uid}
+            topicScores={topicScores}
+            scoreEntries={scoreEntries}
+            completedMarkingAssignments={completedMarkingAssignments}
+            onTopicScoreSaved={(topic, score) => setTopicScores((current) => ({ ...current, [topic]: score }))}
+            showQuestionLinks
+            viewerRole="tutor"
+            accessRole={accessRole}
+            isHistorical={isHistorical}
+          />
         </div>
       ) : null}
     </AppShell>
