@@ -2,18 +2,21 @@ import { useState } from 'react';
 import { useLocation, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { Logo } from '../../components/common/Logo';
+import { getPortal, getPortalConfig, getPortalForProfile, getPortalSiteUrl, getSignupPathForPortal, isProfileAllowedOnPortal } from '../../utils/portal';
 
 export const LoginPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { login } = useAuth();
+  const { login, logout } = useAuth();
   const [form, setForm] = useState({ email: '', password: '' });
   const [status, setStatus] = useState('');
+  const [accountPortal, setAccountPortal] = useState(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const portal = getPortal();
+  const portalConfig = getPortalConfig(portal);
   const signupParams = new URLSearchParams(location.search);
   if (signupParams.has('discountCode')) signupParams.set('checkout', '1');
-  const signupQuery = signupParams.toString();
-  const signupPath = signupQuery ? `/signup?${signupQuery}` : '/signup';
+  const signupPath = getSignupPathForPortal(portal, signupParams.toString());
 
   const redirectByRole = (profile) => {
     const selection = new URLSearchParams(location.search);
@@ -26,7 +29,7 @@ export const LoginPage = () => {
       navigate(`/parent?discountCode=${encodeURIComponent(selection.get('discountCode'))}`);
       return;
     }
-    const target = profile.isTeacher ? '/teacher' : `/${profile.role}`;
+    const target = getPortalForProfile(profile) === 'teacher' ? '/teacher' : `/${profile.role}`;
     navigate(target);
   };
 
@@ -34,8 +37,16 @@ export const LoginPage = () => {
     event.preventDefault();
     setIsLoggingIn(true);
     setStatus('');
+    setAccountPortal(null);
     try {
       const result = await login(form);
+      if (!isProfileAllowedOnPortal(result.profile, portal)) {
+        const correctPortal = getPortalForProfile(result.profile);
+        await logout();
+        setAccountPortal(correctPortal);
+        setStatus(`This account does not have access to the ${portalConfig.label.toLowerCase()} site.`);
+        return;
+      }
       redirectByRole(result.profile);
     } catch (error) {
       setStatus(error.message);
@@ -48,8 +59,9 @@ export const LoginPage = () => {
     <main className="mx-auto flex min-h-[calc(100vh-88px)] max-w-lg items-center justify-center px-4 py-12 lg:px-6">
       <form onSubmit={handleSubmit} className="panel w-full space-y-5 p-8 border border-slate-800 bg-slate-900/90 shadow-2xl">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.25em] text-lime-400">Login</p>
-          <h2 className="mt-2 text-2xl sm:text-3xl font-bold text-white">Welcome back</h2>
+          <p className="text-xs font-semibold uppercase tracking-[0.25em] text-lime-400">{portalConfig.label} portal</p>
+          <h2 className="mt-2 text-2xl sm:text-3xl font-bold text-white">Sign in to Examifying</h2>
+          <p className="mt-2 text-sm text-slate-400">Use the account linked to your {portalConfig.audience.toLowerCase()} access.</p>
           <Logo className="mt-4" />
         </div>
         <label className="block">
@@ -78,9 +90,18 @@ export const LoginPage = () => {
           {isLoggingIn ? 'Logging in...' : 'Login'}
         </button>
         {status ? <p className="text-sm text-rose-500">{status}</p> : null}
-        <p className="text-sm text-slate-400 text-center">
-          Need an account? <Link to={signupPath} className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">Create one</Link>.
-        </p>
+        {accountPortal ? (
+          <a href={getPortalSiteUrl(accountPortal)} className="block text-center text-sm font-semibold text-lime-400 hover:text-lime-300 hover:underline">
+            Go to the {getPortalConfig(accountPortal).label.toLowerCase()} site
+          </a>
+        ) : null}
+        {signupPath ? (
+          <p className="text-sm text-slate-400 text-center">
+            Need an account? <Link to={signupPath} className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">Create one</Link>.
+          </p>
+        ) : (
+          <p className="text-sm text-slate-400 text-center">Administrator accounts are managed by the Examifying platform owner.</p>
+        )}
       </form>
     </main>
   );

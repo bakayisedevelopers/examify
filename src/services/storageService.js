@@ -29,6 +29,27 @@ const uploadFile = async ({ file, path }) => {
   };
 };
 
+const MAX_TUTOR_MARKS_DOCUMENT_BYTES = 25 * 1024 * 1024;
+const getTutorMarksDocumentContentType = (file) => {
+  const declaredType = String(file?.type ?? '').trim().toLowerCase();
+  const extension = String(file?.name ?? '').split('.').pop()?.toLowerCase();
+  if (declaredType.includes('pdf') || extension === 'pdf') return 'application/pdf';
+
+  const imageContentType = getImageContentType(file);
+  if (imageContentType) return imageContentType;
+  throw new Error(`${file?.name || 'This file'} is not a supported marks document. Choose a PDF or image file.`);
+};
+
+const uploadTutorMarksDocumentFile = async ({ file, path, contentType }) => {
+  if (Number(file.size) > MAX_TUTOR_MARKS_DOCUMENT_BYTES) {
+    throw new Error(`${file.name || 'This document'} exceeds the 25 MiB upload limit. Choose a smaller file.`);
+  }
+  const storageRef = ref(storage, `${path}/${Date.now()}-${file.name}`);
+  await uploadBytes(storageRef, file, { contentType });
+  const url = await getDownloadURL(storageRef);
+  return { fileName: file.name, url, contentType };
+};
+
 const MAX_SUBMISSION_IMAGE_BYTES = 25 * 1024 * 1024;
 const IMAGE_MIME_BY_EXTENSION = {
   bmp: 'image/bmp', gif: 'image/gif', heic: 'image/heic', heif: 'image/heif',
@@ -410,6 +431,8 @@ export const uploadTutorMarksDocument = async ({ file, tutor, onProgress }) => {
     throw new Error('Please choose a marks document before uploading.');
   }
 
+  const contentType = getTutorMarksDocumentContentType(file);
+
   if (!isFirebaseConfigured) {
     return {
       fileName: file.name,
@@ -423,13 +446,17 @@ export const uploadTutorMarksDocument = async ({ file, tutor, onProgress }) => {
     };
   }
 
-  const documentDataUrl = await fileToDataUrl(file);
-  const upload = await uploadFile({ file, path: `users/${tutor.uid}/tutorMarksDocuments` });
+  const documentDataUrl = contentType === 'application/pdf' ? undefined : await fileToDataUrl(file);
+  const upload = await uploadTutorMarksDocumentFile({
+    file,
+    path: `users/${tutor.uid}/tutorMarksDocuments`,
+    contentType,
+  });
   const documentRecord = {
     tutorId: tutor.uid,
     fileName: upload.fileName,
     fileUrl: upload.url,
-    mimeType: file.type || 'application/octet-stream',
+    mimeType: upload.contentType,
     status: 'processing',
     progressMessage: 'Results [Queued]',
     extractedMarks: [],

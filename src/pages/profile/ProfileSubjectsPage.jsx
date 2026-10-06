@@ -448,7 +448,7 @@ export const ProfileSubjectsPage = ({ role }) => {
           <form ref={tutorUploadFormRef} onSubmit={handleTutorUpload} className="panel space-y-4 p-5">
             <div>
               <p className="text-sm font-semibold text-slate-950">Add more tutor subjects</p>
-              <p className="mt-1 text-sm text-slate-500">Upload another marks document. AI will only add eligible listed subjects with marks of 60% or above.</p>
+              <p className="mt-1 text-sm text-slate-500">Upload a PDF or image of your results. PDF pages are rendered as images for AI review. Only listed subjects with marks of 60% or above are eligible.</p>
             </div>
             <div className="grid gap-3 md:grid-cols-[1fr_auto]">
               <input type="file" className="input" accept=".pdf,.png,.jpg,.jpeg,.webp,.heic,.heif" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />

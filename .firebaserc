@@ -2,6 +2,26 @@
   "projects": {
     "default": "examifying"
   },
-  "targets": {},
+  "targets": {
+    "examifying": {
+      "hosting": {
+        "student": [
+          "examifying"
+        ],
+        "tutor": [
+          "examifying-tutors"
+        ],
+        "parent": [
+          "examifying-parents"
+        ],
+        "admin": [
+          "examifying-admin"
+        ],
+        "teacher": [
+          "examifying-teachers"
+        ]
+      }
+    }
+  },
   "etags": {}
 }

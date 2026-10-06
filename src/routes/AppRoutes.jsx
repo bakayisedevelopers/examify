@@ -1,7 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { MarketingLayout } from '../layouts/MarketingLayout';
 import { ProtectedRoute } from '../components/common/ProtectedRoute';
-import { LandingPage } from '../pages/LandingPage';
+import { PortalHomePage } from '../pages/PortalHomePage';
 import { LoginPage } from '../pages/auth/LoginPage';
 import { SignupPage } from '../pages/auth/SignupPage';
 import { StudentDashboardPage } from '../pages/student/StudentDashboardPage';
@@ -43,7 +43,7 @@ import { PaidStudentRoute } from '../components/common/PaidStudentRoute';
 export const AppRoutes = () => (
   <Routes>
     <Route element={<MarketingLayout />}>
-      <Route path="/" element={<LandingPage />} />
+      <Route path="/" element={<PortalHomePage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/signup" element={<SignupPage />} />
       <Route path="/policies" element={<PoliciesPage />} />

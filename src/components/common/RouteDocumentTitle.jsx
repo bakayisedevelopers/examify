@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
+import { getPortal, getPortalConfig } from '../../utils/portal';
 
 const roleTitles = {
   admin: 'Admin',
@@ -44,7 +45,10 @@ export const RouteDocumentTitle = () => {
 
   useEffect(() => {
     if (pathname === '/') {
-      document.title = 'Examifying | Get 60%+ in Your Exams';
+      const portal = getPortal();
+      document.title = portal === 'student'
+        ? 'Examifying | Get 60%+ in Your Exams'
+        : `Examifying | ${getPortalConfig(portal).label} Portal`;
       return;
     }
     const pathRole = pathname.split('/').filter(Boolean)[0];

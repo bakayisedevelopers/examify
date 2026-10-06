@@ -5,18 +5,23 @@ import { useAuth } from '../../hooks/useAuth';
 import { Logo } from '../../components/common/Logo';
 import { normalizeWhatsAppNumber } from '../../utils/whatsapp';
 import { LEGAL_POLICY_VERSION } from '../../lib/legalPolicyVersion';
+import { getPortal, getPortalConfig, getPortalForProfile } from '../../utils/portal';
 
 export const SignupPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const portal = getPortal();
+  const portalConfig = getPortalConfig(portal);
   const { register, profile, loading } = useAuth();
   const [creating, setCreating] = useState(false);
+
+  const initialRole = portalConfig.signupRole || ROLES.STUDENT;
 
   const [form, setForm] = useState({
     fullName: '',
     email: '',
     password: '',
-    role: ROLES.STUDENT,
+    role: initialRole,
     grade: SOUTH_AFRICAN_GRADES[0],
     province: REGIONS[0],
     school: '',
@@ -27,6 +32,8 @@ export const SignupPage = () => {
   const [acceptedPolicies, setAcceptedPolicies] = useState(false);
   const [status, setStatus] = useState('');
   const pendingDiscountCode = new URLSearchParams(location.search).get('discountCode')?.toUpperCase() || '';
+
+  if (portal === 'admin') return <Navigate to="/login" replace />;
 
   if (loading) {
     return <main className="mx-auto flex min-h-[calc(100vh-88px)] max-w-2xl items-center justify-center px-4 py-12 text-sm text-slate-300">Loading your account…</main>;
@@ -45,7 +52,7 @@ export const SignupPage = () => {
     if (profile.role === ROLES.PARENT && pendingDiscountCode) {
       return <Navigate to={`/parent?discountCode=${encodeURIComponent(pendingDiscountCode)}`} replace />;
     }
-    return <Navigate to={profile.isTeacher ? '/teacher' : `/${profile.role}`} replace />;
+    return <Navigate to={getPortalForProfile(profile) === 'teacher' ? '/teacher' : `/${profile.role}`} replace />;
   }
 
   if (pendingDiscountCode && new URLSearchParams(location.search).get('checkout') !== '1') {
@@ -59,6 +66,11 @@ export const SignupPage = () => {
     event.preventDefault();
 
     setCreating(true);
+    if (form.role !== portalConfig.signupRole) {
+      setStatus(`This site only creates ${portalConfig.label.toLowerCase()} accounts.`);
+      setCreating(false);
+      return;
+    }
     let whatsappNumber = '';
 
     if (form.role === ROLES.STUDENT) {
@@ -182,15 +194,10 @@ export const SignupPage = () => {
           <input type="password" className="input" value={form.password} onChange={handleChange('password')} required minLength={6} />
         </label>
 
-        <label className="block">
-          <span className="label">Role</span>
-          <select className="input" value={form.role} onChange={handleChange('role')}>
-            <option value={ROLES.STUDENT}>Student</option>
-            <option value={ROLES.PARENT}>Parent</option>
-            <option value={ROLES.TUTOR}>Tutor</option>
-            <option value="teacher">Teacher</option>
-          </select>
-        </label>
+        <div className="rounded-xl border border-lime-400/20 bg-lime-400/5 p-4 text-sm text-lime-100">
+          <span className="block text-xs font-semibold uppercase tracking-wide text-lime-300">Account type</span>
+          <span className="mt-1 block font-semibold">{portalConfig.label} account</span>
+        </div>
 
         {form.role === ROLES.STUDENT ? (
           <>
