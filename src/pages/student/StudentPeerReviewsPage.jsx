@@ -4,9 +4,9 @@ import { PeerReviewForm } from '../../components/dashboard/PeerReviewForm';
 import { useAuth } from '../../hooks/useAuth';
 import {
   completePeerMarkingAssignment,
-  getActiveSubjectsForStudent,
+  getActiveSubjectEpisodesForStudent,
   getPeerMarkingAssignmentsForStudent,
-  getStudentAccessState,
+  getStudentEntitlementState,
 } from '../../services/firestoreService';
 import { uploadPeerReviewImage } from '../../services/storageService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
@@ -14,6 +14,7 @@ import { DEFAULT_SUBJECT } from '../../lib/constants';
 export const StudentPeerReviewsPage = () => {
   const { profile, logout } = useAuth();
   const [availableSubjects, setAvailableSubjects] = useState([]);
+  const [availableSubjectEpisodes, setAvailableSubjectEpisodes] = useState([]);
   const [selectedSubject, setSelectedSubject] = useState(DEFAULT_SUBJECT);
   const [assignment, setAssignment] = useState(null);
   const [paymentCompleted, setPaymentCompleted] = useState(null);
@@ -24,21 +25,24 @@ export const StudentPeerReviewsPage = () => {
   useEffect(() => {
     if (!profile?.uid) return undefined;
     let active = true;
-    getActiveSubjectsForStudent(profile.uid).then((subjects) => {
+    getActiveSubjectEpisodesForStudent(profile.uid).then((episodes) => {
       if (!active) return;
+      const subjects = [...new Set(episodes.map((episode) => episode.subjectKey).filter(Boolean))].sort();
+      setAvailableSubjectEpisodes(episodes);
       setAvailableSubjects(subjects);
       if (subjects.length && !subjects.includes(selectedSubject)) setSelectedSubject(subjects[0]);
     }).catch((error) => setStatus(error.message || 'Could not load your active subjects.'));
     return () => { active = false; };
-  }, [profile?.uid, selectedSubject]);
+  }, [profile?.uid]);
 
   useEffect(() => {
     if (!profile?.uid || !selectedSubject) return undefined;
     let active = true;
     setIsLoading(true);
     setStatus('');
+    const episode = availableSubjectEpisodes.find((item) => item.studentId === profile.uid && item.subjectKey === selectedSubject) ?? null;
     Promise.all([
-      getStudentAccessState(profile, selectedSubject),
+      getStudentEntitlementState(profile, selectedSubject, episode),
       getPeerMarkingAssignmentsForStudent(profile.uid),
     ]).then(([access, assignments]) => {
       if (!active) return;
@@ -48,7 +52,7 @@ export const StudentPeerReviewsPage = () => {
       if (active) setStatus(error.message || 'Could not load peer marking.');
     }).finally(() => { if (active) setIsLoading(false); });
     return () => { active = false; };
-  }, [profile, selectedSubject]);
+  }, [profile, selectedSubject, availableSubjectEpisodes]);
 
   const submitMarkedPages = async (files) => {
     if (!assignment || !profile?.uid) throw new Error('No peer marking assignment is available.');

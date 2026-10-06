@@ -13,10 +13,9 @@ export const TutorReportsPage = () => {
 
   useEffect(() => {
     if (!profile?.uid) return;
-    Promise.all([
-      getTutorReportsForAssignedStudents(profile.uid),
-      getTutorAssignedStudentContexts(profile.uid),
-    ]).then(([reportRows, studentRows]) => {
+    getTutorAssignedStudentContexts(profile.uid)
+      .then((studentRows) => getTutorReportsForAssignedStudents(profile.uid, studentRows).then((reportRows) => [reportRows, studentRows]))
+      .then(([reportRows, studentRows]) => {
       setReports(reportRows);
       setStudents(studentRows);
     });

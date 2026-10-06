@@ -37,7 +37,7 @@ export const TutorExerciseDetailsPage = () => {
         if (profile?.uid && periodId) {
           const history = await getTutorAssignmentHistoryContexts(profile.uid, result.studentId);
           if (!history.some((period) => period.assignmentPeriodId === periodId)) throw new Error('This assignment history is not available to your account.');
-          const archivedData = await getTutorAssignmentHistoryData({ tutorId: profile.uid, studentId: result.studentId, periodId });
+          const archivedData = await getTutorAssignmentHistoryData({ tutorId: profile.uid, studentId: result.studentId, periodId, historyContexts: history });
           const archivedExercise = archivedData.exercises.find((item) => item.id === exerciseId);
           if (!archivedExercise) throw new Error('This exercise is not part of the selected assignment period.');
           setExercise(archivedExercise);
@@ -52,6 +52,7 @@ export const TutorExerciseDetailsPage = () => {
             studentId: archivedExercise.studentId || result.studentId,
             subjectInstanceId: archivedExercise.subjectInstanceId || result.subjectInstanceId,
             topics: archivedTopics,
+            sourceIds: [archivedExercise.id],
           }).catch(() => []));
           setAccessRole('viewer');
           setIsHistorical(true);
@@ -62,13 +63,19 @@ export const TutorExerciseDetailsPage = () => {
         setExercise(result);
         setStatus('');
         if (profile?.uid) {
-          const [scores, contexts, markingAssignments] = await Promise.all([
-            getStudentTopicScoresForTutor({ tutorId: profile.uid, studentId: result.studentId, subject: result.subject }),
-            getTutorAssignedStudentContexts(profile.uid),
+          const [contexts, markingAssignments] = await Promise.all([
+            getTutorAssignedStudentContexts(profile.uid, result.studentId),
             getCompletedPeerMarkingWorkForTutor({ tutorId: profile.uid, studentId: result.studentId, subject: result.subject }).catch(() => []),
           ]);
+          const selectedContext = contexts.find((context) => context.subject === result.subject) ?? null;
+          const scores = await getStudentTopicScoresForTutor({
+            tutorId: profile.uid,
+            studentId: result.studentId,
+            subject: result.subject,
+            contexts: selectedContext ? [selectedContext] : [],
+          });
           setTopicScores(scores);
-          setAccessRole(contexts.find((context) => context.studentId === result.studentId && context.subject === result.subject)?.accessRole || 'viewer');
+          setAccessRole(selectedContext?.accessRole || 'viewer');
           const topicNames = [...new Set([
             ...(result.questionLinks ?? []).map((item) => item.topic),
             ...(result.topicBreakdown ?? []).map((item) => item.topic),
@@ -82,6 +89,7 @@ export const TutorExerciseDetailsPage = () => {
             studentId: result.studentId,
             subjectInstanceId: result.subjectInstanceId,
             topics: topicNames,
+            sourceIds: [result.id, ...markingAssignments.map((item) => item.id)],
           }).catch(() => []));
         }
       })

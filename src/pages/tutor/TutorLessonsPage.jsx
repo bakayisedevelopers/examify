@@ -19,7 +19,8 @@ export const TutorLessonsPage = () => {
 
   useEffect(() => {
     if (!profile?.uid) return;
-    Promise.all([getTutorLessonsForAssignedStudents(profile.uid), getTutorAssignedStudentContexts(profile.uid)])
+    getTutorAssignedStudentContexts(profile.uid)
+      .then((studentRows) => getTutorLessonsForAssignedStudents(profile.uid, studentRows).then((lessonRows) => [lessonRows, studentRows]))
       .then(([lessonRows, studentRows]) => { setLessons(lessonRows); setStudents(studentRows); })
       .catch((error) => setStatus(error.message || 'Could not load lessons.'));
   }, [profile?.uid]);

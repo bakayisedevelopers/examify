@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { ExerciseCard } from '../../components/dashboard/ExerciseCard';
 import { useAuth } from '../../hooks/useAuth';
-import { getCompletedPeerMarkingAssignmentsForStudent, getExerciseAssignmentById, getStudentAccessState, getTopicUnderstandingQuestionScores } from '../../services/firestoreService';
+import { getCompletedPeerMarkingAssignmentsForStudent, getExerciseAssignmentById, getStudentEntitlementState, getTopicUnderstandingQuestionScores } from '../../services/firestoreService';
 import { getExerciseAvailability } from '../../utils/exerciseRules';
 
 export const StudentExerciseDetailsPage = () => {
   const { exerciseId } = useParams();
+  const [searchParams] = useSearchParams();
+  const subjectInstanceId = searchParams.get('subjectInstanceId');
   const { profile, logout } = useAuth();
   const [exercise, setExercise] = useState(null);
   const [paymentLocked, setPaymentLocked] = useState(false);
@@ -19,18 +21,19 @@ export const StudentExerciseDetailsPage = () => {
     let active = true;
     const load = async () => {
       try {
-        const assignment = await getExerciseAssignmentById(exerciseId, { studentId: profile?.uid });
+        const assignment = await getExerciseAssignmentById(exerciseId, { studentId: profile?.uid, subjectInstanceId });
         if (!active) return;
         setExercise(assignment);
         if (!assignment) {
           setStatus('Exercise not found.');
           return;
         }
-        const access = await getStudentAccessState(profile, assignment.subject);
+        const [access, markingAssignments] = await Promise.all([
+          getStudentEntitlementState(profile, assignment.subject, assignment.subjectInstanceId),
+          getCompletedPeerMarkingAssignmentsForStudent(profile?.uid, assignment.subject).catch(() => []),
+        ]);
         if (!active) return;
         setPaymentLocked(!access.paymentCompleted);
-        const markingAssignments = await getCompletedPeerMarkingAssignmentsForStudent(profile?.uid, assignment.subject).catch(() => []);
-        if (!active) return;
         const topicNames = [...new Set([
           ...(assignment.questionLinks ?? []).map((item) => item.topic),
           ...(assignment.topicBreakdown ?? []).map((item) => item.topic),
@@ -43,6 +46,7 @@ export const StudentExerciseDetailsPage = () => {
           studentId: assignment.studentId || profile?.uid,
           subjectInstanceId: assignment.subjectInstanceId,
           topics: topicNames,
+          sourceIds: [assignment.id, ...markingAssignments.map((item) => item.id)],
         }).catch(() => []);
         if (!active) return;
         setCompletedMarkingAssignments(markingAssignments);
@@ -55,7 +59,7 @@ export const StudentExerciseDetailsPage = () => {
     };
     load();
     return () => { active = false; };
-  }, [exerciseId, profile]);
+  }, [exerciseId, profile?.uid, subjectInstanceId]);
 
   const availability = exercise ? getExerciseAvailability(exercise.assignmentDate, Boolean(exercise.submittedImageUrl || exercise.submitted === 'Yes')) : null;
 

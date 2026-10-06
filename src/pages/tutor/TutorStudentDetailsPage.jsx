@@ -103,7 +103,10 @@ export const TutorStudentDetailsPage = () => {
       setLessonEligibilityLoading(true);
       setLessonEligibilityError('');
     }
-    const historyRows = await getTutorAssignmentHistoryContexts(profile.uid, studentId);
+    const [historyRows, currentContexts] = await Promise.all([
+      getTutorAssignmentHistoryContexts(profile.uid, studentId),
+      getTutorAssignedStudentContexts(profile.uid, studentId),
+    ]);
     setAssignmentHistory(historyRows);
 
     if (periodId) {
@@ -119,8 +122,7 @@ export const TutorStudentDetailsPage = () => {
         setStatus('This assignment history is not available to your account.');
         return;
       }
-      const archivedData = await getTutorAssignmentHistoryData({ tutorId: profile.uid, studentId, periodId });
-      const currentContexts = await getTutorAssignedStudentContexts(profile.uid);
+      const archivedData = await getTutorAssignmentHistoryData({ tutorId: profile.uid, studentId, periodId, historyContexts: historyRows });
       setCurrentAssignmentSubjects([...new Set(currentContexts.filter((item) => item.studentId === studentId).map((item) => item.subject))]);
       const archivedSubject = archivedContext.subject;
       setStudent({ ...archivedContext, accessRole: 'viewer', historicalAccessRole: archivedContext.accessRole });
@@ -135,11 +137,7 @@ export const TutorStudentDetailsPage = () => {
       return;
     }
 
-    const [contexts, exerciseRows, lessonRows] = await Promise.all([
-      getTutorAssignedStudentContexts(profile.uid),
-      getTutorExercisesForAssignedStudents(profile.uid),
-      getTutorLessonsForAssignedStudents(profile.uid),
-    ]);
+    const contexts = currentContexts;
     const accessibleSubjects = [...new Set(contexts
       .filter((item) => item.studentId === studentId)
       .map((item) => item.subject)
@@ -160,18 +158,26 @@ export const TutorStudentDetailsPage = () => {
     setLessonEligibilityError('');
     let papers;
     let eligibilityResult;
+    let exerciseRows;
+    let subjectLessons;
+    let peerMarkedRows;
     try {
-      [papers, eligibilityResult] = await Promise.all([
+      [papers, eligibilityResult, exerciseRows, subjectLessons, peerMarkedRows] = await Promise.all([
         getQuestionPapers({ subject: activeSubject, grade: studentContext?.grade, region: studentContext?.province }),
         getLessonEligibleSubjectGradePairs(contexts.filter((item) => item.studentId === studentId && item.accessRole === 'co-owner'))
           .then((pairs) => ({ pairs }))
           .catch((error) => ({ error })),
+        getTutorExercisesForAssignedStudents(profile.uid, [studentContext]),
+        getTutorLessonsForAssignedStudents(profile.uid, [studentContext]),
+        getCompletedPeerMarkingWorkForTutor({ tutorId: profile.uid, studentId, subject: activeSubject }),
       ]);
     } catch (error) {
       setLessonEligibilityLoading(false);
       throw error;
     }
     const eligiblePairs = eligibilityResult.pairs || [];
+    exerciseRows = exerciseRows.filter((item) => item.studentId === studentId && item.subject === activeSubject);
+    subjectLessons = subjectLessons.filter((item) => item.studentId === studentId && item.subject === activeSubject);
     setLessonEligibleSubjects([...new Set(eligiblePairs.map((pair) => pair.subject))].sort());
     setLessonEligibilityError(eligibilityResult.error?.message || '');
     setLessonEligibilityLoading(false);
@@ -179,10 +185,9 @@ export const TutorStudentDetailsPage = () => {
     setStaffAccess(await getStaffStudentAccess({ studentId, subject: activeSubject, tutorId: profile.uid, subjectInstanceId: studentContext?.subjectInstanceId }));
     if (studentContext?.accessRole === 'co-owner') setStaffMembers(await getStaffMembersForAccess({ tutorId: profile.uid, subject: activeSubject }));
     else setStaffMembers([]);
-    setExercises(exerciseRows.filter((item) => item.studentId === studentId && item.subject === activeSubject));
-    const subjectLessons = lessonRows.filter((item) => item.studentId === studentId && item.subject === activeSubject);
+    setExercises(exerciseRows);
     setLessons(subjectLessons);
-    setPeerMarkedWork(await getCompletedPeerMarkingWorkForTutor({ tutorId: profile.uid, studentId, subject: activeSubject }));
+    setPeerMarkedWork(peerMarkedRows);
     try {
       setTopicOptions(await getGlobalTopicOptionGroups({
         subject: activeSubject,

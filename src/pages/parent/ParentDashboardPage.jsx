@@ -9,8 +9,7 @@ import { AuthorizationChargeDisclosure } from '../../components/billing/Authoriz
 import { 
   assignStudentToParent, 
   getStudentsForParent, 
-  getStudentAccessState, 
-  getTodayExercise,
+  getParentStudentSummary,
   updateStudentProfileByParent 
 } from '../../services/firestoreService';
 import { cancelSubscriptionPaymentCheckout, initializeSubscriptionPayment, verifySubscriptionPayment } from '../../services/paymentsService';
@@ -83,12 +82,11 @@ export const ParentDashboardPage = () => {
       
       const enrichedStudents = await Promise.all(
         parentStudents.map(async (student) => {
-          const accessState = await getStudentAccessState(student);
-          const todayExercise = await getTodayExercise(student.uid);
+          const accessState = await getParentStudentSummary(student);
           return {
             ...student,
-            completedLessonsCount: accessState.completedLessons?.length || 0,
-            todayExercise: todayExercise,
+            completedLessonsCount: accessState.completedLessonsCount,
+            todayExercise: accessState.todayExercise,
             paymentCompleted: accessState.paymentCompleted, 
             subscriptionPlanId: accessState.subscriptionPlanId,
             subscriptionPlanName: accessState.subscriptionPlanName,

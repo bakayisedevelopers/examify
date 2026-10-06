@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
-import { getQuestionPapers, getStudentSubscriptionState, getTutorAssignedStudentContexts, getTutorLessonsForAssignedStudents } from '../../services/firestoreService';
+import { getQuestionPapers, getStudentSubscriptionState, getTutorAssignedStudentContexts, getTutorLessonPresenceForContexts } from '../../services/firestoreService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 import { getApprovedTutorSubjects, normalizeEligibleSubject } from '../../utils/tutorSubjects';
 import { useEffectiveRole } from '../../utils/effectiveRole';
@@ -57,13 +57,11 @@ export const TutorDashboardPage = () => {
 
   const load = async () => {
     if (!profile?.uid) return;
-    const [studentRows, lessonRows] = await Promise.all([
-      getTutorAssignedStudentContexts(profile.uid),
-      getTutorLessonsForAssignedStudents(profile.uid),
-    ]);
+    const studentRows = await getTutorAssignedStudentContexts(profile.uid);
     const uniqueContexts = [...new Map(studentRows.map((student) => [`${student.subject ?? DEFAULT_SUBJECT}-${student.grade ?? ''}-${student.province ?? ''}`, student])).values()];
     const studentsById = new Map(studentRows.map((student) => [student.studentId, student]));
-    const [paperPairs, subscriptionPairs] = await Promise.all([
+    const [lessonRows, paperPairs, subscriptionPairs] = await Promise.all([
+      getTutorLessonPresenceForContexts(studentRows),
       Promise.all(uniqueContexts.map(async (student) => {
         const subject = student.subject ?? DEFAULT_SUBJECT;
         const papers = await getQuestionPapers({ grade: student.grade, region: student.province, subject });

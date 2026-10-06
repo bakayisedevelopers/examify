@@ -9,9 +9,10 @@ import { canOpenExercise } from '../../utils/exerciseRules';
 import {
   generateExercisePlanIfEligible,
   completePeerMarkingAssignment,
-  getActiveSubjectsForStudent,
+  getActiveSubjectEpisodesForStudent,
   getPeerMarkingAssignmentsForStudent,
   getStudentAccessState,
+  getStudentSubscriptionState,
   getTodayExercises,
   subscribeToExerciseGenerationStatus,
 } from '../../services/firestoreService';
@@ -102,6 +103,7 @@ export const StudentDashboardPage = () => {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
   const [availableSubjects, setAvailableSubjects] = useState([]);
+  const [availableSubjectEpisodes, setAvailableSubjectEpisodes] = useState([]);
   const [todayExercises, setTodayExercises] = useState([]);
   const [peerAssignments, setPeerAssignments] = useState([]);
   const [reviewingAssignment, setReviewingAssignment] = useState(null);
@@ -123,19 +125,26 @@ export const StudentDashboardPage = () => {
   useEffect(() => {
     let active = true;
     if (!profile?.uid) { setAvailableSubjects([]); return undefined; }
-    getActiveSubjectsForStudent(profile.uid)
-      .then((subjects) => { if (active) setAvailableSubjects(subjects); })
+    getActiveSubjectEpisodesForStudent(profile.uid)
+      .then((episodes) => {
+        if (!active) return;
+        setAvailableSubjectEpisodes(episodes);
+        setAvailableSubjects([...new Set(episodes.map((episode) => episode.subjectKey).filter(Boolean))].sort());
+      })
       .catch((error) => { if (active) setLoadError(error.message || 'Could not load your active subjects.'); });
     return () => { active = false; };
   }, [profile?.uid]);
 
   useEffect(() => {
     if (!profile?.uid) return undefined;
-    const unsubscribes = availableSubjects.map((subject) => subscribeToExerciseGenerationStatus(profile.uid, subject, (status) => {
-      setGenerationStatuses((current) => ({ ...current, [subject]: status }));
-    }));
+    const unsubscribes = availableSubjects.map((subject) => {
+      const episode = availableSubjectEpisodes.find((item) => item.studentId === profile.uid && item.subjectKey === subject);
+      return subscribeToExerciseGenerationStatus(profile.uid, subject, (status) => {
+        setGenerationStatuses((current) => ({ ...current, [subject]: status }));
+      }, episode?.id ?? null);
+    });
     return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
-  }, [profile?.uid, availableSubjects]);
+  }, [profile?.uid, availableSubjects, availableSubjectEpisodes]);
 
   useEffect(() => {
     let active = true;
@@ -165,7 +174,12 @@ export const StudentDashboardPage = () => {
         setInitialRetrySubjects([]);
         const readiness = [];
         const subjectsToCheck = availableSubjects;
-        Promise.all(subjectsToCheck.map((subject) => getTodayExercises(profile.uid, subject)))
+        const sharedSubscriptionState = subjectsToCheck.length ? getStudentSubscriptionState(profile) : null;
+        Promise.all(subjectsToCheck.map((subject) => getTodayExercises(
+          profile.uid,
+          subject,
+          availableSubjectEpisodes.find((episode) => episode.studentId === profile.uid && episode.subjectKey === subject) ?? null,
+        )))
           .then((nestedRows) => {
             if (active) {
               const rows = nestedRows.flat();
@@ -197,7 +211,12 @@ export const StudentDashboardPage = () => {
             return [];
           });
         const accessStates = await Promise.all(subjectsToCheck.map((subject) =>
-          getStudentAccessState(profile, subject).then((access) => ({ subject, access })),
+          getStudentAccessState(
+            profile,
+            subject,
+            availableSubjectEpisodes.find((episode) => episode.studentId === profile.uid && episode.subjectKey === subject) ?? null,
+            sharedSubscriptionState,
+          ).then((access) => ({ subject, access })),
         ));
         if (!active) return;
         const effectiveSubscription = accessStates[0]?.access ?? await loadStudentSubscriptionState(profile);
@@ -265,7 +284,7 @@ export const StudentDashboardPage = () => {
 
     load();
     return () => { active = false; };
-  }, [availableSubjects, profile]);
+  }, [availableSubjects, availableSubjectEpisodes, profile]);
 
   const retryInitialGeneration = async (subject) => {
     if (!subject || retryingInitialSubject) return;
@@ -418,7 +437,11 @@ export const StudentDashboardPage = () => {
               Loading today’s exercises...
             </div>
           ) : isGenerating ? null : !paymentLocked && todayExercises.length ? todayExercises.map((exercise) => (
-            <TodayExerciseCard key={exercise.id} exercise={exercise} onOpen={() => navigate(`/student/exercises/${exercise.id}`)} />
+            <TodayExerciseCard key={exercise.id} exercise={exercise} onOpen={() => {
+              const params = new URLSearchParams();
+              if (exercise.subjectInstanceId) params.set('subjectInstanceId', exercise.subjectInstanceId);
+              navigate(`/student/exercises/${exercise.id}${params.size ? `?${params.toString()}` : ''}`);
+            }} />
           )) : (
             <div className="panel col-span-full flex min-h-40 items-center justify-center p-6 text-center text-sm text-slate-500">
               {paymentLocked ? 'Exercises are locked until payment is complete.' : 'No exercises have been assigned for today yet.'}

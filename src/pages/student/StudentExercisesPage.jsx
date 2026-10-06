@@ -3,7 +3,7 @@ import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
 import { useAuth } from '../../hooks/useAuth';
-import { getActiveSubjectsForStudent, getExerciseHistory, getStudentAccessState, getTodayExercise } from '../../services/firestoreService';
+import { getActiveSubjectEpisodesForStudent, getExerciseHistory, getStudentEntitlementState, getTodayExercise } from '../../services/firestoreService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 
 export const StudentExercisesPage = () => {
@@ -12,18 +12,21 @@ export const StudentExercisesPage = () => {
   const [history, setHistory] = useState([]);
   const [paymentCompleted, setPaymentCompleted] = useState(false);
   const [availableSubjects, setAvailableSubjects] = useState([]);
+  const [availableSubjectEpisodes, setAvailableSubjectEpisodes] = useState([]);
   const [selectedSubject, setSelectedSubject] = useState(DEFAULT_SUBJECT);
 
   useEffect(() => {
     if (!profile?.uid) return undefined;
     let active = true;
-    getActiveSubjectsForStudent(profile.uid).then((subjects) => {
+    getActiveSubjectEpisodesForStudent(profile.uid).then((episodes) => {
       if (!active) return;
+      const subjects = [...new Set(episodes.map((episode) => episode.subjectKey).filter(Boolean))].sort();
+      setAvailableSubjectEpisodes(episodes);
       setAvailableSubjects(subjects);
       if (subjects.length && !subjects.includes(selectedSubject)) setSelectedSubject(subjects[0]);
     });
     return () => { active = false; };
-  }, [profile?.uid, selectedSubject]);
+  }, [profile?.uid]);
 
   useEffect(() => {
     if (availableSubjects.length && !availableSubjects.includes(selectedSubject)) {
@@ -33,14 +36,19 @@ export const StudentExercisesPage = () => {
 
   useEffect(() => {
     const load = async () => {
-      const access = await getStudentAccessState(profile, selectedSubject);
+      const episode = availableSubjectEpisodes.find((item) => item.studentId === profile?.uid && item.subjectKey === selectedSubject) ?? null;
+      const access = await getStudentEntitlementState(profile, selectedSubject, episode);
       setPaymentCompleted(access.paymentCompleted);
       if (!access.paymentCompleted) return;
-      getTodayExercise(profile?.uid, selectedSubject).then(setTodayExercise);
-      getExerciseHistory(profile?.uid, selectedSubject).then(setHistory);
+      const [today, exercises] = await Promise.all([
+        getTodayExercise(profile?.uid, selectedSubject, episode),
+        getExerciseHistory(profile?.uid, selectedSubject, episode),
+      ]);
+      setTodayExercise(today);
+      setHistory(exercises);
     };
     load();
-  }, [profile, selectedSubject]);
+  }, [profile, selectedSubject, availableSubjectEpisodes]);
 
   return (
     <AppShell title="Exercises" subtitle="Review today’s task and browse your subject assignment timeline." role="student" user={profile} onLogout={logout}>

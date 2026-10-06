@@ -29,10 +29,9 @@ export const TutorExercisesPage = () => {
 
   useEffect(() => {
     if (!profile?.uid) return;
-    Promise.all([
-      getTutorExercisesForAssignedStudents(profile.uid),
-      getTutorAssignedStudentContexts(profile.uid),
-    ]).then(([exerciseRows, contextRows]) => {
+    getTutorAssignedStudentContexts(profile.uid).then((contextRows) =>
+      getTutorExercisesForAssignedStudents(profile.uid, contextRows).then((exerciseRows) => [exerciseRows, contextRows]),
+    ).then(([exerciseRows, contextRows]) => {
       setExercises(exerciseRows);
       setContexts(contextRows);
     });
