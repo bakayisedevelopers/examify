@@ -66,3 +66,42 @@ const SUBJECT_LOOKUP = new Map(SUPPORTED_SUBJECTS.flatMap((subject) => [
 ]));
 
 export const normalizeSupportedSubject = (value) => SUBJECT_LOOKUP.get(normalizeComparable(value)) ?? null;
+
+export const getTutorSubjectsAutoGrantedByMarks = (marks = [], minimumMark = 60) => {
+  const hasQualifiedMathematics = (Array.isArray(marks) ? marks : []).some((item) =>
+    normalizeSupportedSubject(item?.subject ?? item?.rawSubject) === 'Mathematics'
+      && Number.isFinite(Number(item?.mark)) && Number(item.mark) >= minimumMark);
+  return hasQualifiedMathematics ? ['Mathematical Literacy'] : [];
+};
+
+const LOWER_GRADE_SUBJECTS = new Set([
+  'Mathematics',
+  'Natural Sciences',
+  'English Home Language',
+  'English First Additional Language',
+  'Afrikaans Home Language',
+  'Afrikaans First Additional Language',
+  'isiZulu Home Language',
+  'isiXhosa Home Language',
+  'Sepedi Home Language',
+  'Setswana Home Language',
+  'Sesotho Home Language',
+]);
+
+// Keep the student picker and callable validation aligned with the CAPS
+// grade bands used by this app: Mathematics/languages in Grades 4–12,
+// Natural Sciences in Grades 4–9, and the remaining supported subjects in
+// Grades 10–12. Historical subject episodes are retained independently.
+export const isSubjectAvailableForGrade = (subjectValue, gradeValue) => {
+  const subject = normalizeSupportedSubject(subjectValue);
+  const gradeMatch = String(gradeValue ?? '').trim().match(/^Grade\s+(\d{1,2})$/i);
+  const grade = gradeMatch ? Number(gradeMatch[1]) : NaN;
+  if (!subject || !Number.isInteger(grade) || grade < 4 || grade > 12) return false;
+  if (grade <= 9) return LOWER_GRADE_SUBJECTS.has(subject);
+  return subject !== 'Natural Sciences';
+};
+
+export const getSubjectsAvailableForGrade = (grade, subjects = []) =>
+  [...new Set((Array.isArray(subjects) ? subjects : [])
+    .map(normalizeSupportedSubject)
+    .filter((subject) => subject && isSubjectAvailableForGrade(subject, grade)))];

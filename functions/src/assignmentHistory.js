@@ -2,7 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
 import { admin, getDb } from './admin.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
-import { normalizeSupportedSubject } from './subjects.js';
+import { getTutorSubjectsAutoGrantedByMarks, isSubjectAvailableForGrade, normalizeSupportedSubject } from './subjects.js';
 import { buildSubjectLessonQuota, releaseCancelledLessonQuota } from './lessonEntitlements.js';
 import { isSavedSubscriptionPaymentConsistent } from './paystackPricingCore.js';
 
@@ -25,6 +25,7 @@ const approvedSubjects = (profile = {}) => [...new Set([
   ...(Array.isArray(profile.tutorSubjectMarks)
     ? profile.tutorSubjectMarks.filter((item) => Number(item.mark) >= 60).map((item) => item.subject)
     : []),
+  ...getTutorSubjectsAutoGrantedByMarks(profile.tutorSubjectMarks),
   ].filter(Boolean).map(normalizeSupportedSubject).filter(Boolean))];
 const ensureTutorForSubject = (profile, subject) => {
   if (!profile || !isTutor(profile) || !approvedSubjects(profile).includes(subject)) {
@@ -142,7 +143,8 @@ const getRestorableSubjectEpisodes = async ({ db, studentId, grade, now = new Da
     const data = episode.data();
     const cancelledAt = data.cancelledAt?.toDate?.();
     const subject = normalizeSupportedSubject(data.subjectKey);
-    if (data.status !== 'cancelled' || data.grade !== grade || !cancelledAt || cancelledAt < cutoff || !subject) return;
+    if (data.status !== 'cancelled' || data.grade !== grade || !cancelledAt || cancelledAt < cutoff
+      || !subject || !isSubjectAvailableForGrade(subject, grade)) return;
     const previous = latestBySubject.get(subject);
     if (!previous || cancelledAt > previous.cancelledAt) {
       latestBySubject.set(subject, { episodeId: episode.id, subject, grade, cancelledAt });
@@ -221,6 +223,10 @@ export const updateStudentSubjects = onCall({ cpu: 'gcf_gen1', timeoutSeconds: 3
     ]);
     if (!currentStudent.exists || currentStudent.data().role !== 'student') throw new HttpsError('not-found', 'Student profile not found.');
     const current = currentStudent.data();
+    const unavailableSubject = subjects.find((subject) => !isSubjectAvailableForGrade(subject, current.grade));
+    if (unavailableSubject) {
+      throw new HttpsError('failed-precondition', `${unavailableSubject} is not available for ${current.grade || 'the student’s current grade'}.`);
+    }
     const episodes = episodeSnapshot.docs;
     const currentBySubject = new Map(episodes
       .filter((document) => ['active', 'restoring'].includes(document.data().status))
@@ -235,6 +241,7 @@ export const updateStudentSubjects = onCall({ cpu: 'gcf_gen1', timeoutSeconds: 3
       const previousSubject = normalizeSubject(data.subjectKey);
       const cancelledAt = data.cancelledAt?.toDate?.();
       if (data.status !== 'cancelled' || data.grade !== current.grade || !cancelledAt || cancelledAt < cutoff
+        || !isSubjectAvailableForGrade(previousSubject, current.grade)
         || !additions.includes(previousSubject) || selectedHistoryBySubject.has(previousSubject)) {
         throw new HttpsError('failed-precondition', 'Selected topic history must be a recent cancelled episode for a subject being added at the same grade.');
       }
@@ -479,7 +486,7 @@ export const changeStudentGrade = onCall({ cpu: 'gcf_gen1' }, async (request) =>
       const subject = normalizeSubject(data.subjectKey);
       const cancelledAt = data.cancelledAt?.toDate?.();
       if ((!sameGrade && data.status !== 'cancelled') || data.grade !== grade || !cancelledAt || cancelledAt < cutoff
-        || selectedBySubject.has(subject)) {
+        || !isSubjectAvailableForGrade(subject, grade) || selectedBySubject.has(subject)) {
         throw new HttpsError('failed-precondition', 'Selected topic history must be a recent cancelled episode in the destination grade.');
       }
       selectedBySubject.set(subject, episode);

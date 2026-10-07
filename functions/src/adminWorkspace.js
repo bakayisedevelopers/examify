@@ -1,7 +1,7 @@
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
 import { getDb } from './admin.js';
-import { normalizeSupportedSubject } from './subjects.js';
+import { getTutorSubjectsAutoGrantedByMarks, normalizeSupportedSubject } from './subjects.js';
 
 const recordRead = async (metrics, read) => {
   metrics.firestoreReadOperations += 1;
@@ -25,6 +25,7 @@ const getApprovedSubjects = (profile = {}) => [...new Set([
   ...(Array.isArray(profile.tutorSubjectMarks)
     ? profile.tutorSubjectMarks.filter((item) => Number(item.mark) >= 60).map((item) => item.subject)
     : []),
+  ...getTutorSubjectsAutoGrantedByMarks(profile.tutorSubjectMarks),
 ].map(normalizeSupportedSubject).filter(Boolean))];
 
 const isTutor = (profile = {}) => profile.role === 'tutor' || profile.role === 'teacher'
@@ -235,6 +236,7 @@ const getTutorAdminDetails = async (db, userId, profile, metrics) => {
     ...(Array.isArray(profile.subjects) ? profile.subjects : []),
     ...(profile.subject ? [profile.subject] : []),
     ...marksBySubject.keys(),
+    ...getTutorSubjectsAutoGrantedByMarks(profile.tutorSubjectMarks),
   ].map(normalizeSupportedSubject).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right))
     .map((subject) => ({ subject, mark: marksBySubject.get(subject) ?? null, approved: getApprovedSubjects(profile).includes(subject) }));

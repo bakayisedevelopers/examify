@@ -1,6 +1,6 @@
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { admin, getDb } from './admin.js';
-import { normalizeSupportedSubject } from './subjects.js';
+import { getTutorSubjectsAutoGrantedByMarks, normalizeSupportedSubject } from './subjects.js';
 
 const getUid = (request) => {
   if (!request.auth?.uid) throw new HttpsError('unauthenticated', 'Sign in to manage or access WhatsApp details.');
@@ -16,6 +16,7 @@ const approvedSubjects = (profile = {}) => [...new Set([
   ...(Array.isArray(profile.tutorSubjectMarks)
     ? profile.tutorSubjectMarks.filter((item) => Number(item.mark) >= 60).map((item) => item.subject)
     : []),
+  ...getTutorSubjectsAutoGrantedByMarks(profile.tutorSubjectMarks),
 ].map(normalizeSupportedSubject).filter(Boolean))];
 
 const requireTutor = async (db, uid) => {

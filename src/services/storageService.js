@@ -373,7 +373,10 @@ const analyzeTutorMarksDocument = async ({ documentRef, documentRecord, tutor, f
       minimumMark: 60,
     });
     const mergedSubjects = mergedMarks.map((item) => item.subject);
-    const addedSubjects = getNewEligibleTutorSubjects({ extractedMarks, existingSubjects, minimumMark: 60 });
+    // Use the merged marks so a previously verified Mathematics result can
+    // also grant Maths Literacy on a later upload. Maths Literacy is a subject
+    // grant here; no mark is fabricated for it.
+    const addedSubjects = getNewEligibleTutorSubjects({ extractedMarks: mergedMarks, existingSubjects, minimumMark: 60 });
     const eligibleSubjectSet = new Set(mergedSubjects);
     const skippedSubjects = extractedMarks.filter((item) => Number(item.mark) < 60 || !eligibleSubjectSet.has(item.subject));
 

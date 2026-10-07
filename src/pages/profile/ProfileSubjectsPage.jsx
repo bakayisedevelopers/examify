@@ -10,6 +10,7 @@ import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionS
 import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { getTutorWhatsAppSettings, saveTutorWhatsAppGroupLink } from '../../services/whatsappService';
 import { normalizeWhatsAppGroupInviteLink } from '../../utils/whatsapp';
+import { getSubjectsAvailableForGrade, isSubjectAvailableForGrade } from '../../../functions/src/subjects.js';
 
 const statusStyles = {
   processing: 'bg-amber-50 text-amber-700',
@@ -63,8 +64,10 @@ export const ProfileSubjectsPage = ({ role }) => {
     if (isTutorRole) return getApprovedTutorSubjects(profile);
     return role === ROLES.STUDENT ? activeStudentSubjects : [];
   }, [activeStudentSubjects, isTutorRole, profile, role]);
-  const availableSubjects = globalSubjects.filter((subject) => !currentSubjects.includes(subject));
-  const restorableHistoryCandidates = historyCandidates.filter((candidate) => !currentSubjects.includes(candidate.subject));
+  const availableSubjects = getSubjectsAvailableForGrade(profile?.grade, globalSubjects)
+    .filter((subject) => !currentSubjects.includes(subject));
+  const restorableHistoryCandidates = historyCandidates.filter((candidate) =>
+    isSubjectAvailableForGrade(candidate.subject, profile?.grade) && !currentSubjects.includes(candidate.subject));
   const selectableSubjects = availableSubjects.filter((subject) => !selectedSubjects.includes(subject));
   const subjectLimit = Number(subscriptionState?.subscriptionSubjectCount) || 0;
   const remainingSubjectSlots = Math.max(0, subjectLimit - currentSubjects.length - selectedSubjects.length);
@@ -150,6 +153,11 @@ export const ProfileSubjectsPage = ({ role }) => {
 
   const handleAddSubjectToSelection = () => {
     if (!subjectToAdd || selectedSubjects.includes(subjectToAdd)) return;
+    if (!isSubjectAvailableForGrade(subjectToAdd, profile?.grade)) {
+      setStatus(`That subject is not available for ${profile?.grade || 'your current grade'}.`);
+      setSubjectToAdd('');
+      return;
+    }
     if (currentSubjects.length + selectedSubjects.length >= subjectLimit) {
       setStatus(`Your subscription includes up to ${subjectLimit} subjects. Remove a current subject before adding another.`);
       return;
@@ -165,6 +173,10 @@ export const ProfileSubjectsPage = ({ role }) => {
   };
 
   const handleRestoreHistoryChoice = (candidate, checked) => {
+    if (checked && !isSubjectAvailableForGrade(candidate.subject, profile?.grade)) {
+      setStatus(`${candidate.subject} is not available for ${profile?.grade || 'your current grade'}.`);
+      return;
+    }
     if (checked && !selectedSubjects.includes(candidate.subject)) {
       if (currentSubjects.length + selectedSubjects.length >= subjectLimit) {
         setStatus(`Your subscription includes up to ${subjectLimit} subjects. Remove a current subject before adding another.`);
@@ -181,6 +193,10 @@ export const ProfileSubjectsPage = ({ role }) => {
     event.preventDefault();
     if (!selectedSubjects.length) {
       setStatus('Choose at least one subject to add.');
+      return;
+    }
+    if (selectedSubjects.some((subject) => !isSubjectAvailableForGrade(subject, profile?.grade))) {
+      setStatus(`Choose only subjects available for ${profile?.grade || 'your current grade'}.`);
       return;
     }
     if (!subscriptionState?.paymentCompleted || currentSubjects.length + selectedSubjects.length > subjectLimit) {
@@ -427,7 +443,7 @@ export const ProfileSubjectsPage = ({ role }) => {
               onChange={(event) => setSubjectToAdd(event.target.value)}
               disabled={globalSubjectsLoading || !selectableSubjects.length || remainingSubjectSlots === 0}
             >
-              <option value="">{globalSubjectsLoading ? 'Loading subjects...' : selectableSubjects.length ? 'Select a subject' : 'No additional global subjects available'}</option>
+              <option value="">{globalSubjectsLoading ? 'Loading subjects...' : !profile?.grade ? 'Set your grade to see eligible subjects' : selectableSubjects.length ? 'Select a subject' : `No additional subjects available for ${profile.grade}`}</option>
               {selectableSubjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
             </select>
             <button type="button" className="btn-secondary" onClick={handleAddSubjectToSelection} disabled={!subjectToAdd || remainingSubjectSlots === 0}>

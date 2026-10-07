@@ -1,4 +1,5 @@
 import { SUBJECTS } from '../lib/constants.js';
+import { getTutorSubjectsAutoGrantedByMarks } from '../../functions/src/subjects.js';
 
 const normalizeComparable = (value = '') =>
   String(value)
@@ -192,17 +193,21 @@ export const getApprovedTutorSubjects = (profile) => {
   const markedSubjects = Array.isArray(profile?.tutorSubjectMarks)
     ? profile.tutorSubjectMarks.filter((item) => Number(item.mark) >= 60).map((item) => item.subject)
     : [];
-  const approved = [...new Set([...profileSubjects, ...legacySubject, ...markedSubjects].map(normalizeEligibleSubject).filter(Boolean))];
+  const automaticallyGranted = getTutorSubjectsAutoGrantedByMarks(profile?.tutorSubjectMarks);
+  const approved = [...new Set([...profileSubjects, ...legacySubject, ...markedSubjects, ...automaticallyGranted].map(normalizeEligibleSubject).filter(Boolean))];
   return approved;
 };
 
 export const getNewEligibleTutorSubjects = ({ extractedMarks = [], existingSubjects = [], minimumMark = 60 }) => {
   const existing = new Set(existingSubjects.map(normalizeEligibleSubject).filter(Boolean));
+  const eligible = extractedMarks
+    .map((item) => ({ subject: normalizeEligibleSubject(item.subject ?? item.rawSubject), mark: parseMark(item.mark) }))
+    .filter((item) => item.subject && item.mark !== null && item.mark >= minimumMark)
+    .map((item) => item.subject);
 
-  return extractedMarks
-    .filter((item) => item.subject && Number(item.mark) >= minimumMark && SUBJECT_LOOKUP.has(normalizeComparable(item.subject)) && !existing.has(item.subject))
-    .map((item) => item.subject)
-    .filter((subject, index, subjects) => subjects.indexOf(subject) === index);
+  eligible.push(...getTutorSubjectsAutoGrantedByMarks(extractedMarks, minimumMark));
+
+  return [...new Set(eligible)].filter((subject) => !existing.has(subject));
 };
 
 
