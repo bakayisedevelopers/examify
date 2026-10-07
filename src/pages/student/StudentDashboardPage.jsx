@@ -12,7 +12,7 @@ import {
   getActiveSubjectEpisodesForStudent,
   getPeerMarkingAssignmentsForStudent,
   getStudentAccessState,
-  getStudentSubscriptionState,
+  getStudentEntitlementState,
   getTodayExercises,
   subscribeToExerciseGenerationStatus,
 } from '../../services/firestoreService';
@@ -174,7 +174,7 @@ export const StudentDashboardPage = () => {
         setInitialRetrySubjects([]);
         const readiness = [];
         const subjectsToCheck = availableSubjects;
-        const sharedSubscriptionState = subjectsToCheck.length ? getStudentSubscriptionState(profile) : null;
+        const sharedSubscriptionState = loadStudentSubscriptionState(profile, { force: true });
         Promise.all(subjectsToCheck.map((subject) => getTodayExercises(
           profile.uid,
           subject,
@@ -210,8 +210,8 @@ export const StudentDashboardPage = () => {
             }
             return [];
           });
-        const accessStates = await Promise.all(subjectsToCheck.map((subject) =>
-          getStudentAccessState(
+        const entitlementStates = await Promise.all(subjectsToCheck.map((subject) =>
+          getStudentEntitlementState(
             profile,
             subject,
             availableSubjectEpisodes.find((episode) => episode.studentId === profile.uid && episode.subjectKey === subject) ?? null,
@@ -219,51 +219,68 @@ export const StudentDashboardPage = () => {
           ).then((access) => ({ subject, access })),
         ));
         if (!active) return;
-        const effectiveSubscription = accessStates[0]?.access ?? await loadStudentSubscriptionState(profile);
+        const effectiveSubscription = entitlementStates[0]?.access ?? await sharedSubscriptionState;
         setSubscriptionPlanId(effectiveSubscription.subscriptionPlanId || 'free');
         setSubscriptionPlanName(effectiveSubscription.subscriptionPlanName || 'Free');
         setRequiresSubscriptionSelection(Boolean(effectiveSubscription.requiresSubscriptionSelection));
-        const anyPaidSubject = accessStates.some(({ access }) => Boolean(access.paidSubscriptionActive));
+        const anyPaidSubject = entitlementStates.some(({ access }) => Boolean(access.paidSubscriptionActive));
         setPaymentLocked(!anyPaidSubject);
         setIsCheckingAccess(false);
-        setInitialRetrySubjects(accessStates
-          .filter(({ access }) => access.paidSubscriptionActive
-            && !access.hasInitialGeneration
-            && access.initialGenerationReady
-            && access.generationRunStatus?.lastTrigger === 'initial'
-            && access.generationRunStatus?.status === 'failed')
-          .map(({ subject }) => subject));
-
-        for (const { subject, access } of accessStates) {
-
-          const initialWasAttempted = access.generationRunStatus?.lastTrigger === 'initial'
-            && ['completed', 'failed'].includes(access.generationRunStatus?.status);
-          const shouldGenerate = access.paidSubscriptionActive
-            && !access.hasInitialGeneration
-            && access.initialGenerationReady
-            && !initialWasAttempted;
-          if (shouldGenerate) {
-            const result = await runGeneratePlan(subject, 'initial');
-            if (!result?.generated) {
-              const resultStatus = result?.criteria?.initial ?? access.generationStatus?.initial;
-              readiness.push({
-                subject,
-                mode: 'initial',
-                checks: resultStatus?.checks ?? access.generationStatus?.initial?.checks ?? {},
-                availablePaperCount: result?.criteria?.analyzedPaperCount ?? access.matchingQuestionPapers?.length ?? 0,
-                completedLessonCount: access.completedLessons?.length ?? 0,
-                reason: result?.reason ?? 'Generation did not complete.',
-              });
-            }
-          } else if (!access.hasInitialGeneration && !access.generationStatus?.initial?.ready) {
-            readiness.push({ subject, mode: 'initial', checks: access.generationStatus?.initial?.checks ?? {}, availablePaperCount: access.matchingQuestionPapers?.length ?? 0, completedLessonCount: access.completedLessons?.length ?? 0 });
-          }
-
+        if (!anyPaidSubject) {
+          setReadinessRows([]);
+          setInitialRetrySubjects([]);
+          return;
         }
 
-        if (!active) return;
-        setReadinessRows(readiness);
-        setGenerationProgress(100);
+        try {
+          const accessStates = await Promise.all(subjectsToCheck.map((subject) =>
+            getStudentAccessState(
+              profile,
+              subject,
+              availableSubjectEpisodes.find((episode) => episode.studentId === profile.uid && episode.subjectKey === subject) ?? null,
+              sharedSubscriptionState,
+            ).then((access) => ({ subject, access })),
+          ));
+          if (!active) return;
+          setInitialRetrySubjects(accessStates
+            .filter(({ access }) => access.paidSubscriptionActive
+              && !access.hasInitialGeneration
+              && access.initialGenerationReady
+              && access.generationRunStatus?.lastTrigger === 'initial'
+              && access.generationRunStatus?.status === 'failed')
+            .map(({ subject }) => subject));
+
+          for (const { subject, access } of accessStates) {
+            const initialWasAttempted = access.generationRunStatus?.lastTrigger === 'initial'
+              && ['completed', 'failed'].includes(access.generationRunStatus?.status);
+            const shouldGenerate = access.paidSubscriptionActive
+              && !access.hasInitialGeneration
+              && access.initialGenerationReady
+              && !initialWasAttempted;
+            if (shouldGenerate) {
+              const result = await runGeneratePlan(subject, 'initial');
+              if (!result?.generated) {
+                const resultStatus = result?.criteria?.initial ?? access.generationStatus?.initial;
+                readiness.push({
+                  subject,
+                  mode: 'initial',
+                  checks: resultStatus?.checks ?? access.generationStatus?.initial?.checks ?? {},
+                  availablePaperCount: result?.criteria?.analyzedPaperCount ?? access.matchingQuestionPapers?.length ?? 0,
+                  completedLessonCount: access.completedLessons?.length ?? 0,
+                  reason: result?.reason ?? 'Generation did not complete.',
+                });
+              }
+            } else if (!access.hasInitialGeneration && !access.generationStatus?.initial?.ready) {
+              readiness.push({ subject, mode: 'initial', checks: access.generationStatus?.initial?.checks ?? {}, availablePaperCount: access.matchingQuestionPapers?.length ?? 0, completedLessonCount: access.completedLessons?.length ?? 0 });
+            }
+          }
+
+          if (!active) return;
+          setReadinessRows(readiness);
+          setGenerationProgress(100);
+        } catch (error) {
+          if (active) setLoadError((current) => current || error?.message || 'Subject readiness could not be loaded yet.');
+        }
       } catch (error) {
         if (!active) return;
         setTodayExercises([]);

@@ -31,7 +31,7 @@ const dateLabel = (value) => {
 const readUsersAndActiveEpisodes = async (db) => {
   const [usersSnapshot, episodesSnapshot] = await Promise.all([
     db.collection('users').get(),
-    db.collectionGroup('subjects').get(),
+    db.collectionGroup('subjects').where('status', '==', 'active').get(),
   ]);
   const users = usersSnapshot.docs.map((document) => ({ uid: document.id, ...document.data() }));
   const userById = new Map(users.map((profile) => [profile.uid, profile]));
@@ -133,8 +133,21 @@ const getUserManagementData = (users, activeEpisodes) => {
 };
 
 const getDashboard = async (db, users, userById, activeEpisodes) => {
-  const paymentsSnapshot = await db.collectionGroup('payments').get();
-  const payments = paymentsSnapshot.docs
+  const paymentsQuery = db.collectionGroup('payments');
+  const [paymentCountSnapshot, createdAtSnapshot, updatedAtSnapshot] = await Promise.all([
+    paymentsQuery.count().get(),
+    paymentsQuery.orderBy('createdAt', 'desc').limit(8).get(),
+    paymentsQuery.orderBy('updatedAt', 'desc').limit(8).get(),
+  ]);
+  const paymentCount = paymentCountSnapshot.data().count;
+  const paymentDocuments = new Map();
+  [...createdAtSnapshot.docs, ...updatedAtSnapshot.docs].forEach((document) => paymentDocuments.set(document.ref.path, document));
+  let recentPaymentDocuments = [...paymentDocuments.values()];
+  if (recentPaymentDocuments.length < Math.min(8, paymentCount)) {
+    const allPaymentsSnapshot = await paymentsQuery.get();
+    recentPaymentDocuments = allPaymentsSnapshot.docs;
+  }
+  const payments = recentPaymentDocuments
     .map((document) => ({ id: document.id, ...document.data() }))
     .sort((left, right) => toMillis(right.createdAt || right.updatedAt) - toMillis(left.createdAt || left.updatedAt))
     .slice(0, 8)
@@ -157,7 +170,7 @@ const getDashboard = async (db, users, userById, activeEpisodes) => {
       { label: 'Students', value: students, detail: 'Registered student accounts' },
       { label: 'Tutors and teachers', value: tutors.length, detail: 'With at least one approved subject' },
       { label: 'Active subject assignments', value: activeEpisodes.length, detail: 'Across all student subjects' },
-      { label: 'Verified payment records', value: paymentsSnapshot.size, detail: 'Payments stored in student accounts' },
+      { label: 'Verified payment records', value: paymentCount, detail: 'Payments stored in student accounts' },
     ],
     payments,
     tutors,

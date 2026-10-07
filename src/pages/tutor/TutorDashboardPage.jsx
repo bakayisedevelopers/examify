@@ -54,33 +54,46 @@ export const TutorDashboardPage = () => {
   const [paperCounts, setPaperCounts] = useState({});
   const [paidSubjectAccess, setPaidSubjectAccess] = useState({});
   const [status, setStatus] = useState('');
+  const [readinessLoading, setReadinessLoading] = useState(true);
 
   const load = async () => {
     if (!profile?.uid) return;
-    const studentRows = await getTutorAssignedStudentContexts(profile.uid);
-    const uniqueContexts = [...new Map(studentRows.map((student) => [`${student.subject ?? DEFAULT_SUBJECT}-${student.grade ?? ''}-${student.province ?? ''}`, student])).values()];
-    const studentsById = new Map(studentRows.map((student) => [student.studentId, student]));
-    const [lessonRows, paperPairs, subscriptionPairs] = await Promise.all([
-      getTutorLessonPresenceForContexts(studentRows),
-      Promise.all(uniqueContexts.map(async (student) => {
+    setReadinessLoading(true);
+    try {
+      const studentRows = await getTutorAssignedStudentContexts(profile.uid);
+      setStudents(studentRows);
+      if (!studentRows.length) {
+        setLessons([]);
+        setPaperCounts({});
+        setPaidSubjectAccess({});
+        return;
+      }
+
+      const uniqueContexts = [...new Map(studentRows.map((student) => [`${student.subject ?? DEFAULT_SUBJECT}-${student.grade ?? ''}-${student.province ?? ''}`, student])).values()];
+      const studentsById = new Map(studentRows.map((student) => [student.studentId, student]));
+      const [lessonRows, paperPairs, subscriptionPairs] = await Promise.all([
+        getTutorLessonPresenceForContexts(studentRows),
+        Promise.all(uniqueContexts.map(async (student) => {
+          const subject = student.subject ?? DEFAULT_SUBJECT;
+          const papers = await getQuestionPapers({ grade: student.grade, region: student.province, subject });
+          return [`${subject}-${student.grade ?? ''}-${student.province ?? ''}`, papers.length];
+        })),
+        Promise.all([...studentsById.entries()]
+          .map(async ([studentId, student]) => [studentId, await getStudentSubscriptionState({ ...student, uid: studentId })])),
+      ]);
+      const subscriptionsByStudent = Object.fromEntries(subscriptionPairs);
+      const accessBySubject = Object.fromEntries(studentRows.map((student) => {
         const subject = student.subject ?? DEFAULT_SUBJECT;
-        const papers = await getQuestionPapers({ grade: student.grade, region: student.province, subject });
-        return [`${subject}-${student.grade ?? ''}-${student.province ?? ''}`, papers.length];
-      })),
-      Promise.all([...studentsById.entries()]
-        .map(async ([studentId, student]) => [studentId, await getStudentSubscriptionState({ ...student, uid: studentId })])),
-    ]);
-    const subscriptionsByStudent = Object.fromEntries(subscriptionPairs);
-    const accessBySubject = Object.fromEntries(studentRows.map((student) => {
-      const subject = student.subject ?? DEFAULT_SUBJECT;
-      const subscription = subscriptionsByStudent[student.studentId];
-      const normalizedSubject = normalizeEligibleSubject(subject) ?? subject;
-      return [`${student.studentId}:${normalizedSubject}`, Boolean(subscription?.paidSubscriptionActive && student.subjectInstanceId)];
-    }));
-    setStudents(studentRows);
-    setLessons(lessonRows);
-    setPaperCounts(Object.fromEntries(paperPairs));
-    setPaidSubjectAccess(accessBySubject);
+        const subscription = subscriptionsByStudent[student.studentId];
+        const normalizedSubject = normalizeEligibleSubject(subject) ?? subject;
+        return [`${student.studentId}:${normalizedSubject}`, Boolean(subscription?.paidSubscriptionActive && student.subjectInstanceId)];
+      }));
+      setLessons(lessonRows);
+      setPaperCounts(Object.fromEntries(paperPairs));
+      setPaidSubjectAccess(accessBySubject);
+    } finally {
+      setReadinessLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -152,7 +165,7 @@ export const TutorDashboardPage = () => {
         })}
         {approvedSubjects.length && !studentList.length ? <div className="panel p-5 text-sm text-slate-500">No students are assigned to you yet.</div> : null}
       </div>
-      <TutorReadinessPanel rows={readinessRows} />
+      {!readinessLoading ? <TutorReadinessPanel rows={readinessRows} /> : null}
     </AppShell>
   );
 };

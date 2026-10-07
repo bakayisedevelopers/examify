@@ -726,11 +726,11 @@ export const getFutureExercises = async (studentId, subject = DEFAULT_SUBJECT) =
   return episodeExercises(studentId, subject, [where('assignmentDate', '>', weekFromToday), orderBy('assignmentDate', 'asc'), limit(20)]);
 };
 
-const getAssignmentHistory = async (studentId, subject = DEFAULT_SUBJECT, maxRecords = GENERATION_HISTORY_LIMIT, subjectInstanceId = null) => {
+const getAssignmentHistory = async (studentId, subject = DEFAULT_SUBJECT, maxRecords = GENERATION_HISTORY_LIMIT, subjectInstanceId = null, knownEpisode = null) => {
   if (!studentId) return [];
   if (!isFirebaseConfigured) return buildStudentDashboard(studentId, subject).exerciseHistory ?? [];
   ensureDb();
-  return episodeExercises(studentId, subject, [orderBy('assignmentDate', 'desc'), limit(maxRecords)], subjectInstanceId);
+  return episodeExercises(studentId, subject, [orderBy('assignmentDate', 'desc'), limit(maxRecords)], subjectInstanceId, knownEpisode);
 };
 
 const getLastAssignmentDate = (history = []) =>
@@ -1050,12 +1050,12 @@ export const getStudentSubscriptionState = async (student) => {
   });
 };
 
-export const getStudentEntitlementState = async (student, subject = DEFAULT_SUBJECT, knownEpisode = null) => {
+export const getStudentEntitlementState = async (student, subject = DEFAULT_SUBJECT, knownEpisode = null, knownSubscriptionState = null) => {
   if (!student?.uid) return { ...getEffectiveSubscriptionState(), paymentRequired: true, subjectNotIncluded: false, subjectInstanceId: null, subjectEpisode: null };
 
   const normalizedSubject = normalizeEligibleSubject(subject) ?? subject;
   if (!isFirebaseConfigured) {
-    const subscriptionState = await getStudentSubscriptionState(student);
+    const subscriptionState = await (knownSubscriptionState ?? getStudentSubscriptionState(student));
     const coveredSubjects = getUserSubjects(student).slice(0, subscriptionState.subscriptionSubjectCount)
       .map((item) => normalizeEligibleSubject(item) ?? item);
     const paidSubscriptionActive = Boolean(subscriptionState.paidSubscriptionActive && coveredSubjects.includes(normalizedSubject));
@@ -1081,7 +1081,7 @@ export const getStudentEntitlementState = async (student, subject = DEFAULT_SUBJ
       : student.accessRole && student.subjectInstanceId ? student.subjectInstanceId : null);
   const [episode, subscriptionState] = await Promise.all([
     episodePromise,
-    getStudentSubscriptionState(student),
+    knownSubscriptionState ? Promise.resolve(knownSubscriptionState) : getStudentSubscriptionState(student),
   ]);
   const coveredSubjects = episode?.id ? [normalizeEligibleSubject(episode.subjectKey) ?? subject] : [];
   const paidSubscriptionActive = Boolean(subscriptionState.paidSubscriptionActive && coveredSubjects.includes(normalizedSubject));
@@ -1196,9 +1196,9 @@ export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT, 
     tutorContext || knownSubscriptionState ? Promise.resolve({ exists: () => false })
       : getDoc(doc(db, 'users', student.uid, 'subscriptions', 'current')).catch(() => ({ exists: () => false })),
     getQuestionPapers({ grade: student.grade, region: student.province, subject }),
-    getTutorReports(student.uid, subject, episode?.id),
-    getCompletedLessons(student.uid, subject, episode?.id),
-    getAssignmentHistory(student.uid, subject, GENERATION_HISTORY_LIMIT, episode?.id),
+    getTutorReports(student.uid, subject, episode?.id, episode),
+    getCompletedLessons(student.uid, subject, episode?.id, episode),
+    getAssignmentHistory(student.uid, subject, GENERATION_HISTORY_LIMIT, episode?.id, episode),
     episode?.id ? getDoc(doc(db, 'users', student.uid, 'subjects', episode.id, 'generationRuns', localDateKey())) : Promise.resolve({ exists: () => false }),
     episode?.id ? getEpisodeTopicSummaries(student.uid, episode.id) : Promise.resolve([]),
   ]);
@@ -1260,12 +1260,12 @@ export const getAssignedStudentsForTutor = async (tutorId, subject = DEFAULT_SUB
   return contexts.filter((context) => context.subject === subject);
 };
 
-export const getTutorReports = async (studentId, subject = DEFAULT_SUBJECT, subjectInstanceId = null) => {
+export const getTutorReports = async (studentId, subject = DEFAULT_SUBJECT, subjectInstanceId = null, knownEpisode = null) => {
   if (!isFirebaseConfigured) return mockTutorReports.filter((report) => (!studentId || report.studentId === studentId)
     && (report.subject ?? DEFAULT_SUBJECT) === subject && report.reportType !== 'initial');
   ensureDb();
   if (studentId) {
-    const episode = await getActiveSubjectEpisode(studentId, subject, subjectInstanceId);
+    const episode = knownEpisode ?? await getActiveSubjectEpisode(studentId, subject, subjectInstanceId);
     if (!episode?.id) return [];
     const snapshot = await getDocs(query(collection(db, 'users', studentId, 'subjects', episode.id, 'reports'), orderBy('updatedAt', 'desc')));
     return snapshot.docs.map((item) => ({ id: item.id, ...item.data(), subjectInstanceId: episode.id }))

@@ -1,47 +1,52 @@
+import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { MarketingLayout } from '../layouts/MarketingLayout';
 import { ProtectedRoute } from '../components/common/ProtectedRoute';
-import { PortalHomePage } from '../pages/PortalHomePage';
-import { LoginPage } from '../pages/auth/LoginPage';
-import { SignupPage } from '../pages/auth/SignupPage';
-import { StudentDashboardPage } from '../pages/student/StudentDashboardPage';
-import { StudentExercisesPage } from '../pages/student/StudentExercisesPage';
-import { StudentLessonsPage } from '../pages/student/StudentLessonsPage';
-import { StudentLessonDetailsPage } from '../pages/student/StudentLessonDetailsPage';
-import { StudentExerciseDetailsPage } from '../pages/student/StudentExerciseDetailsPage';
-import { StudentPeerReviewsPage } from '../pages/student/StudentPeerReviewsPage';
-import { StudentBillingPage } from '../pages/student/StudentBillingPage';
-import { StudentProfilePage } from '../pages/student/StudentProfilePage';
-import { TutorDashboardPage } from '../pages/tutor/TutorDashboardPage';
-import { TutorStudentsPage } from '../pages/tutor/TutorStudentsPage';
-import { TutorReportsPage } from '../pages/tutor/TutorReportsPage';
-import { TutorStudentDetailsPage } from '../pages/tutor/TutorStudentDetailsPage';
-import { TutorExercisesPage } from '../pages/tutor/TutorExercisesPage';
-import { TutorExerciseDetailsPage } from '../pages/tutor/TutorExerciseDetailsPage';
-import { TutorLessonsPage } from '../pages/tutor/TutorLessonsPage';
-import { TutorLessonDetailsPage } from '../pages/tutor/TutorLessonDetailsPage';
-import { AdminDashboardPage } from '../pages/admin/AdminDashboardPage';
-import { AdminUsersPage } from '../pages/admin/AdminUsersPage';
-import { AdminPaymentsPage } from '../pages/admin/AdminPaymentsPage';
-import { AdminSettingsPage } from '../pages/admin/AdminSettingsPage';
-import { AdminDiscountCodesPage } from '../pages/admin/AdminDiscountCodesPage';
-import { PastExamPapersPage } from '../pages/PastExamPapersPage';
-import { GuidePage } from '../pages/GuidePage';
 import { ROLES } from '../lib/constants';
-import { PoliciesPage } from '../pages/PoliciesPage';
-import { ParentDashboardPage } from '../pages/parent/ParentDashboardPage';
-import { ProfileHubPage } from '../pages/profile/ProfileHubPage';
-import { ProfilePersonalDetailsPage } from '../pages/profile/ProfilePersonalDetailsPage';
-import { ProfileSubjectsPage } from '../pages/profile/ProfileSubjectsPage';
-import { ProfileBillingPage } from '../pages/profile/ProfileBillingPage';
-import { ProfileLegalPage } from '../pages/profile/ProfileLegalPage';
-import { ProfileSettingsPage } from '../pages/profile/ProfileSettingsPage';
-import { TutorAgreementPage } from '../pages/profile/TutorAgreementPage';
-import { PaperReaderPage } from '../pages/PaperReaderPage';
 import { PaidStudentRoute } from '../components/common/PaidStudentRoute';
 
+const lazyNamed = (loader, exportName) => lazy(() => loader().then((module) => ({ default: module[exportName] })));
+
+const PortalHomePage = lazyNamed(() => import('../pages/PortalHomePage'), 'PortalHomePage');
+const LoginPage = lazyNamed(() => import('../pages/auth/LoginPage'), 'LoginPage');
+const SignupPage = lazyNamed(() => import('../pages/auth/SignupPage'), 'SignupPage');
+const StudentDashboardPage = lazyNamed(() => import('../pages/student/StudentDashboardPage'), 'StudentDashboardPage');
+const StudentExercisesPage = lazyNamed(() => import('../pages/student/StudentExercisesPage'), 'StudentExercisesPage');
+const StudentLessonsPage = lazyNamed(() => import('../pages/student/StudentLessonsPage'), 'StudentLessonsPage');
+const StudentLessonDetailsPage = lazyNamed(() => import('../pages/student/StudentLessonDetailsPage'), 'StudentLessonDetailsPage');
+const StudentExerciseDetailsPage = lazyNamed(() => import('../pages/student/StudentExerciseDetailsPage'), 'StudentExerciseDetailsPage');
+const StudentPeerReviewsPage = lazyNamed(() => import('../pages/student/StudentPeerReviewsPage'), 'StudentPeerReviewsPage');
+const StudentBillingPage = lazyNamed(() => import('../pages/student/StudentBillingPage'), 'StudentBillingPage');
+const StudentProfilePage = lazyNamed(() => import('../pages/student/StudentProfilePage'), 'StudentProfilePage');
+const TutorDashboardPage = lazyNamed(() => import('../pages/tutor/TutorDashboardPage'), 'TutorDashboardPage');
+const TutorStudentsPage = lazyNamed(() => import('../pages/tutor/TutorStudentsPage'), 'TutorStudentsPage');
+const TutorReportsPage = lazyNamed(() => import('../pages/tutor/TutorReportsPage'), 'TutorReportsPage');
+const TutorStudentDetailsPage = lazyNamed(() => import('../pages/tutor/TutorStudentDetailsPage'), 'TutorStudentDetailsPage');
+const TutorExercisesPage = lazyNamed(() => import('../pages/tutor/TutorExercisesPage'), 'TutorExercisesPage');
+const TutorExerciseDetailsPage = lazyNamed(() => import('../pages/tutor/TutorExerciseDetailsPage'), 'TutorExerciseDetailsPage');
+const TutorLessonsPage = lazyNamed(() => import('../pages/tutor/TutorLessonsPage'), 'TutorLessonsPage');
+const TutorLessonDetailsPage = lazyNamed(() => import('../pages/tutor/TutorLessonDetailsPage'), 'TutorLessonDetailsPage');
+const AdminDashboardPage = lazyNamed(() => import('../pages/admin/AdminDashboardPage'), 'AdminDashboardPage');
+const AdminUsersPage = lazyNamed(() => import('../pages/admin/AdminUsersPage'), 'AdminUsersPage');
+const AdminPaymentsPage = lazyNamed(() => import('../pages/admin/AdminPaymentsPage'), 'AdminPaymentsPage');
+const AdminSettingsPage = lazyNamed(() => import('../pages/admin/AdminSettingsPage'), 'AdminSettingsPage');
+const AdminDiscountCodesPage = lazyNamed(() => import('../pages/admin/AdminDiscountCodesPage'), 'AdminDiscountCodesPage');
+const PastExamPapersPage = lazyNamed(() => import('../pages/PastExamPapersPage'), 'PastExamPapersPage');
+const GuidePage = lazyNamed(() => import('../pages/GuidePage'), 'GuidePage');
+const PoliciesPage = lazyNamed(() => import('../pages/PoliciesPage'), 'PoliciesPage');
+const ParentDashboardPage = lazyNamed(() => import('../pages/parent/ParentDashboardPage'), 'ParentDashboardPage');
+const ProfileHubPage = lazyNamed(() => import('../pages/profile/ProfileHubPage'), 'ProfileHubPage');
+const ProfilePersonalDetailsPage = lazyNamed(() => import('../pages/profile/ProfilePersonalDetailsPage'), 'ProfilePersonalDetailsPage');
+const ProfileSubjectsPage = lazyNamed(() => import('../pages/profile/ProfileSubjectsPage'), 'ProfileSubjectsPage');
+const ProfileBillingPage = lazyNamed(() => import('../pages/profile/ProfileBillingPage'), 'ProfileBillingPage');
+const ProfileLegalPage = lazyNamed(() => import('../pages/profile/ProfileLegalPage'), 'ProfileLegalPage');
+const ProfileSettingsPage = lazyNamed(() => import('../pages/profile/ProfileSettingsPage'), 'ProfileSettingsPage');
+const TutorAgreementPage = lazyNamed(() => import('../pages/profile/TutorAgreementPage'), 'TutorAgreementPage');
+const PaperReaderPage = lazyNamed(() => import('../pages/PaperReaderPage'), 'PaperReaderPage');
+
 export const AppRoutes = () => (
-  <Routes>
+  <Suspense fallback={<div className="flex min-h-screen items-center justify-center text-sm text-slate-500" role="status">Loading page…</div>}>
+    <Routes>
     <Route element={<MarketingLayout />}>
       <Route path="/" element={<PortalHomePage />} />
       <Route path="/login" element={<LoginPage />} />
@@ -143,5 +148,6 @@ export const AppRoutes = () => (
     </Route>
 
     <Route path="*" element={<Navigate to="/" replace />} />
-  </Routes>
+    </Routes>
+  </Suspense>
 );

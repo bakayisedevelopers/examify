@@ -16,6 +16,7 @@ import { mockUsers } from '../data/mockData';
 import { normalizeWhatsAppNumber } from '../utils/whatsapp';
 
 const provider = isFirebaseConfigured ? new GoogleAuthProvider() : null;
+const profileRequests = new Map();
 
 export const loginWithEmail = async ({ email, password }) => {
   if (!auth) throw new Error('Firebase not configured. Please set up environment variables.');
@@ -119,8 +120,17 @@ export const getUserProfile = async (uid) => {
     return Object.values(mockUsers).find((user) => user.uid === uid) ?? null;
   }
 
-  const snapshot = await getDoc(doc(db, collections.users, uid));
-  return snapshot.exists() ? snapshot.data() : null;
+  const existingRequest = profileRequests.get(uid);
+  if (existingRequest) return existingRequest;
+
+  const request = getDoc(doc(db, collections.users, uid))
+    .then((snapshot) => snapshot.exists() ? snapshot.data() : null);
+  profileRequests.set(uid, request);
+  try {
+    return await request;
+  } finally {
+    if (profileRequests.get(uid) === request) profileRequests.delete(uid);
+  }
 };
 
 export const logout = async () => {

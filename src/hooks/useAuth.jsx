@@ -36,10 +36,10 @@ export const AuthProvider = ({ children }) => {
       }
 
       const profile = await getUserProfile(firebaseUser.uid);
-      if (profile?.role === 'student') {
-        await loadStudentSubscriptionState(profile, { maxAgeMs: 30_000 });
-      }
       setState({ user: firebaseUser, profile, loading: false, error: null });
+      if (profile?.role === 'student') {
+        void loadStudentSubscriptionState(profile, { maxAgeMs: 30_000 });
+      }
     });
 
     return unsubscribe;
@@ -51,18 +51,18 @@ export const AuthProvider = ({ children }) => {
     refreshProfile,
     login: async (payload) => {
       const result = await loginWithEmail(payload);
-      if (result.profile?.role === 'student') {
-        await loadStudentSubscriptionState(result.profile, { maxAgeMs: 30_000 });
-      }
       setState({ user: result.user, profile: result.profile, loading: false, error: null });
+      if (result.profile?.role === 'student') {
+        void loadStudentSubscriptionState(result.profile, { maxAgeMs: 30_000 });
+      }
       return result;
     },
     register: async (payload) => {
       const result = await registerWithEmail(payload);
-      if (result.profile?.role === 'student') {
-        await loadStudentSubscriptionState(result.profile, { maxAgeMs: 30_000 });
-      }
       setState({ user: result.user, profile: result.profile, loading: false, error: null });
+      if (result.profile?.role === 'student') {
+        void loadStudentSubscriptionState(result.profile, { maxAgeMs: 30_000 });
+      }
       return result;
     },
     updateStudentOnboarding: async (payload) => {
@@ -84,10 +84,10 @@ export const AuthProvider = ({ children }) => {
     },
     loginWithGoogle: async () => {
       const result = await signInWithGoogle();
-      if (result.profile?.role === 'student') {
-        await loadStudentSubscriptionState(result.profile, { maxAgeMs: 30_000 });
-      }
       setState({ user: result.user, profile: result.profile, loading: false, error: null });
+      if (result.profile?.role === 'student') {
+        void loadStudentSubscriptionState(result.profile, { maxAgeMs: 30_000 });
+      }
       return result;
     },
     logout: async () => {
