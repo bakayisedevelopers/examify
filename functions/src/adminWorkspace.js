@@ -1,11 +1,19 @@
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
+import { logger } from 'firebase-functions';
 import { getDb } from './admin.js';
 import { normalizeSupportedSubject } from './subjects.js';
 
-const requireAdmin = async (request, db) => {
+const recordRead = async (metrics, read) => {
+  metrics.firestoreReadOperations += 1;
+  const result = await read();
+  metrics.firestoreDocumentsReturned += Number(result?.size ?? (result?.exists ? 1 : 0));
+  return result;
+};
+
+const requireAdmin = async (request, db, metrics) => {
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError('unauthenticated', 'Sign in as an admin to open this workspace.');
-  const actor = await db.collection('users').doc(uid).get();
+  const actor = await recordRead(metrics, () => db.collection('users').doc(uid).get());
   if (!actor.exists || actor.data()?.role !== 'admin') {
     throw new HttpsError('permission-denied', 'Only an admin can access this workspace data.');
   }
@@ -28,10 +36,19 @@ const dateLabel = (value) => {
   return millis ? new Date(millis).toLocaleDateString('en-ZA') : '—';
 };
 
-const readUsersAndActiveEpisodes = async (db) => {
+const readUsersAndActiveEpisodes = async (db, metrics) => {
   const [usersSnapshot, episodesSnapshot] = await Promise.all([
-    db.collection('users').get(),
-    db.collectionGroup('subjects').where('status', '==', 'active').get(),
+    recordRead(metrics, () => db.collection('users').get()),
+    recordRead(metrics, async () => {
+      try {
+        return await db.collectionGroup('subjects').where('status', '==', 'active').get();
+      } catch (error) {
+        if (error?.code !== 9 && error?.code !== 'failed-precondition') throw error;
+        logger.warn('Admin workspace is using an unfiltered subject read while the collection-group status index builds.');
+        metrics.firestoreReadOperations += 1;
+        return db.collectionGroup('subjects').get();
+      }
+    }),
   ]);
   const users = usersSnapshot.docs.map((document) => ({ uid: document.id, ...document.data() }));
   const userById = new Map(users.map((profile) => [profile.uid, profile]));
@@ -79,8 +96,8 @@ const getAssignmentsForSubject = ({ subject, users, userById, activeEpisodes }) 
   return { students, tutors, assignments, unassignedStudents: students.filter((student) => !assignedStudentIds.has(student.uid)) };
 };
 
-const getGuideQuizSummary = async (db, users) => {
-  const resultSnapshot = await db.collectionGroup('guideQuizResults').get();
+const getGuideQuizSummary = async (db, users, metrics) => {
+  const resultSnapshot = await recordRead(metrics, () => db.collectionGroup('guideQuizResults').get());
   const latestByUser = new Map();
   resultSnapshot.docs
     .map((document) => ({ id: document.id, ...document.data(), userId: document.data().userId || document.ref.parent.parent?.id }))
@@ -99,7 +116,7 @@ const getGuideQuizSummary = async (db, users) => {
   };
 };
 
-const getUserManagementData = (users, activeEpisodes) => {
+const getUserManagementData = (users, activeEpisodes, userById) => {
   const subjectsByStudent = new Map();
   const assignedStudentsByTutor = new Map();
   activeEpisodes.forEach((episode) => {
@@ -115,6 +132,8 @@ const getUserManagementData = (users, activeEpisodes) => {
     }
   });
 
+  const tutorOptions = getTutorOptions(users);
+  const initialSubject = tutorOptions[0]?.subjects?.[0] ?? '';
   return {
     students: users.filter((profile) => profile.role === 'student').map((profile) => ({
       id: profile.uid,
@@ -128,23 +147,27 @@ const getUserManagementData = (users, activeEpisodes) => {
       subjects: getApprovedSubjects(profile),
       studentCount: assignedStudentsByTutor.get(profile.uid)?.size ?? 0,
     })),
-    tutorOptions: getTutorOptions(users),
+    tutorOptions,
+    initialSubject,
+    initialAssignments: initialSubject
+      ? getAssignmentsForSubject({ subject: initialSubject, users, userById, activeEpisodes })
+      : null,
   };
 };
 
-const getDashboard = async (db, users, userById, activeEpisodes) => {
+const getDashboard = async (db, users, userById, activeEpisodes, metrics) => {
   const paymentsQuery = db.collectionGroup('payments');
   const [paymentCountSnapshot, createdAtSnapshot, updatedAtSnapshot] = await Promise.all([
-    paymentsQuery.count().get(),
-    paymentsQuery.orderBy('createdAt', 'desc').limit(8).get(),
-    paymentsQuery.orderBy('updatedAt', 'desc').limit(8).get(),
+    recordRead(metrics, () => paymentsQuery.count().get()),
+    recordRead(metrics, () => paymentsQuery.orderBy('createdAt', 'desc').limit(8).get()),
+    recordRead(metrics, () => paymentsQuery.orderBy('updatedAt', 'desc').limit(8).get()),
   ]);
   const paymentCount = paymentCountSnapshot.data().count;
   const paymentDocuments = new Map();
   [...createdAtSnapshot.docs, ...updatedAtSnapshot.docs].forEach((document) => paymentDocuments.set(document.ref.path, document));
   let recentPaymentDocuments = [...paymentDocuments.values()];
   if (recentPaymentDocuments.length < Math.min(8, paymentCount)) {
-    const allPaymentsSnapshot = await paymentsQuery.get();
+    const allPaymentsSnapshot = await recordRead(metrics, () => paymentsQuery.get());
     recentPaymentDocuments = allPaymentsSnapshot.docs;
   }
   const payments = recentPaymentDocuments
@@ -179,23 +202,45 @@ const getDashboard = async (db, users, userById, activeEpisodes) => {
 
 export const getAdminWorkspaceData = onCall({ cpu: 'gcf_gen1' }, async (request) => {
   const db = getDb();
-  await requireAdmin(request, db);
   const scope = String(request.data?.scope || '');
-  if (!['dashboard', 'tutors', 'assignments', 'guide-results', 'user-management'].includes(scope)) {
-    throw new HttpsError('invalid-argument', 'Choose valid admin workspace data.');
-  }
-  if (scope === 'guide-results') {
-    const usersSnapshot = await db.collection('users').get();
-    const users = usersSnapshot.docs.map((document) => ({ uid: document.id, ...document.data() }));
-    return getGuideQuizSummary(db, users);
-  }
+  const startedAt = Date.now();
+  const metrics = { firestoreReadOperations: 0, firestoreDocumentsReturned: 0 };
+  try {
+    await requireAdmin(request, db, metrics);
+    if (!['dashboard', 'tutors', 'assignments', 'guide-results', 'user-management'].includes(scope)) {
+      throw new HttpsError('invalid-argument', 'Choose valid admin workspace data.');
+    }
+    let result;
+    if (scope === 'guide-results') {
+      const usersSnapshot = await recordRead(metrics, () => db.collection('users').get());
+      const users = usersSnapshot.docs.map((document) => ({ uid: document.id, ...document.data() }));
+      result = await getGuideQuizSummary(db, users, metrics);
+    } else {
+      const { users, userById, activeEpisodes } = await readUsersAndActiveEpisodes(db, metrics);
+      if (scope === 'user-management') result = getUserManagementData(users, activeEpisodes, userById);
+      else if (scope === 'dashboard') result = await getDashboard(db, users, userById, activeEpisodes, metrics);
+      else if (scope === 'tutors') result = getTutorOptions(users);
+      else {
+        const subject = normalizeSupportedSubject(request.data?.subject);
+        if (!subject) throw new HttpsError('invalid-argument', 'Choose a supported subject.');
+        result = getAssignmentsForSubject({ subject, users, userById, activeEpisodes });
+      }
+    }
 
-  const { users, userById, activeEpisodes } = await readUsersAndActiveEpisodes(db);
-  if (scope === 'user-management') return getUserManagementData(users, activeEpisodes);
-  if (scope === 'dashboard') return getDashboard(db, users, userById, activeEpisodes);
-  if (scope === 'tutors') return getTutorOptions(users);
-
-  const subject = normalizeSupportedSubject(request.data?.subject);
-  if (!subject) throw new HttpsError('invalid-argument', 'Choose a supported subject.');
-  return getAssignmentsForSubject({ subject, users, userById, activeEpisodes });
+    logger.info('Admin workspace loaded', {
+      scope,
+      durationMs: Date.now() - startedAt,
+      ...metrics,
+    });
+    return result;
+  } catch (error) {
+    logger.error('Admin workspace load failed', {
+      scope,
+      durationMs: Date.now() - startedAt,
+      ...metrics,
+      code: error?.code ?? null,
+      message: error?.message ?? String(error),
+    });
+    throw error;
+  }
 });

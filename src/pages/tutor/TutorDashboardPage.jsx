@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
+import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
 import { getQuestionPapers, getStudentSubscriptionState, getTutorAssignedStudentContexts, getTutorLessonPresenceForContexts } from '../../services/firestoreService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 import { getApprovedTutorSubjects, normalizeEligibleSubject } from '../../utils/tutorSubjects';
@@ -55,6 +56,12 @@ export const TutorDashboardPage = () => {
   const [paidSubjectAccess, setPaidSubjectAccess] = useState({});
   const [status, setStatus] = useState('');
   const [readinessLoading, setReadinessLoading] = useState(true);
+
+  useScreenLoadMetrics(
+    `${RoleName} dashboard`,
+    role,
+    students.length > 0 || !readinessLoading || Boolean(status),
+  );
 
   const load = async () => {
     if (!profile?.uid) return;

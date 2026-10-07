@@ -5,6 +5,7 @@ import { AppShell } from '../../components/common/AppShell';
 import { MarkingCanvas as ImageEditor } from '../../components/canvas/pictureEditorCanvas';
 import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
 import { useAuth } from '../../hooks/useAuth';
+import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
 import { canOpenExercise } from '../../utils/exerciseRules';
 import {
   generateExercisePlanIfEligible,
@@ -104,6 +105,7 @@ export const StudentDashboardPage = () => {
   const navigate = useNavigate();
   const [availableSubjects, setAvailableSubjects] = useState([]);
   const [availableSubjectEpisodes, setAvailableSubjectEpisodes] = useState([]);
+  const [isLoadingSubjects, setIsLoadingSubjects] = useState(true);
   const [todayExercises, setTodayExercises] = useState([]);
   const [peerAssignments, setPeerAssignments] = useState([]);
   const [reviewingAssignment, setReviewingAssignment] = useState(null);
@@ -122,16 +124,33 @@ export const StudentDashboardPage = () => {
   const [subscriptionPlanName, setSubscriptionPlanName] = useState('Free');
   const [requiresSubscriptionSelection, setRequiresSubscriptionSelection] = useState(true);
 
+  useScreenLoadMetrics(
+    'Student Home',
+    'student',
+    !isLoadingSubjects && !isCheckingAccess && !isLoadingExercises && !isLoadingPeerAssignments,
+  );
+
   useEffect(() => {
     let active = true;
-    if (!profile?.uid) { setAvailableSubjects([]); return undefined; }
+    if (!profile?.uid) {
+      setAvailableSubjects([]);
+      setAvailableSubjectEpisodes([]);
+      setIsLoadingSubjects(false);
+      return undefined;
+    }
+    setIsLoadingSubjects(true);
     getActiveSubjectEpisodesForStudent(profile.uid)
       .then((episodes) => {
         if (!active) return;
         setAvailableSubjectEpisodes(episodes);
         setAvailableSubjects([...new Set(episodes.map((episode) => episode.subjectKey).filter(Boolean))].sort());
+        setIsLoadingSubjects(false);
       })
-      .catch((error) => { if (active) setLoadError(error.message || 'Could not load your active subjects.'); });
+      .catch((error) => {
+        if (!active) return;
+        setLoadError(error.message || 'Could not load your active subjects.');
+        setIsLoadingSubjects(false);
+      });
     return () => { active = false; };
   }, [profile?.uid]);
 
@@ -164,7 +183,7 @@ export const StudentDashboardPage = () => {
     };
 
     const load = async () => {
-      if (!profile?.uid) return;
+      if (!profile?.uid || isLoadingSubjects) return;
       try {
         setLoadError('');
         setPaymentLocked(true);
@@ -301,7 +320,7 @@ export const StudentDashboardPage = () => {
 
     load();
     return () => { active = false; };
-  }, [availableSubjects, availableSubjectEpisodes, profile]);
+  }, [availableSubjects, availableSubjectEpisodes, isLoadingSubjects, profile]);
 
   const retryInitialGeneration = async (subject) => {
     if (!subject || retryingInitialSubject) return;

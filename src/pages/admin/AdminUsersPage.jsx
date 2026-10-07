@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
+import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
 import {
   assignStudentToTutor,
   getAdminUserManagementData,
@@ -43,6 +44,8 @@ export const AdminUsersPage = () => {
   const [summary, setSummary] = useState({ students: [], tutors: [] });
   const [tutorOptions, setTutorOptions] = useState([]);
   const [tutorsLoaded, setTutorsLoaded] = useState(false);
+  const [assignmentsLoaded, setAssignmentsLoaded] = useState(false);
+  const [assignmentSubject, setAssignmentSubject] = useState('');
   const [selectedSubject, setSelectedSubject] = useState('');
   const [assignmentData, setAssignmentData] = useState({ students: [], tutors: [], assignments: [], unassignedStudents: [] });
   const [studentId, setStudentId] = useState('');
@@ -51,12 +54,21 @@ export const AdminUsersPage = () => {
   const [isAssigning, setIsAssigning] = useState(false);
   const selectedTutor = tutorOptions.find((tutor) => tutor.uid === tutorId);
 
+  useScreenLoadMetrics('Admin users and assignments', 'admin', tutorsLoaded && assignmentsLoaded);
+
   useEffect(() => {
     getAdminUserManagementData().then((data) => {
       setSummary({ students: data.students ?? [], tutors: data.tutors ?? [] });
       setTutorOptions(data.tutorOptions ?? []);
       setTutorId(data.tutorOptions?.[0]?.uid ?? '');
-      setSelectedSubject(data.tutorOptions?.[0]?.subjects?.[0] ?? '');
+      const initialSubject = data.initialSubject || data.tutorOptions?.[0]?.subjects?.[0] || '';
+      setSelectedSubject(initialSubject);
+      setAssignmentSubject(initialSubject);
+      if (data.initialAssignments) {
+        setAssignmentData(data.initialAssignments);
+        setStudentId(data.initialAssignments.unassignedStudents?.[0]?.uid ?? '');
+        setAssignmentsLoaded(true);
+      }
     }).catch((error) => {
       console.error('[Examifying][AdminUsers] load:error', error);
       setSummary({ students: [], tutors: [] });
@@ -66,16 +78,34 @@ export const AdminUsersPage = () => {
   }, []);
 
   useEffect(() => {
-    if (!tutorsLoaded || !selectedSubject) return;
+    if (!tutorsLoaded) return undefined;
+    if (!selectedSubject) {
+      setAssignmentData({ students: [], tutors: [], assignments: [], unassignedStudents: [] });
+      setAssignmentSubject('');
+      setAssignmentsLoaded(true);
+      return undefined;
+    }
+    if (selectedSubject === assignmentSubject) {
+      setAssignmentsLoaded(true);
+      return undefined;
+    }
+    let active = true;
+    setAssignmentsLoaded(false);
     getAdminSubjectAssignmentData(selectedSubject).then((data) => {
+      if (!active) return;
       setAssignmentData(data);
       setStudentId(data.unassignedStudents[0]?.uid ?? '');
+      setAssignmentSubject(selectedSubject);
     }).catch((error) => {
+      if (!active) return;
       console.error('[Examifying][AdminUsers] assignments:error', error);
       setAssignmentData({ students: [], tutors: [], assignments: [], unassignedStudents: [] });
       setStatus(error.message || 'Could not load subject assignments.');
+    }).finally(() => {
+      if (active) setAssignmentsLoaded(true);
     });
-  }, [selectedSubject, tutorsLoaded]);
+    return () => { active = false; };
+  }, [assignmentSubject, selectedSubject, tutorsLoaded]);
 
   const handleTutorChange = (nextTutorId) => {
     const tutor = tutorOptions.find((item) => item.uid === nextTutorId);

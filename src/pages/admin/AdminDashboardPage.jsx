@@ -4,6 +4,7 @@ import { AppShell } from '../../components/common/AppShell';
 import { StatCard } from '../../components/common/StatCard';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
+import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
 import { getRecentExerciseGenerationWarningsForAdmin, getRoleDashboardData } from '../../services/firestoreService';
 
 export const AdminDashboardPage = () => {
@@ -11,6 +12,8 @@ export const AdminDashboardPage = () => {
   const [dashboard, setDashboard] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [generationWarnings, setGenerationWarnings] = useState([]);
+
+  useScreenLoadMetrics('Admin dashboard', 'admin', Boolean(dashboard || loadError));
 
   useEffect(() => {
     getRoleDashboardData('admin').then(setDashboard).catch((error) => {

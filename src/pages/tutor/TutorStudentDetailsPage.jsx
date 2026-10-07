@@ -6,6 +6,7 @@ import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
 import { useAuth } from '../../hooks/useAuth';
+import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
 import {
   generateExercisePlanIfEligible,
   getGlobalTopicOptionGroups,
@@ -89,6 +90,13 @@ export const TutorStudentDetailsPage = () => {
   const [savingStaffAccess, setSavingStaffAccess] = useState(false);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [removingLessonTopicKey, setRemovingLessonTopicKey] = useState('');
+
+  useScreenLoadMetrics(
+    'Student details',
+    location.pathname.startsWith('/teacher') ? 'teacher' : 'tutor',
+    Boolean(student) && !lessonEligibilityLoading,
+    `${studentId}:${subject}:${periodId ?? ''}`,
+  );
 
   useEffect(() => {
     if (!studentId || !profile?.uid || periodId || student?.subject !== subject || !student?.subjectInstanceId) return undefined;
@@ -182,23 +190,30 @@ export const TutorStudentDetailsPage = () => {
     setLessonEligibilityError(eligibilityResult.error?.message || '');
     setLessonEligibilityLoading(false);
     setStudent(studentContext);
-    setStaffAccess(await getStaffStudentAccess({ studentId, subject: activeSubject, tutorId: profile.uid, subjectInstanceId: studentContext?.subjectInstanceId }));
-    if (studentContext?.accessRole === 'co-owner') setStaffMembers(await getStaffMembersForAccess({ tutorId: profile.uid, subject: activeSubject }));
-    else setStaffMembers([]);
     setExercises(exerciseRows);
     setLessons(subjectLessons);
     setPeerMarkedWork(peerMarkedRows);
-    try {
-      setTopicOptions(await getGlobalTopicOptionGroups({
+    const [staffAccessResult, staffMembersResult, topicOptionsResult] = await Promise.all([
+      getStaffStudentAccess({ studentId, subject: activeSubject, tutorId: profile.uid, subjectInstanceId: studentContext?.subjectInstanceId })
+        .then((value) => ({ value }))
+        .catch((error) => ({ error })),
+      studentContext?.accessRole === 'co-owner'
+        ? getStaffMembersForAccess({ tutorId: profile.uid, subject: activeSubject })
+          .then((value) => ({ value }))
+          .catch((error) => ({ error }))
+        : Promise.resolve({ value: [] }),
+      getGlobalTopicOptionGroups({
         subject: activeSubject,
         grade: studentContext?.grade,
         studentIds: [studentId],
         questionPapers: papers,
-      }));
-    } catch (error) {
-      setTopicOptions(emptyTopicGroups);
-      setStatus(error.message || 'Could not load topics from the global subject-grade list.');
-    }
+      }).then((value) => ({ value })).catch((error) => ({ error })),
+    ]);
+    setStaffAccess(staffAccessResult.value ?? []);
+    setStaffMembers(staffMembersResult.value ?? []);
+    setTopicOptions(topicOptionsResult.value ?? emptyTopicGroups);
+    const ancillaryError = staffAccessResult.error || staffMembersResult.error || topicOptionsResult.error;
+    if (ancillaryError) setStatus(ancillaryError.message || 'Some student details could not be loaded.');
   };
 
   useEffect(() => {

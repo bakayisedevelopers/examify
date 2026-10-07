@@ -4,10 +4,10 @@ import {
   collectionGroup,
   deleteField,
   doc,
-  getDoc,
-  getDocs,
+  getDoc as firebaseGetDoc,
+  getDocs as firebaseGetDocs,
   limit,
-  onSnapshot,
+  onSnapshot as firebaseOnSnapshot,
   orderBy,
   query,
   runTransaction,
@@ -49,6 +49,27 @@ import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } f
 import { calculateSubscriptionQuote, getEffectiveSubscriptionState, isSubscriptionPaymentConsistent } from '../utils/subscriptionPlans';
 import { normalizeWhatsAppLessonLink } from '../utils/whatsapp';
 import { buildLessonTopicScores } from './lessonPersistence';
+import { trackDataRequest, trackFirestoreListener, trackFirestoreRead } from './performanceTelemetry';
+
+const getDoc = (...args) => trackFirestoreRead('getDoc', () => firebaseGetDoc(...args));
+const getDocs = (...args) => trackFirestoreRead('getDocs', () => firebaseGetDocs(...args));
+const onSnapshot = (reference, ...args) => {
+  const callbackIndex = args.findIndex((item) => typeof item === 'function' || typeof item?.next === 'function');
+  if (callbackIndex === -1) return firebaseOnSnapshot(reference, ...args);
+  const callback = args[callbackIndex];
+  const startedAt = performance.now();
+  const route = typeof window === 'undefined' ? '' : window.location.pathname;
+  let recorded = false;
+  const onNext = (snapshot) => {
+    if (!recorded) {
+      recorded = true;
+      trackFirestoreListener(snapshot, performance.now() - startedAt, route);
+    }
+    return typeof callback === 'function' ? callback(snapshot) : callback.next(snapshot);
+  };
+  args[callbackIndex] = typeof callback === 'function' ? onNext : { ...callback, next: onNext };
+  return firebaseOnSnapshot(reference, ...args);
+};
 
 const emptyDashboardData = {
   student: {
@@ -82,7 +103,9 @@ const ensureDb = () => {
 const getAdminWorkspaceData = async (scope, payload = {}) => {
   ensureDb();
   if (!functions) throw new Error('Firebase Functions are not configured. Admin workspace data is unavailable.');
-  return (await httpsCallable(functions, 'getAdminWorkspaceData')({ scope, ...payload })).data;
+  return trackDataRequest(`Admin workspace: ${scope}`, async () => (
+    await httpsCallable(functions, 'getAdminWorkspaceData')({ scope, ...payload })
+  ).data);
 };
 
 const demoUsers = Object.values(mockUsers);

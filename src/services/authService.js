@@ -8,12 +8,13 @@ import {
   updatePassword,
   deleteUser,
 } from 'firebase/auth';
-import { deleteDoc, deleteField, doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { deleteDoc, deleteField, doc, getDoc as firebaseGetDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { auth, db, functions, isFirebaseConfigured } from '../firebase/config';
 import { collections } from '../firebase/schema';
 import { mockUsers } from '../data/mockData';
 import { normalizeWhatsAppNumber } from '../utils/whatsapp';
+import { trackFirestoreRead } from './performanceTelemetry';
 
 const provider = isFirebaseConfigured ? new GoogleAuthProvider() : null;
 const profileRequests = new Map();
@@ -123,7 +124,7 @@ export const getUserProfile = async (uid) => {
   const existingRequest = profileRequests.get(uid);
   if (existingRequest) return existingRequest;
 
-  const request = getDoc(doc(db, collections.users, uid))
+  const request = trackFirestoreRead('getUserProfile', () => firebaseGetDoc(doc(db, collections.users, uid)))
     .then((snapshot) => snapshot.exists() ? snapshot.data() : null);
   profileRequests.set(uid, request);
   try {
