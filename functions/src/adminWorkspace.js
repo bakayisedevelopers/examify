@@ -31,6 +31,11 @@ const isTutor = (profile = {}) => profile.role === 'tutor' || profile.role === '
   || profile.isTeacher === true || profile.isTeacher === 'true';
 const userLabel = (profile = {}, fallback = 'User') => profile.displayName || profile.name || profile.email || fallback;
 const toMillis = (value) => value?.toMillis?.() ?? (value instanceof Date ? value.getTime() : Number(value) || 0);
+const safeDateMillis = (value) => {
+  if (!value) return null;
+  const timestamp = toMillis(value) || new Date(value).getTime();
+  return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null;
+};
 const dateLabel = (value) => {
   const millis = toMillis(value);
   return millis ? new Date(millis).toLocaleDateString('en-ZA') : '—';
@@ -116,43 +121,133 @@ const getGuideQuizSummary = async (db, users, metrics) => {
   };
 };
 
-const getUserManagementData = (users, activeEpisodes, userById) => {
-  const subjectsByStudent = new Map();
-  const assignedStudentsByTutor = new Map();
-  activeEpisodes.forEach((episode) => {
-    if (episode.subjectKey) {
-      const subjects = subjectsByStudent.get(episode.studentId) ?? new Set();
-      subjects.add(normalizeSupportedSubject(episode.subjectKey) || episode.subjectKey);
-      subjectsByStudent.set(episode.studentId, subjects);
-    }
-    if (episode.primaryTutorId) {
-      const students = assignedStudentsByTutor.get(episode.primaryTutorId) ?? new Set();
-      students.add(episode.studentId);
-      assignedStudentsByTutor.set(episode.primaryTutorId, students);
-    }
-  });
-
+const getUserManagementData = (users) => {
   const tutorOptions = getTutorOptions(users);
   const initialSubject = tutorOptions[0]?.subjects?.[0] ?? '';
   return {
-    students: users.filter((profile) => profile.role === 'student').map((profile) => ({
+    users: users.map((profile) => ({
       id: profile.uid,
-      name: userLabel(profile, 'Student'),
-      subjects: [...(subjectsByStudent.get(profile.uid) ?? [])].sort((left, right) => left.localeCompare(right)),
-      subscriptionPlanName: profile.subscriptionPlanName || 'Free',
-    })),
-    tutors: users.filter((profile) => isTutor(profile)).map((profile) => ({
-      id: profile.uid,
-      name: userLabel(profile, 'Tutor'),
-      subjects: getApprovedSubjects(profile),
-      studentCount: assignedStudentsByTutor.get(profile.uid)?.size ?? 0,
-    })),
+      name: userLabel(profile, 'Name unavailable'),
+      email: profile.email || '',
+      role: isTutor(profile) && (profile.isTeacher === true || profile.isTeacher === 'true' || profile.role === 'teacher')
+        ? 'teacher'
+        : (String(profile.role || 'unknown').toLowerCase()),
+      lastLoginAt: safeDateMillis(profile.lastLoginAt),
+    })).sort((left, right) => left.name.localeCompare(right.name)),
     tutorOptions,
     initialSubject,
-    initialAssignments: initialSubject
-      ? getAssignmentsForSubject({ subject: initialSubject, users, userById, activeEpisodes })
-      : null,
   };
+};
+
+const safeProfileDetails = (profile, uid) => ({
+  uid,
+  name: profile.displayName || profile.name || profile.fullName || profile.email || 'Name unavailable',
+  email: profile.email || '',
+  role: isTutor(profile) && (profile.isTeacher === true || profile.isTeacher === 'true' || profile.role === 'teacher')
+    ? 'teacher'
+    : String(profile.role || 'unknown').toLowerCase(),
+  phone: profile.whatsappNumber || profile.phoneNumber || profile.phone || '',
+  grade: profile.grade || '',
+  educationLevel: profile.educationLevel || '',
+  school: profile.school || profile.schoolName || '',
+  province: profile.province || '',
+  accountStatus: profile.accountStatus || profile.status || '',
+  lastLoginAt: safeDateMillis(profile.lastLoginAt),
+  createdAt: safeDateMillis(profile.createdAt),
+  updatedAt: safeDateMillis(profile.updatedAt),
+});
+
+const getStudentAdminDetails = async (db, userId, metrics) => {
+  const subjectsSnapshot = await recordRead(metrics, () => db.collection('users').doc(userId).collection('subjects').get());
+  const subjects = subjectsSnapshot.docs.map((document) => {
+    const subject = document.data();
+    return {
+      id: document.id,
+      subject: normalizeSupportedSubject(subject.subjectKey || subject.subjectName || subject.subject) || subject.subjectKey || subject.subjectName || subject.subject || 'Subject',
+      status: String(subject.status || 'historical').toLowerCase(),
+      grade: subject.grade || '',
+      createdAt: safeDateMillis(subject.createdAt),
+      cancelledAt: safeDateMillis(subject.cancelledAt),
+    };
+  }).sort((left, right) => left.subject.localeCompare(right.subject));
+  return { subjects };
+};
+
+const getTutorAdminDetails = async (db, userId, profile, metrics) => {
+  const collectionGroup = db.collectionGroup('subjects');
+  const [primarySnapshot, activeStaffSnapshot, historicalStaffSnapshot] = await Promise.all([
+    recordRead(metrics, () => collectionGroup.where('primaryTutorId', '==', userId).get()),
+    recordRead(metrics, () => collectionGroup.where('activeStaffIds', 'array-contains', userId).get()),
+    recordRead(metrics, () => collectionGroup.where('historicalStaffIds', 'array-contains', userId).get()),
+  ]);
+  const documents = new Map();
+  [...primarySnapshot.docs, ...activeStaffSnapshot.docs, ...historicalStaffSnapshot.docs]
+    .forEach((document) => documents.set(document.ref.path, document));
+  const assignments = [...documents.values()].map((document) => {
+    const episode = document.data();
+    const isPrimaryTutor = episode.primaryTutorId === userId;
+    return {
+      id: document.id,
+      studentId: document.ref.parent.parent?.id || episode.studentId || '',
+      studentName: episode.studentName || 'Student',
+      subject: normalizeSupportedSubject(episode.subjectKey || episode.subjectName || episode.subject) || episode.subjectKey || episode.subjectName || episode.subject || 'Subject',
+      grade: episode.grade || '',
+      status: String(episode.status || 'historical').toLowerCase(),
+      accessRole: isPrimaryTutor ? 'primary tutor' : (episode.staffByUid?.[userId] || 'historical access'),
+    };
+  }).filter((assignment) => assignment.studentId)
+    .sort((left, right) => left.studentName.localeCompare(right.studentName) || left.subject.localeCompare(right.subject));
+  const uniqueActivePrimaryStudents = new Set(assignments
+    .filter((assignment) => assignment.status === 'active' && assignment.accessRole === 'primary tutor')
+    .map((assignment) => assignment.studentId));
+  const uniqueActiveSharedStudents = new Set(assignments
+    .filter((assignment) => assignment.status === 'active' && assignment.accessRole !== 'primary tutor')
+    .map((assignment) => assignment.studentId));
+  const marksBySubject = new Map((Array.isArray(profile.tutorSubjectMarks) ? profile.tutorSubjectMarks : [])
+    .filter((item) => item && normalizeSupportedSubject(item.subject || item.rawSubject))
+    .map((item) => [normalizeSupportedSubject(item.subject || item.rawSubject), Number.isFinite(Number(item.mark)) ? Number(item.mark) : null]));
+  const subjects = [...new Set([
+    ...(Array.isArray(profile.subjects) ? profile.subjects : []),
+    ...(profile.subject ? [profile.subject] : []),
+    ...marksBySubject.keys(),
+  ].map(normalizeSupportedSubject).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right))
+    .map((subject) => ({ subject, mark: marksBySubject.get(subject) ?? null, approved: getApprovedSubjects(profile).includes(subject) }));
+  return {
+    subjects,
+    assignments,
+    activePrimaryStudentCount: uniqueActivePrimaryStudents.size,
+    activeSharedStudentCount: uniqueActiveSharedStudents.size,
+  };
+};
+
+const getParentAdminDetails = async (db, userId, metrics) => {
+  const studentsSnapshot = await recordRead(metrics, () => db.collection('users')
+    .where('parentId', '==', userId)
+    .where('role', '==', 'student')
+    .get());
+  const students = studentsSnapshot.docs.map((document) => {
+    const student = document.data();
+    return {
+      id: document.id,
+      name: userLabel(student, 'Student'),
+      email: student.email || '',
+      grade: student.grade || '',
+    };
+  }).sort((left, right) => left.name.localeCompare(right.name));
+  return { students };
+};
+
+const getUserDetails = async (db, userId, metrics) => {
+  if (!userId || typeof userId !== 'string') throw new HttpsError('invalid-argument', 'Choose a user to view.');
+  const userSnapshot = await recordRead(metrics, () => db.collection('users').doc(userId).get());
+  if (!userSnapshot.exists) throw new HttpsError('not-found', 'This user account could not be found.');
+  const profile = userSnapshot.data();
+  const details = { profile: safeProfileDetails(profile, userId) };
+  if (profile.role === 'student') details.student = await getStudentAdminDetails(db, userId, metrics);
+  else if (isTutor(profile)) details.tutor = await getTutorAdminDetails(db, userId, profile, metrics);
+  else if (profile.role === 'parent') details.parent = await getParentAdminDetails(db, userId, metrics);
+  return details;
 };
 
 const getDashboard = async (db, users, userById, activeEpisodes, metrics) => {
@@ -215,18 +310,23 @@ export const getAdminWorkspaceData = onCall({ cpu: 'gcf_gen1' }, async (request)
   const metrics = { firestoreReadOperations: 0, firestoreDocumentsReturned: 0 };
   try {
     await requireAdmin(request, db, metrics);
-    if (!['dashboard', 'tutors', 'assignments', 'guide-results', 'user-management'].includes(scope)) {
+    if (!['dashboard', 'tutors', 'assignments', 'guide-results', 'user-management', 'user-details'].includes(scope)) {
       throw new HttpsError('invalid-argument', 'Choose valid admin workspace data.');
     }
     let result;
-    if (scope === 'guide-results') {
+    if (scope === 'user-details') {
+      result = await getUserDetails(db, String(request.data?.userId || '').trim(), metrics);
+    } else if (scope === 'user-management') {
+      const usersSnapshot = await recordRead(metrics, () => db.collection('users').get());
+      const users = usersSnapshot.docs.map((document) => ({ uid: document.id, ...document.data() }));
+      result = getUserManagementData(users);
+    } else if (scope === 'guide-results') {
       const usersSnapshot = await recordRead(metrics, () => db.collection('users').get());
       const users = usersSnapshot.docs.map((document) => ({ uid: document.id, ...document.data() }));
       result = await getGuideQuizSummary(db, users, metrics);
     } else {
       const { users, userById, activeEpisodes } = await readUsersAndActiveEpisodes(db, metrics);
-      if (scope === 'user-management') result = getUserManagementData(users, activeEpisodes, userById);
-      else if (scope === 'dashboard') result = await getDashboard(db, users, userById, activeEpisodes, metrics);
+      if (scope === 'dashboard') result = await getDashboard(db, users, userById, activeEpisodes, metrics);
       else if (scope === 'tutors') result = getTutorOptions(users);
       else {
         const subject = normalizeSupportedSubject(request.data?.subject);

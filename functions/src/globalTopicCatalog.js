@@ -17,6 +17,29 @@ const normalizeTopicKey = (value) => String(value ?? '')
   .replace(/\s+/g, ' ')
   .trim();
 
+const normalizeTopicDifficulty = (value) => {
+  const difficulty = String(value ?? '').trim().toLowerCase();
+  if (['easy', 'basic'].includes(difficulty)) return 'easy';
+  if (['medium', 'moderate', 'average'].includes(difficulty)) return 'medium';
+  if (['hard', 'difficult', 'challenging'].includes(difficulty)) return 'hard';
+  return '';
+};
+
+const topicParts = (value) => {
+  const parts = String(value ?? '').split('|').map((part) => normalizeTopicKey(part)).filter(Boolean);
+  return parts.length === 2 ? parts : [normalizeTopicKey(value)].filter(Boolean);
+};
+
+const topicLabelsMatch = (left, right) => {
+  const leftParts = topicParts(left);
+  const rightParts = topicParts(right);
+  if (!leftParts.length || !rightParts.length) return false;
+  if (leftParts.length === 2 && rightParts.length === 2) return leftParts[0] === rightParts[0] && leftParts[1] === rightParts[1];
+  if (leftParts.length === 2) return rightParts[0] === leftParts[0];
+  if (rightParts.length === 2) return leftParts[0] === rightParts[0];
+  return leftParts[0] === rightParts[0];
+};
+
 export const normalizeStoredTopicLabel = (value) => {
   const parts = String(value ?? '').split('|').map((part) => part.trim().replace(/\s+/g, ' '));
   if (parts.length !== 2 || parts.some((part) => !part) || parts.join(' | ').length > 180) return '';
@@ -55,7 +78,7 @@ const uniqueTopicLabels = (values = []) => {
   return [...labels.values()];
 };
 
-export const mergeGlobalTopicLabels = async (db, subject, grade, labels, { ensureSubject = true } = {}) => {
+export const mergeGlobalTopicLabels = async (db, subject, grade, labels, { ensureSubject = true, topicMetadata = [] } = {}) => {
   const subjectName = String(subject ?? '').trim();
   const gradeName = String(grade ?? '').trim();
   if (!subjectName || !gradeName || subjectName.includes('/') || gradeName.includes('/')) return { topics: [], addedCount: 0 };
@@ -72,10 +95,23 @@ export const mergeGlobalTopicLabels = async (db, subject, grade, labels, { ensur
     const merged = uniqueTopicLabels([...current, ...(Array.isArray(labels) ? labels : [])]);
     const currentKeys = new Set(current.map(normalizeTopicKey));
     const addedCount = merged.filter((label) => !currentKeys.has(normalizeTopicKey(label))).length;
+    const metadataByTopic = new Map();
+    [...(Array.isArray(gradeSnapshot.data()?.topicMetadata) ? gradeSnapshot.data().topicMetadata : []),
+      ...(Array.isArray(topicMetadata) ? topicMetadata : [])].forEach((item) => {
+      const topic = normalizeStoredTopicLabel(item?.topic ?? item?.label);
+      const difficulty = normalizeTopicDifficulty(item?.difficulty);
+      const key = normalizeTopicKey(topic);
+      if (topic && difficulty && !metadataByTopic.has(key)) metadataByTopic.set(key, { topic, difficulty });
+    });
+    const savedTopicMetadata = merged.flatMap((topic) => {
+      const metadata = metadataByTopic.get(normalizeTopicKey(topic));
+      return metadata ? [{ topic, difficulty: metadata.difficulty }] : [];
+    });
     transaction.set(gradeRef, {
       subjectName,
       gradeName,
       topics: merged,
+      ...(savedTopicMetadata.length || Array.isArray(gradeSnapshot.data()?.topicMetadata) ? { topicMetadata: savedTopicMetadata } : {}),
       updatedAt: new Date(),
     }, { merge: true });
     return { topics: merged, addedCount };
@@ -99,6 +135,12 @@ export const ensureGlobalTopicGrade = onCall({ timeoutSeconds: 120, memory: '256
   }
 
   const seedTopics = asTopicLabels(request.data?.seedTopics);
+  const seedTopicMetadata = (Array.isArray(request.data?.seedTopicMetadata) ? request.data.seedTopicMetadata : [])
+    .map((item) => ({
+      topic: normalizeStoredTopicLabel(item?.topic ?? item?.label),
+      difficulty: normalizeTopicDifficulty(item?.difficulty),
+    }))
+    .filter((item) => item.topic && item.difficulty);
   if (role !== 'admin') {
     const studentIds = [...new Set((Array.isArray(request.data?.studentIds) ? request.data.studentIds : [])
       .map((studentId) => String(studentId ?? '').trim())
@@ -128,19 +170,25 @@ export const ensureGlobalTopicGrade = onCall({ timeoutSeconds: 120, memory: '256
   const existing = await gradeRef.get();
   const existingTopics = uniqueTopicLabels(existing.data()?.topics);
   if (existingTopics.length) return { topics: existingTopics, created: false };
-  const merged = await mergeGlobalTopicLabels(db, subject, grade, seedTopics);
+  const merged = await mergeGlobalTopicLabels(db, subject, grade, seedTopics, { topicMetadata: seedTopicMetadata });
   return { topics: merged.topics, created: !existing.exists };
 });
 
-const addGroupTopics = (groups, subject, grade, labels) => {
+const addGroupTopics = (groups, subject, grade, labels, topicMetadata = []) => {
   const subjectName = String(subject ?? '').trim();
   const gradeName = String(grade ?? '').trim();
   if (!subjectName || !gradeName || subjectName.includes('/') || gradeName.includes('/')) return;
   const key = `${subjectName}\u0000${gradeName}`;
-  const group = groups.get(key) ?? { subject: subjectName, grade: gradeName, topics: new Map() };
+  const group = groups.get(key) ?? { subject: subjectName, grade: gradeName, topics: new Map(), topicMetadata: new Map() };
   uniqueTopicLabels(labels).forEach((label) => {
     const normalized = normalizeTopicKey(label);
     if (!group.topics.has(normalized)) group.topics.set(normalized, label);
+  });
+  (Array.isArray(topicMetadata) ? topicMetadata : []).forEach((item) => {
+    const topic = normalizeStoredTopicLabel(item?.topic ?? item?.label);
+    const difficulty = normalizeTopicDifficulty(item?.difficulty);
+    const normalized = normalizeTopicKey(topic);
+    if (topic && difficulty && !group.topicMetadata.has(normalized)) group.topicMetadata.set(normalized, { topic, difficulty });
   });
   groups.set(key, group);
 };
@@ -157,6 +205,124 @@ const verifyAdmin = async (request) => {
     throw new HttpsError('permission-denied', 'Only admins can initialize the global topic catalog.');
   }
 };
+
+const preferredDifficulty = (values = []) => {
+  const counts = new Map();
+  values.map(normalizeTopicDifficulty).filter(Boolean).forEach((difficulty) => {
+    counts.set(difficulty, (counts.get(difficulty) ?? 0) + 1);
+  });
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || (left[0] === 'medium' ? -1 : right[0] === 'medium' ? 1 : left[0].localeCompare(right[0])))[0]?.[0] ?? '';
+};
+
+const paperQuestionsForTopic = (paper, topic) => (Array.isArray(paper?.questions) ? paper.questions : []).filter((question) => {
+  const labels = [question?.topic, ...(Array.isArray(question?.topics) ? question.topics : [])];
+  return labels.some((label) => topicLabelsMatch(topic, label));
+});
+
+const analyzedDifficultyForTopic = (papers, topic) => {
+  const values = [];
+  papers.forEach((paper) => {
+    (Array.isArray(paper.topicMetadata) ? paper.topicMetadata : []).forEach((item) => {
+      if (topicLabelsMatch(topic, item?.topic ?? item?.label)) values.push(item?.difficulty);
+    });
+    paperQuestionsForTopic(paper, topic).forEach((question) => {
+      values.push(question?.difficulty, question?.metadata?.difficulty);
+    });
+  });
+  return preferredDifficulty(values);
+};
+
+export const cleanupGlobalTopicCatalog = onCall({ timeoutSeconds: 120, memory: '512MiB' }, async (request) => {
+  await verifyAdmin(request);
+  const subject = String(request.data?.subject ?? '').trim().slice(0, 100);
+  const grade = String(request.data?.grade ?? '').trim().slice(0, 32);
+  const action = String(request.data?.action ?? '').trim();
+  if (!subject || !grade || subject.includes('/') || grade.includes('/')) {
+    throw new HttpsError('invalid-argument', 'Provide a valid subject and grade.');
+  }
+  if (!['remove-listed', 'reconcile-grade'].includes(action)) {
+    throw new HttpsError('invalid-argument', 'Choose a supported topic catalog cleanup action.');
+  }
+
+  const db = getDb();
+  const gradeRef = db.collection('subjects').doc(subject).collection('grades').doc(grade);
+  const [gradeSnapshot, paperSnapshot] = await Promise.all([
+    gradeRef.get(),
+    db.collection('questionPapers').where('subject', '==', subject).get(),
+  ]);
+  const gradeData = gradeSnapshot.data() ?? {};
+  const currentTopics = uniqueTopicLabels(gradeData.topics);
+  const papers = paperSnapshot.docs.map((paperDocument) => paperDocument.data())
+    .filter((paper) => paper.grade === grade && paper.analysisStatus === 'Analyzed'
+      && paper.availableForGeneration !== false && Array.isArray(paper.questions) && paper.questions.length > 0);
+  const requestedLabels = asTopicLabels(request.data?.topics);
+  const checkedTopics = action === 'remove-listed'
+    ? currentTopics.filter((topic) => requestedLabels.some((requested) => topicLabelsMatch(topic, requested)))
+    : currentTopics;
+  const metadataByTopic = new Map();
+  (Array.isArray(gradeData.topicMetadata) ? gradeData.topicMetadata : []).forEach((item) => {
+    const topic = normalizeStoredTopicLabel(item?.topic ?? item?.label);
+    const difficulty = normalizeTopicDifficulty(item?.difficulty);
+    if (topic && difficulty) metadataByTopic.set(normalizeTopicKey(topic), difficulty);
+  });
+
+  const removedKeys = new Set();
+  const inferredMetadata = new Map();
+  checkedTopics.forEach((topic) => {
+    const matchingQuestions = papers.flatMap((paper) => paperQuestionsForTopic(paper, topic));
+    if (!matchingQuestions.length) {
+      removedKeys.add(normalizeTopicKey(topic));
+      return;
+    }
+    const savedDifficulty = metadataByTopic.get(normalizeTopicKey(topic));
+    const analyzedDifficulty = analyzedDifficultyForTopic(papers, topic);
+    if (action === 'reconcile-grade' && !savedDifficulty && !analyzedDifficulty) {
+      removedKeys.add(normalizeTopicKey(topic));
+      return;
+    }
+    if (!savedDifficulty && analyzedDifficulty) inferredMetadata.set(normalizeTopicKey(topic), { topic, difficulty: analyzedDifficulty });
+  });
+
+  const result = await db.runTransaction(async (transaction) => {
+    const latestSnapshot = await transaction.get(gradeRef);
+    const latest = latestSnapshot.data() ?? {};
+    const latestTopics = uniqueTopicLabels(latest.topics);
+    const latestTopicKeys = new Set(latestTopics.map(normalizeTopicKey));
+    const removedTopics = latestTopics.filter((topic) => removedKeys.has(normalizeTopicKey(topic)));
+    const topics = latestTopics.filter((topic) => !removedKeys.has(normalizeTopicKey(topic)));
+    const metadata = new Map();
+    (Array.isArray(latest.topicMetadata) ? latest.topicMetadata : []).forEach((item) => {
+      const topic = normalizeStoredTopicLabel(item?.topic ?? item?.label);
+      const difficulty = normalizeTopicDifficulty(item?.difficulty);
+      if (topic && difficulty && latestTopicKeys.has(normalizeTopicKey(topic)) && !removedKeys.has(normalizeTopicKey(topic))) {
+        metadata.set(normalizeTopicKey(topic), { topic, difficulty });
+      }
+    });
+    inferredMetadata.forEach((item, key) => {
+      if (latestTopicKeys.has(key) && !removedKeys.has(key) && !metadata.has(key)) metadata.set(key, item);
+    });
+    transaction.set(gradeRef, {
+      subjectName: subject,
+      gradeName: grade,
+      topics,
+      topicMetadata: [...metadata.values()],
+      updatedAt: new Date(),
+    }, { merge: true });
+    return { removedTopics, remainingTopicCount: topics.length };
+  });
+
+  return {
+    subject,
+    grade,
+    action,
+    checkedTopicCount: checkedTopics.length,
+    analyzedPaperCount: papers.length,
+    removedTopics: result.removedTopics,
+    remainingTopicCount: result.remainingTopicCount,
+    difficultyMetadataUpdatedCount: inferredMetadata.size,
+  };
+});
 
 export const migrateGlobalTopicCatalog = onCall({ timeoutSeconds: 540, memory: '1GiB', cpu: 1 }, async (request) => {
   await verifyAdmin(request);
@@ -195,7 +361,7 @@ export const migrateGlobalTopicCatalog = onCall({ timeoutSeconds: 540, memory: '
     let paperCursor = null;
     while (true) {
       let pageQuery = db.collection('questionPapers')
-        .select('subject', 'grade', 'analysisStatus', 'topics', 'questions')
+        .select('subject', 'grade', 'analysisStatus', 'availableForGeneration', 'topics', 'topicMetadata', 'questions')
         .orderBy(FieldPath.documentId())
         .limit(PAPER_PAGE_SIZE);
       if (paperCursor) pageQuery = pageQuery.startAfter(paperCursor);
@@ -204,16 +370,24 @@ export const migrateGlobalTopicCatalog = onCall({ timeoutSeconds: 540, memory: '
       page.docs.forEach((paperDocument) => {
         paperCount += 1;
         const paper = paperDocument.data();
-        if (paper.analysisStatus !== 'Analyzed') return;
+        if (paper.analysisStatus !== 'Analyzed' || paper.availableForGeneration === false) return;
         const labels = [
           ...asTopicLabels(paper.topics),
+          ...asTopicLabels(paper.topicMetadata),
           ...(Array.isArray(paper.questions) ? paper.questions.flatMap((question) => [
             ...asTopicLabels(question?.topics),
             ...asTopicLabels(question?.topic),
           ]) : []),
         ];
         if (labels.length) {
-          addGroupTopics(groups, paper.subject, paper.grade, labels);
+          const topicMetadata = [
+            ...(Array.isArray(paper.topicMetadata) ? paper.topicMetadata : []),
+            ...(Array.isArray(paper.questions) ? paper.questions.flatMap((question) => {
+              const topics = Array.isArray(question?.topics) && question.topics.length ? question.topics : [question?.topic];
+              return topics.map((topic) => ({ topic, difficulty: question?.difficulty }));
+            }) : []),
+          ];
+          addGroupTopics(groups, paper.subject, paper.grade, labels, topicMetadata);
           analyzedPaperCount += 1;
         }
       });
@@ -254,7 +428,7 @@ export const migrateGlobalTopicCatalog = onCall({ timeoutSeconds: 540, memory: '
         group.subject,
         group.grade,
         [...group.topics.values()],
-        { ensureSubject: false },
+        { ensureSubject: false, topicMetadata: [...group.topicMetadata.values()] },
       )));
     }
     const topicCount = groupRows.reduce((count, group) => count + group.topics.size, 0);

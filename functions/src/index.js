@@ -58,7 +58,7 @@ export {
   saveTutorWhatsAppGroupLink,
   getAuthorizedLessonWhatsAppAccess,
 } from './whatsappAccess.js';
-export { ensureGlobalTopicGrade, migrateGlobalTopicCatalog } from './globalTopicCatalog.js';
+export { ensureGlobalTopicGrade, migrateGlobalTopicCatalog, cleanupGlobalTopicCatalog } from './globalTopicCatalog.js';
 
 export {
   analyzeQuestionPaper,

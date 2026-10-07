@@ -126,6 +126,7 @@ export const buildRuleBasedExercisePlan = ({
       questionReference: reference,
       pageNumber,
       marks: Number.isFinite(Number(question?.marks)) && Number(question?.marks) > 0 ? Number(question.marks) : 0,
+      difficulty: String(question?.difficulty ?? '').trim().toLowerCase(),
       key,
     };
     const indexed = candidateByKey.get(key) ?? candidate;
@@ -240,6 +241,7 @@ export const buildRuleBasedExercisePlan = ({
         questionReference: question.questionReference,
         pageNumber: question.pageNumber,
         marks: question.marks,
+        difficulty: question.difficulty,
       });
     }
 

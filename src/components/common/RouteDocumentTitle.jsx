@@ -33,6 +33,7 @@ const getPageTitle = (pathname, role) => {
   if (!parts.length) return 'Home';
   const [section, detail] = parts;
   if (section === 'profile') return 'Profile';
+  if (section === 'users' && detail) return 'User details';
   if (section === 'students' && detail) return 'Student details';
   if (['exercises', 'lessons', 'papers'].includes(section) && detail) {
     return { exercises: 'Exercise details', lessons: 'Lesson details', papers: 'Question paper' }[section];

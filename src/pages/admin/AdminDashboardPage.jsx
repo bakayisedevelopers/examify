@@ -6,7 +6,8 @@ import { SectionHeader } from '../../components/common/SectionHeader';
 import { LoadingState } from '../../components/common/LoadingState';
 import { useAuth } from '../../hooks/useAuth';
 import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
-import { getRecentExerciseGenerationWarningsForAdmin, getRoleDashboardData } from '../../services/firestoreService';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
+import { cleanupGlobalTopicCatalog, getRecentExerciseGenerationWarningsForAdmin, getRoleDashboardData } from '../../services/firestoreService';
 
 export const AdminDashboardPage = () => {
   const { profile, logout } = useAuth();
@@ -14,6 +15,9 @@ export const AdminDashboardPage = () => {
   const [loadError, setLoadError] = useState('');
   const [generationWarnings, setGenerationWarnings] = useState([]);
   const [warningsLoading, setWarningsLoading] = useState(true);
+  const [cleaningWarningKey, setCleaningWarningKey] = useState('');
+  const [warningCleanupStatus, setWarningCleanupStatus] = useState({});
+  const { runOperation } = useOperationStatus();
 
   useScreenLoadMetrics('Admin dashboard', 'admin', Boolean(dashboard || loadError));
 
@@ -31,6 +35,34 @@ export const AdminDashboardPage = () => {
     .sort((left, right) => (right.updatedAt?.toMillis?.() ?? right.finishedAtMs ?? 0) - (left.updatedAt?.toMillis?.() ?? left.finishedAtMs ?? 0))
     .map((warning) => [`${warning.studentId}:${warning.subject}`, warning])).values()].slice(0, 10);
 
+  const removeWarningTopicsFromCatalog = async (warning, warningKey) => {
+    if (!warning.subject || !warning.grade || !warning.topicsWithoutSources?.length || cleaningWarningKey) return;
+    setCleaningWarningKey(warningKey);
+    setWarningCleanupStatus((current) => ({ ...current, [warningKey]: '' }));
+    try {
+      const result = await runOperation({
+        operationName: 'Removing unavailable topics',
+        successMessage: 'The global topic catalog was checked and updated.',
+      }, () => cleanupGlobalTopicCatalog({
+        action: 'remove-listed',
+        subject: warning.subject,
+        grade: warning.grade,
+        topics: warning.topicsWithoutSources,
+      }));
+      const count = result.removedTopics?.length ?? 0;
+      setWarningCleanupStatus((current) => ({
+        ...current,
+        [warningKey]: count
+          ? `Removed ${count} topic${count === 1 ? '' : 's'} from the global lesson topic catalog. Existing student history was kept.`
+          : 'No listed topics were removed because they are already absent or now have analyzed questions.',
+      }));
+    } catch (error) {
+      setWarningCleanupStatus((current) => ({ ...current, [warningKey]: error.message || 'Could not update the global topic catalog.' }));
+    } finally {
+      setCleaningWarningKey('');
+    }
+  };
+
   return (
     <AppShell title="Admin dashboard" subtitle="Monitor users, tutors, papers, subscriptions, and overall platform activity across Examifying." role="admin" user={profile} onLogout={logout}>
       {loadError ? <div className="panel border border-rose-200 p-4 text-sm font-medium text-rose-700" role="alert">{loadError}</div> : null}
@@ -40,14 +72,24 @@ export const AdminDashboardPage = () => {
       {latestWarnings.length && !warningsLoading ? <section className="panel border border-amber-300/30 p-5">
         <SectionHeader eyebrow="Question coverage" title="More analyzed questions needed" description="Some topics or exercise dates could not be fully covered by distinct analyzed paper questions. Add and analyze more past papers to expand coverage." />
         <div className="mt-4 space-y-3">
-          {latestWarnings.map((warning) => <div key={`${warning.studentId}:${warning.subject}:${warning.id}`} className="rounded-lg border border-amber-200/20 bg-amber-400/5 p-3">
+          {latestWarnings.map((warning) => {
+            const warningKey = `${warning.studentId}:${warning.subject}:${warning.id}`;
+            return <div key={warningKey} className="rounded-lg border border-amber-200/20 bg-amber-400/5 p-3">
             <p className="font-semibold text-slate-100">{warning.subject || 'Subject'} · {warning.grade || 'Grade unavailable'} · {warning.studentId || 'Student'}</p>
             <p className="text-xs text-slate-400">{warning.region || 'Region unavailable'} · run date {warning.dateKey || warning.id}</p>
             <p className="mt-1 text-sm text-slate-300">
               {Number(warning.questionShortageCount) > 0 ? `${warning.questionShortageCount} question slot(s) were left unfilled. ` : ''}
               {warning.topicsWithoutSources?.length ? `No analyzed questions found for ${warning.topicsWithoutSources.join(', ')}.` : 'Analyze more past papers to add distinct questions.'}
             </p>
-          </div>)}
+            {warning.topicsWithoutSources?.length && warning.subject && warning.grade ? <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button type="button" className="btn-secondary px-4 py-2 text-sm" onClick={() => removeWarningTopicsFromCatalog(warning, warningKey)} disabled={Boolean(cleaningWarningKey)}>
+                {cleaningWarningKey === warningKey ? 'Removing topics…' : 'Remove unavailable topics from lesson list'}
+              </button>
+              <span className="text-xs text-slate-400">Only removes topics with no analyzed question source for this grade.</span>
+            </div> : null}
+            {warningCleanupStatus[warningKey] ? <p className="mt-2 text-sm text-lime-200" role="status">{warningCleanupStatus[warningKey]}</p> : null}
+          </div>;
+          })}
         </div>
         <Link className="btn-secondary mt-4 inline-flex" to="/admin/papers">Open past papers</Link>
       </section> : null}

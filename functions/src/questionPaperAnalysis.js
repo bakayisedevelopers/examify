@@ -137,12 +137,23 @@ const parseBatchAnalysis = (text = '') => {
   return {
     questions: parsed?.questions ?? fallbackQuestions,
     topics: Array.isArray(parsed?.topics) ? parsed.topics : [],
+    topicMetadata: Array.isArray(parsed?.topicMetadata) ? parsed.topicMetadata : [],
     summary: String(parsed?.summary ?? fallbackSummary).trim(),
     readabilityNotes: Array.isArray(parsed?.readabilityNotes) ? parsed.readabilityNotes : [],
     rawText: String(parsed?.rawText ?? parsed?.extractedText ?? parsed?.summary ?? raw).trim(),
     parseWarning: parsed ? '' : 'Vision model returned non-JSON output; raw text was preserved.',
   };
 };
+
+const parseDifficulty = (value) => {
+  const difficulty = String(value ?? '').trim().toLowerCase();
+  if (['easy', 'basic'].includes(difficulty)) return 'easy';
+  if (['medium', 'moderate', 'average'].includes(difficulty)) return 'medium';
+  if (['hard', 'difficult', 'challenging'].includes(difficulty)) return 'hard';
+  return '';
+};
+
+const normalizeDifficulty = (value) => parseDifficulty(value);
 
 const normalizeTopicOption = (value) => String(value ?? '')
   .normalize('NFKD')
@@ -157,14 +168,23 @@ const normalizeSuggestedTopic = (value) => {
   return normalizeGeneratedTopicLabel(value);
 };
 
-const sanitizeAnalysisTopicOptions = (value) => {
+const sanitizeAnalysisTopicOptions = (value, metadata = []) => {
+  const difficultyByTopic = new Map();
+  [...(Array.isArray(value) ? value : []), ...(Array.isArray(metadata) ? metadata : [])].forEach((item) => {
+    const label = typeof item === 'string' ? item : item?.topic ?? item?.label ?? '';
+    const topic = normalizeStoredTopicLabel(label);
+    const difficulty = parseDifficulty(typeof item === 'object' ? item?.difficulty : null);
+    const key = normalizeTopicOption(topic);
+    if (topic && difficulty && !difficultyByTopic.has(key)) difficultyByTopic.set(key, difficulty);
+  });
   const seen = new Set();
   return (Array.isArray(value) ? value : []).reduce((topics, value) => {
-    const topic = normalizeStoredTopicLabel(value);
+    const label = typeof value === 'string' ? value : value?.topic ?? value?.label ?? '';
+    const topic = normalizeStoredTopicLabel(label);
     const key = normalizeTopicOption(topic);
     if (topic && key && !seen.has(key)) {
       seen.add(key);
-      topics.push(topic);
+      topics.push({ topic, difficulty: difficultyByTopic.get(key) || '' });
     }
     return topics;
   }, []);
@@ -173,7 +193,10 @@ const sanitizeAnalysisTopicOptions = (value) => {
 const constrainTopicList = (values, allowedTopics) => {
   const topics = Array.isArray(values) ? values : [];
   if (!allowedTopics?.length) return [...new Set(topics.map(normalizeSuggestedTopic).filter(Boolean))];
-  const allowedByKey = new Map(allowedTopics.map((topic) => [normalizeTopicOption(topic), topic]));
+  const allowedByKey = new Map(allowedTopics.map((item) => {
+    const topic = typeof item === 'string' ? item : item?.topic;
+    return [normalizeTopicOption(topic), topic];
+  }));
   return [...new Set(topics
     .map((topic) => allowedByKey.get(normalizeTopicOption(topic)) ?? normalizeSuggestedTopic(topic))
     .filter(Boolean))];
@@ -456,6 +479,7 @@ const normalizeQuestion = ({ item, index, paperId, fallbackSubject }) => {
     subject: String(item?.subject ?? fallbackSubject ?? '').trim(),
     topic,
     topics,
+    difficulty: normalizeDifficulty(item?.difficulty),
     pageNumber,
     marks: Number(item?.marks ?? item?.totalMarks ?? 0) || 0,
     section: String(item?.section ?? '').trim(),
@@ -525,6 +549,39 @@ const buildAnalysisFromBatches = ({ paperId, paper, batches, models, topicOption
     .filter((topic) => topic !== 'Unclassified topic')
     .slice(0, 80);
   const canonicalTopics = topicOptions.length ? constrainTopicList(topics, topicOptions) : topics;
+  const knownDifficultyByTopic = new Map(topicOptions.map((item) => [
+    normalizeTopicOption(typeof item === 'string' ? item : item?.topic),
+    parseDifficulty(typeof item === 'string' ? '' : item?.difficulty),
+  ]).filter(([, difficulty]) => Boolean(difficulty)));
+  const generatedDifficultyByTopic = new Map();
+  const addDifficulty = (label, difficulty) => {
+    const topic = normalizeStoredTopicLabel(label);
+    const parsedDifficulty = parseDifficulty(difficulty);
+    const key = normalizeTopicOption(topic);
+    if (!topic || !parsedDifficulty || !canonicalTopics.some((canonical) => normalizeTopicOption(canonical) === key)) return;
+    const entries = generatedDifficultyByTopic.get(key) ?? [];
+    entries.push(parsedDifficulty);
+    generatedDifficultyByTopic.set(key, entries);
+  };
+  batches.forEach((batch) => {
+    (Array.isArray(batch.topicMetadata) ? batch.topicMetadata : []).forEach((item) => addDifficulty(item?.topic ?? item?.label, item?.difficulty));
+    (Array.isArray(batch.questions) ? batch.questions : []).forEach((question) => {
+      const questionTopics = Array.isArray(question.topics) ? question.topics : [question.topic];
+      questionTopics.forEach((topic) => addDifficulty(topic, question.difficulty));
+    });
+  });
+  const topicMetadata = canonicalTopics.map((topic) => {
+    const key = normalizeTopicOption(topic);
+    const knownDifficulty = knownDifficultyByTopic.get(key);
+    const generatedDifficulties = generatedDifficultyByTopic.get(key) ?? [];
+    const counts = new Map();
+    generatedDifficulties.forEach((difficulty) => counts.set(difficulty, (counts.get(difficulty) ?? 0) + 1));
+    const difficulty = knownDifficulty || [...counts.entries()]
+      .sort((left, right) => right[1] - left[1] || (left[0] === 'medium' ? -1 : right[0] === 'medium' ? 1 : left[0].localeCompare(right[0])))[0]?.[0] || '';
+    return difficulty ? { topic, difficulty } : null;
+  }).filter(Boolean);
+  const topicsWithDifficulty = new Set(topicMetadata.map((item) => normalizeTopicOption(item.topic)));
+  const analyzedTopics = canonicalTopics.filter((topic) => topicsWithDifficulty.has(normalizeTopicOption(topic)));
   const summaries = batches.map((batch) => String(batch.summary ?? '').trim()).filter(Boolean);
   const readabilityNotes = [...new Set(batches.flatMap((batch) => Array.isArray(batch.readabilityNotes) ? batch.readabilityNotes : [])
     .map((note) => String(note).trim())
@@ -542,9 +599,11 @@ const buildAnalysisFromBatches = ({ paperId, paper, batches, models, topicOption
       paperTitle: String(paper.displayName ?? '').trim().slice(0, 160),
       totalMarks: questions.reduce((sum, question) => sum + (Number(question.marks) || 0), 0),
       confidence: questions.length ? 'medium' : 'low',
+      topicMetadata,
     },
     questions,
-    topics: canonicalTopics,
+    topics: analyzedTopics,
+    topicMetadata,
     summary: summaries.join('\n\n').slice(0, 1200),
     readabilityNotes,
     textModel: '',
@@ -555,6 +614,7 @@ const buildAnalysisFromBatches = ({ paperId, paper, batches, models, topicOption
 const buildMinimalBatchPrompt = ({ paperId, paper, pages, topicOptions = [] }) => {
   const requestedShape = {
     topics: ['Topic name'],
+    topicMetadata: [{ topic: 'Topic name', difficulty: 'easy | medium | hard' }],
     questions: [{
       questionReference: '1.1',
       parentQuestion: '1',
@@ -562,6 +622,7 @@ const buildMinimalBatchPrompt = ({ paperId, paper, pages, topicOptions = [] }) =
       marks: 2,
       pageNumber: pages[0]?.pageNumber ?? 1,
       section: 'Section A',
+      difficulty: 'easy | medium | hard',
     }],
     summary: 'Short page metadata summary',
   };
@@ -572,20 +633,21 @@ const buildMinimalBatchPrompt = ({ paperId, paper, pages, topicOptions = [] }) =
     `Upload metadata: subject=${paper.subject}, grade=${paper.grade}, region=${paper.region}, month=${paper.month}, year=${paper.year}, paperNumber=${paper.paperNumber ?? 'Paper 1'}, copySuffix=${paper.copySuffix ?? ''}.`,
     'Return strict JSON only. Do not include markdown, comments, code fences, or explanation outside the JSON.',
     `Return JSON matching this shape: ${JSON.stringify(requestedShape)}`,
-    'For each visible exam question or sub-question, return only these keys in this order: questionReference, parentQuestion, topics, marks, pageNumber, section.',
+    'For each visible exam question or sub-question, return only these keys in this order: questionReference, parentQuestion, topics, marks, pageNumber, section, difficulty. Choose question difficulty as easy, medium, or hard based on the reasoning and steps required to solve that question.',
+    'For every topic in topicMetadata, return its difficulty as easy, medium, or hard. If the supplied topic list includes an existing difficulty, copy that exact value and do not invent or change it. If an existing topic has no difficulty value, estimate one from the analyzed questions and return it. Do not omit topicMetadata for a topic used by a question.',
     'Do not return id, paperId, subject, batchId, instruction, memoSummary, solution, or full question text.',
     ...(topicOptions.length ? [
       'Use the approved Firestore topic list as the source of truth and choose an exact listed label whenever it accurately covers the question.',
       'Do not invent a new label when an approved topic fits. Only if none of the approved topics accurately covers the specific question, suggest a new topic using exactly the Child | Parent structure.',
       'Keep both Child and Parent concise and specific: each side must be a topic name of no more than three words, never a sentence. Split compound concepts into separate labels instead of combining them, for example Fractions | Fraction Concepts, Decimals | Decimal Concepts, and Percentages | Percentage Concepts. Use the narrowest useful parent category; split broad parent areas into distinct, precise parent names instead of reusing one catch-all parent.',
       'Return an empty topics array only when the question topic cannot be determined.',
-      `Approved topic labels for ${paper.subject}, ${paper.grade}: ${JSON.stringify(topicOptions)}`,
+      `Approved topic labels and any saved difficulty values for ${paper.subject}, ${paper.grade}: ${JSON.stringify(topicOptions.map((item) => typeof item === 'string' ? { topic: item, difficulty: null } : { topic: item.topic, difficulty: item.difficulty || null }))}`,
     ] : [
       `The Firestore topic list for ${paper.subject || 'this subject'}, ${paper.grade || 'this grade'} is currently empty. Suggest concise new topics in Child | Parent format for the questions, then those suggestions will be added to this subject and grade's global topic list.`,
       'Both Child and Parent must be specific topic names of no more than three words each, never sentences. Split combined areas into multiple topics and use the narrowest useful parent categories instead of one broad catch-all parent.',
       'If a question covers multiple topics, include up to three separate labels.',
     ]),
-    'For pages with no visible questions, return {"topics":[],"questions":[],"summary":"No visible questions"}.',
+    'For pages with no visible questions, return {"topics":[],"topicMetadata":[],"questions":[],"summary":"No visible questions"}.',
     'If embedded PDF text is provided, use it as a helper but trust the page visual for scanned pages.',
     ...pages.map((page) => page.text ? `${page.label} page ${page.pageNumber} embedded text: ${page.text.slice(0, 1800)}` : `${page.label} page ${page.pageNumber}: no embedded text found.`),
   ].join('\n');
@@ -604,6 +666,33 @@ const normalizeParsedQuestions = ({ parsed, batch, paperId, subject, topicOption
       });
     })
     .filter(Boolean);
+
+const normalizeParsedTopicMetadata = ({ parsed, questions, topicOptions }) => {
+  const rows = new Map();
+  const add = (label, difficulty) => {
+    const sourceTopic = String(label ?? '').trim();
+    const topic = constrainTopicList([sourceTopic], topicOptions)[0];
+    const key = normalizeTopicOption(topic);
+    const parsedDifficulty = parseDifficulty(difficulty);
+    if (!topic || !key || !parsedDifficulty) return;
+    const current = rows.get(key) ?? { topic, difficulties: [] };
+    current.difficulties.push(parsedDifficulty);
+    rows.set(key, current);
+  };
+  (Array.isArray(parsed.topicMetadata) ? parsed.topicMetadata : []).forEach((item) => add(item?.topic ?? item?.label, item?.difficulty));
+  questions.forEach((question) => (question.topics ?? [question.topic]).forEach((topic) => add(topic, question.difficulty)));
+  const knownDifficultyByTopic = new Map(topicOptions.map((item) => [
+    normalizeTopicOption(typeof item === 'string' ? item : item?.topic),
+    parseDifficulty(typeof item === 'string' ? '' : item?.difficulty),
+  ]).filter(([, difficulty]) => Boolean(difficulty)));
+  return [...rows.values()].map(({ topic, difficulties }) => {
+    const counts = new Map();
+    difficulties.forEach((difficulty) => counts.set(difficulty, (counts.get(difficulty) ?? 0) + 1));
+    const difficulty = knownDifficultyByTopic.get(normalizeTopicOption(topic)) || [...counts.entries()]
+      .sort((left, right) => right[1] - left[1] || (left[0] === 'medium' ? -1 : right[0] === 'medium' ? 1 : left[0].localeCompare(right[0])))[0]?.[0] || 'medium';
+    return { topic, difficulty };
+  });
+};
 
 const shouldAnalyze = ({ before, after }) => {
   if (!after || after.analysisStatus !== ANALYZING || !after.paperUrl) return false;
@@ -639,7 +728,8 @@ export const analyzeQuestionPaper = onDocumentWritten(
     let topicOptions = [];
     if (gradeTopicsRef) {
       const gradeTopicsSnapshot = await gradeTopicsRef.get();
-      topicOptions = sanitizeAnalysisTopicOptions(gradeTopicsSnapshot.data()?.topics);
+      const gradeTopics = gradeTopicsSnapshot.data() ?? {};
+      topicOptions = sanitizeAnalysisTopicOptions(gradeTopics.topics, gradeTopics.topicMetadata);
     }
     await runRef.set({
       paperId,
@@ -905,6 +995,10 @@ export const analyzeQuestionPaperBatch = onTaskDispatched(BATCH_TASK_OPTIONS, as
       })();
     const parsed = parseBatchAnalysis(result.text);
     const questions = normalizeParsedQuestions({ parsed, batch, paperId, subject: active.paper.subject, topicOptions });
+    const topicMetadata = normalizeParsedTopicMetadata({ parsed, questions, topicOptions });
+    if (questions.some((question) => !question.difficulty)) {
+      throw new Error(`Question difficulty metadata was incomplete for ${batchId}; retrying before Gemini fallback.`);
+    }
     if (!questions.length && !useGeminiFallback && !isIntentionallyEmptyPage(parsed)) {
       throw new Error(`No question metadata extracted for ${batchId}; retrying before Gemini fallback.`);
     }
@@ -917,6 +1011,7 @@ export const analyzeQuestionPaperBatch = onTaskDispatched(BATCH_TASK_OPTIONS, as
       text: (parsed.rawText || parsed.summary || String(result.text ?? '')).trim().slice(0, 6000),
       questions,
       topics: constrainTopicList(parsed.topics, topicOptions).slice(0, 40),
+      topicMetadata,
       summary: parsed.summary.slice(0, 1200),
       readabilityNotes: parsed.readabilityNotes.map((note) => String(note).trim()).filter(Boolean).slice(0, 10),
       parseWarning: parsed.parseWarning,
@@ -985,7 +1080,9 @@ export const finalizeQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, asyn
       ...analysis.questions.flatMap((question) => question.topics ?? []),
     ];
     if (active.paper.subject && active.paper.grade && analyzedTopicLabels.length) {
-      await mergeGlobalTopicLabels(getDb(), active.paper.subject, active.paper.grade, analyzedTopicLabels);
+      await mergeGlobalTopicLabels(getDb(), active.paper.subject, active.paper.grade, analyzedTopicLabels, {
+        topicMetadata: analysis.topicMetadata,
+      });
     }
     const completedAt = new Date();
     await active.runRef.set({
@@ -1003,6 +1100,7 @@ export const finalizeQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, asyn
       questions: analysis.questions,
       questionCount: analysis.questions.length,
       topics: analysis.topics,
+      topicMetadata: analysis.topicMetadata,
       analysisBatchOutputs: ordered.map((item) => ({ batchNumber: item.batchId, batchPageKey: item.pages.map((page) => `${page.label}:${page.pageNumber}`).join('|'), model: item.model ?? '', pages: item.pages.map(({ label, pageNumber }) => ({ label, pageNumber })), text: item.text ?? '', sourceFingerprint: item.sourceFingerprint })),
       paperDocumentAnalysis: paperOutputs.map((item) => item.text).filter(Boolean).join('\n\n').slice(0, 45000),
       memoDocumentAnalysis: memoOutputs.map((item) => item.text).filter(Boolean).join('\n\n').slice(0, 25000),

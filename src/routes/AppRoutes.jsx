@@ -28,6 +28,7 @@ const TutorLessonsPage = lazyNamed(() => import('../pages/tutor/TutorLessonsPage
 const TutorLessonDetailsPage = lazyNamed(() => import('../pages/tutor/TutorLessonDetailsPage'), 'TutorLessonDetailsPage');
 const AdminDashboardPage = lazyNamed(() => import('../pages/admin/AdminDashboardPage'), 'AdminDashboardPage');
 const AdminUsersPage = lazyNamed(() => import('../pages/admin/AdminUsersPage'), 'AdminUsersPage');
+const AdminUserDetailsPage = lazyNamed(() => import('../pages/admin/AdminUserDetailsPage'), 'AdminUserDetailsPage');
 const AdminPaymentsPage = lazyNamed(() => import('../pages/admin/AdminPaymentsPage'), 'AdminPaymentsPage');
 const AdminSettingsPage = lazyNamed(() => import('../pages/admin/AdminSettingsPage'), 'AdminSettingsPage');
 const AdminDiscountCodesPage = lazyNamed(() => import('../pages/admin/AdminDiscountCodesPage'), 'AdminDiscountCodesPage');
@@ -132,6 +133,7 @@ export const AppRoutes = () => (
 
     <Route element={<ProtectedRoute allowedRoles={[ROLES.ADMIN]} />}>
       <Route path="/admin" element={<AdminDashboardPage />} />
+      <Route path="/admin/users/:userId" element={<AdminUserDetailsPage />} />
       <Route path="/admin/users" element={<AdminUsersPage />} />
       <Route path="/admin/payments" element={<AdminPaymentsPage />} />
       <Route path="/admin/discount-codes" element={<AdminDiscountCodesPage />} />

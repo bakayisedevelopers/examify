@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle2, ChevronDown, LoaderCircle, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
+import { ChevronDown, ListChecks, LoaderCircle, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { AppShell } from '../components/common/AppShell';
 import { LoadingState } from '../components/common/LoadingState';
@@ -7,7 +7,7 @@ import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { useOperationStatus } from '../hooks/useOperationStatus';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
-import { cancelQuestionPaperAnalysis, getActiveSubjectsForStudent, getGlobalTopicList, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
+import { cancelQuestionPaperAnalysis, cleanupGlobalTopicCatalog, getActiveSubjectsForStudent, getGlobalTopicList, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
 import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../utils/tutorSubjects';
 import { buildTopicResolverRows } from '../services/topicResolver';
@@ -135,8 +135,7 @@ const buildBulkRows = ({ files, profile }) => {
   };
 };
 
-const PaperAnalysisStatus = ({ paper, visible = true }) => {
-  if (!visible) return null;
+const PaperAnalysisStatus = ({ paper }) => {
   const status = paper.analysisStatus ?? (paper.availableForGeneration ? 'Analyzed' : 'Analyzing');
   const current = Number(paper.analysisProgressCurrent ?? 0);
   const total = Math.max(1, Number(paper.analysisProgressTotal ?? 1));
@@ -154,18 +153,6 @@ const PaperAnalysisStatus = ({ paper, visible = true }) => {
       <p className="mt-2 text-xs text-slate-500">{paper.analysisProgressMessage ?? (status === 'Analyzed' ? `${paper.questionCount ?? 0} questions indexed` : 'Waiting for analysis')}</p>
     </div>
   );
-};
-
-const MobilePaperAnalysisIndicator = ({ paper }) => {
-  const status = paper.analysisStatus;
-  if (status === 'Failed' || status === 'Cancelled') return null;
-  if (status === 'Analyzed' || (!status && paper.availableForGeneration)) {
-    return <CheckCircle2 className="h-5 w-5 text-emerald-500" aria-label="Analysis complete" title="Analysis complete" />;
-  }
-  if (status === 'Analyzing' || paper.activeAnalysisRunId || paper.queuedAnalysisRunId) {
-    return <LoaderCircle className="h-5 w-5 animate-spin text-orange-500" aria-label="Analysis processing" title="Analysis processing" />;
-  }
-  return null;
 };
 
 const canQueuePaperAnalysis = (paper) => paper?.analysisStatus !== 'Analyzing';
@@ -232,6 +219,7 @@ export const PastExamPapersPage = () => {
   const [topicResolverLoading, setTopicResolverLoading] = useState(false);
   const [topicResolverGeminiLoading, setTopicResolverGeminiLoading] = useState(false);
   const [topicResolverSaveLoading, setTopicResolverSaveLoading] = useState(false);
+  const [topicResolverCleanupLoading, setTopicResolverCleanupLoading] = useState(false);
 
   useEffect(() => {
     if (!topicResolverOpen) return undefined;
@@ -396,6 +384,34 @@ export const PastExamPapersPage = () => {
       setTopicResolverStatus(error.message || 'Could not search Firestore.');
     } finally {
       setTopicResolverLoading(false);
+    }
+  };
+
+  const checkGlobalTopicCatalog = async () => {
+    if (!topicResolverSubject || !topicResolverGrade || topicResolverCleanupLoading) return;
+    setTopicResolverCleanupLoading(true);
+    setTopicResolverStatus('Checking saved global topics against analyzed questions and difficulty metadata…');
+    try {
+      const result = await runOperation({
+        operationName: 'Checking global topic catalog',
+        message: 'Topics without analyzed questions or difficulty metadata will be removed from the global lesson list.',
+        successMessage: 'The global topic catalog check completed.',
+      }, () => cleanupGlobalTopicCatalog({
+        action: 'reconcile-grade',
+        subject: topicResolverSubject,
+        grade: topicResolverGrade,
+      }));
+      const removedKeys = new Set((result.removedTopics ?? []).map((topic) => String(topic).trim().toLocaleLowerCase()));
+      setTopicResolverCatalog((current) => current.filter((topic) => !removedKeys.has(String(topic).trim().toLocaleLowerCase())));
+      const removedCount = result.removedTopics?.length ?? 0;
+      const metadataCount = Number(result.difficultyMetadataUpdatedCount) || 0;
+      setTopicResolverStatus(
+        `${result.checkedTopicCount ?? 0} stored topics checked. ${removedCount} topic${removedCount === 1 ? '' : 's'} removed${metadataCount ? `; difficulty saved for ${metadataCount} legacy topic${metadataCount === 1 ? '' : 's'}` : ''}. Existing student topic history was kept.`,
+      );
+    } catch (error) {
+      setTopicResolverStatus(error.message || 'Could not check the global topic catalog.');
+    } finally {
+      setTopicResolverCleanupLoading(false);
     }
   };
 
@@ -865,9 +881,6 @@ export const PastExamPapersPage = () => {
               <h3 className="break-words text-sm font-semibold text-slate-950">{getPaperTitle(paper)}</h3>
               <span className="mt-2 inline-flex max-w-full truncate rounded-full border border-lime-400/20 bg-lime-400/10 px-2.5 py-1 text-xs font-medium text-lime-300">{getPaperField(paper, 'subject') || 'Subject not listed'}</span>
             </div>
-            <span className="flex h-10 w-8 flex-none items-center justify-center">
-              <MobilePaperAnalysisIndicator paper={paper} />
-            </span>
             <button
               type="button"
               className="btn-secondary h-10 w-10 flex-none p-0"
@@ -887,7 +900,6 @@ export const PastExamPapersPage = () => {
                 {paper.paperUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Paper</Link> : null}
                 {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-sm text-slate-500">No memo uploaded</span>}
               </div>
-              <PaperAnalysisStatus paper={paper} />
             </div>
           ) : null}
         </div>
@@ -900,7 +912,7 @@ export const PastExamPapersPage = () => {
           </div>
           <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.25em] text-slate-600">{paper.subject}</span>
         </div>
-        <PaperAnalysisStatus paper={paper} />
+        {role !== ROLES.STUDENT ? <PaperAnalysisStatus paper={paper} /> : null}
         <div className="mt-4 flex flex-wrap gap-3 text-sm">
           <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Open paper</Link>
           {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Open memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-slate-500">No memo uploaded</span>}
@@ -1180,7 +1192,7 @@ export const PastExamPapersPage = () => {
         </div>
       ) : null}
       {role === ROLES.ADMIN && topicResolverOpen ? (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-y-auto overscroll-contain bg-slate-950/70 p-3 md:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !topicResolverLoading && !topicResolverGeminiLoading && !topicResolverSaveLoading) setTopicResolverOpen(false); }}>
+        <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-y-auto overscroll-contain bg-slate-950/70 p-3 md:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !topicResolverLoading && !topicResolverGeminiLoading && !topicResolverSaveLoading && !topicResolverCleanupLoading) setTopicResolverOpen(false); }}>
           <section className="panel flex h-[calc(100dvh-1.5rem)] max-h-[calc(100dvh-1.5rem)] min-h-0 w-full max-w-7xl flex-col overflow-hidden border-slate-700 bg-slate-900 p-4 md:h-[calc(100dvh-3rem)] md:max-h-[calc(100dvh-3rem)] md:p-6" role="dialog" aria-modal="true" aria-labelledby="topic-resolver-title">
             <div className="flex shrink-0 items-start justify-between gap-4">
               <div className="min-w-0">
@@ -1188,26 +1200,30 @@ export const PastExamPapersPage = () => {
                 <h2 id="topic-resolver-title" className="mt-2 text-xl font-bold text-white md:text-2xl">Topic resolver preview</h2>
                 <p className="mt-2 max-w-3xl text-sm text-slate-300">Review Firestore topic matches and Google Gemini suggestions for one subject and grade. Saving reviewed mappings also copies each distinct resolved Child | Parent label into that grade’s global topic list. Duplicate labels are skipped; analyzed paper records are not changed.</p>
               </div>
-              <button type="button" className="btn-secondary h-10 w-10 flex-none p-0" aria-label="Close topic resolver" title="Close" onClick={() => setTopicResolverOpen(false)} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading}><X className="mx-auto h-4 w-4" /></button>
+              <button type="button" className="btn-secondary h-10 w-10 flex-none p-0" aria-label="Close topic resolver" title="Close" onClick={() => setTopicResolverOpen(false)} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading}><X className="mx-auto h-4 w-4" /></button>
             </div>
 
             <div className="topic-resolver-scroll mt-5 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2" aria-label="Topic resolver results and controls" tabIndex={0}>
-            <div className="grid shrink-0 gap-3 md:grid-cols-[1fr_1fr_auto]">
+            <div className="grid shrink-0 gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_auto_auto]">
               <label className="grid gap-2 text-sm font-semibold text-slate-200">Subject
-                  <select className="input" value={topicResolverSubject} onChange={(event) => { setTopicResolverSubject(event.target.value); setTopicResolverRows([]); setTopicResolverCatalog([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading}>
+                  <select className="input" value={topicResolverSubject} onChange={(event) => { setTopicResolverSubject(event.target.value); setTopicResolverRows([]); setTopicResolverCatalog([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading}>
                   <option value="">Choose subject</option>
                   {SUBJECTS.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
                 </select>
               </label>
               <label className="grid gap-2 text-sm font-semibold text-slate-200">Grade
-                  <select className="input" value={topicResolverGrade} onChange={(event) => { setTopicResolverGrade(event.target.value); setTopicResolverRows([]); setTopicResolverCatalog([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading}>
+                  <select className="input" value={topicResolverGrade} onChange={(event) => { setTopicResolverGrade(event.target.value); setTopicResolverRows([]); setTopicResolverCatalog([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading}>
                   <option value="">Choose grade</option>
                   {SOUTH_AFRICAN_GRADES.filter((grade) => grade !== 'Select Grade').map((grade) => <option key={grade} value={grade}>{grade}</option>)}
                 </select>
               </label>
-              <button type="button" className="btn-primary inline-flex items-center justify-center gap-2 self-end" onClick={searchTopicResolver} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || !topicResolverSubject || !topicResolverGrade}>
+              <button type="button" className="btn-primary inline-flex items-center justify-center gap-2 self-end" onClick={searchTopicResolver} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading || !topicResolverSubject || !topicResolverGrade}>
                 {topicResolverLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
                 Search Firestore
+              </button>
+              <button type="button" className="btn-secondary inline-flex items-center justify-center gap-2 self-end" onClick={checkGlobalTopicCatalog} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading || !topicResolverSubject || !topicResolverGrade}>
+                {topicResolverCleanupLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ListChecks className="h-4 w-4" />}
+                Check global topics
               </button>
             </div>
 

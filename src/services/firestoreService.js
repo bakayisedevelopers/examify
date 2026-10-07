@@ -45,7 +45,7 @@ import {
   mockGuideQuizResults,
 } from '../data/mockData';
 import { DEFAULT_SUBJECT, MAX_EXERCISES_PER_DATE, MAX_QUESTIONS_PER_EXERCISE, WEEKLY_EXERCISE_DAYS } from '../lib/constants';
-import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../utils/tutorSubjects';
+import { getApprovedTutorSubjects, getUserSubjects, mergeBestTutorSubjectMarks, normalizeEligibleSubject } from '../utils/tutorSubjects';
 import { calculateSubscriptionQuote, getEffectiveSubscriptionState, isSubscriptionPaymentConsistent } from '../utils/subscriptionPlans';
 import { normalizeWhatsAppLessonLink } from '../utils/whatsapp';
 import { buildLessonTopicScores } from './lessonPersistence';
@@ -767,6 +767,23 @@ const getLastAssignmentDate = (history = []) =>
 const isAnalyzedQuestionPaper = (paper = {}) =>
   paper.analysisStatus === 'Analyzed' && paper.availableForGeneration !== false && Array.isArray(paper.questions) && paper.questions.length > 0;
 
+const normalizeQuestionDifficulty = (value) => {
+  const difficulty = String(value ?? '').trim().toLowerCase();
+  if (['easy', 'basic'].includes(difficulty)) return 'easy';
+  if (['medium', 'moderate', 'average'].includes(difficulty)) return 'medium';
+  if (['hard', 'difficult', 'challenging'].includes(difficulty)) return 'hard';
+  return '';
+};
+
+const preferredQuestionDifficulty = (values = []) => {
+  const counts = new Map();
+  values.map(normalizeQuestionDifficulty).filter(Boolean).forEach((difficulty) => {
+    counts.set(difficulty, (counts.get(difficulty) ?? 0) + 1);
+  });
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || (left[0] === 'medium' ? -1 : right[0] === 'medium' ? 1 : left[0].localeCompare(right[0])))[0]?.[0] || '';
+};
+
 const summarizePaperQuestions = (paper = {}, completedTopics = []) =>
   (Array.isArray(paper.questions) ? paper.questions : [])
     .filter((question) => questionMatchesTopics(question, completedTopics))
@@ -778,6 +795,7 @@ const summarizePaperQuestions = (paper = {}, completedTopics = []) =>
       topics: Array.isArray(question.topics) ? question.topics : [],
       pageNumber: question.pageNumber ?? question.page,
       marks: question.marks ?? 0,
+      difficulty: String(question.difficulty ?? '').trim().toLowerCase(),
       section: question.section ?? '',
     }))
     .filter((question) => question.questionReference && question.pageNumber);
@@ -872,16 +890,18 @@ const buildAssignmentsFromRuleBasedRecommendations = ({
         paperId: String(entry?.paperId || '').trim(),
         pageNumber: Number(entry?.pageNumber ?? entry?.page) || 1,
         marks: Number(entry?.marks) || 0,
+        difficulty: String(entry?.difficulty ?? '').trim().toLowerCase(),
       }))
       .filter((entry) => entry.questionReference);
-    const topicBreakdown = questions.map(({ topic, questionReference }) => ({ topic, questionReference }));
+    const topicBreakdown = questions.map(({ topic, questionReference, difficulty }) => ({ topic, questionReference, difficulty }));
     const questionReferences = questions.map((entry) => entry.questionReference);
-    const questionLinks = questions.map(({ paperId, pageNumber, questionReference, topic, marks }) => ({
+    const questionLinks = questions.map(({ paperId, pageNumber, questionReference, topic, marks, difficulty }) => ({
       paperId,
       pageNumber,
       questionReference,
       topic,
       marks,
+      difficulty,
     }));
     const sourcePapers = [...new Set(questions.map((question) => question.paperId))]
       .map((paperId) => selectedPapers.find((paper) => paper.id === paperId))
@@ -1961,16 +1981,31 @@ export const getGlobalTopicOptionGroups = async ({ subject, grade, studentIds = 
       ...(Array.isArray(question.topics) ? question.topics : []),
     ]) : []),
   ]).map((topic) => String(topic ?? '').trim()).filter(Boolean);
+  const topicsWithQuestionSources = [...new Set(analyzedTopics.filter((topic) => analyzedPapers.some((paper) =>
+    summarizePaperQuestions(paper, [topic]).length > 0)))];
   let topics = await getGlobalTopicList({ subject, grade });
   if (!topics.length) {
     if (!functions) throw new Error('Firebase Functions are not configured to initialize global topics.');
+    const seedTopicMetadata = topicsWithQuestionSources.flatMap((topic) => {
+      const difficulties = analyzedPapers.flatMap((paper) => {
+        const questionDifficulties = (Array.isArray(paper.questions) ? paper.questions : [])
+          .filter((question) => questionMatchesTopics(question, [topic]))
+          .map((question) => question.difficulty ?? question.metadata?.difficulty);
+        const topicDifficulties = (Array.isArray(paper.topicMetadata) ? paper.topicMetadata : [])
+          .filter((item) => questionMatchesTopics({ topic: item?.topic ?? item?.label }, [topic]))
+          .map((item) => item.difficulty);
+        return [...questionDifficulties, ...topicDifficulties];
+      });
+      const difficulty = preferredQuestionDifficulty(difficulties);
+      return difficulty ? [{ topic, difficulty }] : [];
+    });
     const callable = httpsCallable(functions, 'ensureGlobalTopicGrade');
     const response = await callable({
       subject,
       grade,
       studentIds,
-      seedTopics: [...new Set(analyzedTopics
-        .filter((topic) => topic.split('|').length === 2))],
+      seedTopics: seedTopicMetadata.map((item) => item.topic),
+      seedTopicMetadata,
     });
     topics = Array.isArray(response.data?.topics) ? response.data.topics : [];
   }
@@ -2021,6 +2056,15 @@ export const initializeGlobalTopicCatalog = async () => {
   if (!functions) throw new Error('Firebase Functions are not configured.');
   const callable = httpsCallable(functions, 'migrateGlobalTopicCatalog', { timeout: 540000 });
   const response = await callable({ catalog: getGlobalTopicCatalogSeed() });
+  return response.data;
+};
+
+export const cleanupGlobalTopicCatalog = async ({ action, subject, grade, topics = [] } = {}) => {
+  if (!isFirebaseConfigured) throw new Error('Connect to Firebase to clean the global topic catalog.');
+  if (!functions) throw new Error('Firebase Functions are not configured.');
+  if (!subject || !grade) throw new Error('Choose a subject and grade before checking global topics.');
+  const callable = httpsCallable(functions, 'cleanupGlobalTopicCatalog');
+  const response = await callable({ action, subject, grade, topics });
   return response.data;
 };
 
@@ -2148,43 +2192,122 @@ export const getAdminTutorOptions = async () => {
 
 export const getAdminUserManagementData = async () => {
   if (!isFirebaseConfigured) {
-    const users = demoUsers.filter((user) => user.role === 'student' || user.role === 'tutor' || isTeacherProfile(user));
-    const tutors = users
-      .filter((user) => user.role === 'tutor' || isTeacherProfile(user))
-      .map((user) => ({
-        id: user.uid,
-        name: user.displayName || user.email || 'Tutor',
-        subjects: getApprovedTutorSubjects(user),
-        studentCount: new Set(mockStudentAssignments
-          .filter((assignment) => assignment.active !== false && assignment.tutorId === user.uid)
-          .map((assignment) => assignment.studentId)).size,
-      }));
-
+    const users = demoUsers.map((user) => ({
+      id: user.uid,
+      name: user.displayName || user.name || user.email || 'Name unavailable',
+      email: user.email || '',
+      role: isTeacherProfile(user) && (user.isTeacher === true || user.isTeacher === 'true' || user.role === 'teacher')
+        ? 'teacher'
+        : String(user.role || 'unknown').toLowerCase(),
+      lastLoginAt: user.lastLoginAt || null,
+    })).sort((left, right) => left.name.localeCompare(right.name));
+    const tutorOptions = getApprovedTutorOrTeacherProfiles(demoUsers).map((tutor) => ({
+      ...tutor,
+      subjects: getApprovedTutorSubjects(tutor),
+    })).filter((tutor) => tutor.subjects.length);
     return {
-      students: users.filter((user) => user.role === 'student').map((user) => ({
-        id: user.uid,
-        name: user.displayName || user.email || 'Student',
-        subjects: getUserSubjects(user),
-        subscriptionPlanName: user.subscriptionPlanName || getEffectiveSubscriptionState({
-          subscription: {
-            planId: user.subscriptionPlanId,
-            status: user.subscriptionStatus,
-            billingPeriod: user.subscriptionBillingPeriod,
-            subjectCount: user.subscriptionSubjectCount,
-            renewalDate: user.subscriptionRenewalDate,
-            graceEndsAt: user.graceEndsAt,
-          },
-        }).subscriptionPlanName,
-      })),
-      tutors,
-      tutorOptions: getApprovedTutorOrTeacherProfiles(users).map((tutor) => ({
-        ...tutor,
-        subjects: getApprovedTutorSubjects(tutor),
-      })),
+      users,
+      tutorOptions,
+      initialSubject: tutorOptions[0]?.subjects?.[0] ?? '',
     };
   }
 
   return getAdminWorkspaceData('user-management');
+};
+
+export const getAdminUserDetails = async (userId) => {
+  if (!userId) throw new Error('Choose a user to view.');
+  if (!isFirebaseConfigured) {
+    const profile = demoUsers.find((user) => user.uid === userId);
+    if (!profile) throw new Error('This user account could not be found.');
+    const normalizedRole = isTeacherProfile(profile) && (profile.isTeacher === true || profile.isTeacher === 'true' || profile.role === 'teacher')
+      ? 'teacher'
+      : (profile.role || 'unknown');
+    const commonProfile = {
+      uid: profile.uid,
+      name: profile.displayName || profile.name || profile.fullName || profile.email || 'Name unavailable',
+      email: profile.email || '',
+      role: normalizedRole,
+      phone: profile.whatsappNumber || profile.phoneNumber || profile.phone || '',
+      grade: profile.grade || '',
+      educationLevel: profile.educationLevel || '',
+      school: profile.school || profile.schoolName || '',
+      province: profile.province || '',
+      accountStatus: profile.accountStatus || profile.status || '',
+      lastLoginAt: profile.lastLoginAt || null,
+      createdAt: profile.createdAt || null,
+      updatedAt: profile.updatedAt || null,
+    };
+    if (normalizedRole === 'student') {
+      return {
+        profile: commonProfile,
+        student: { subjects: getUserSubjects(profile).map((subject) => ({ id: subject, subject, status: 'active', grade: profile.grade || '' })) },
+      };
+    }
+    if (normalizedRole === 'tutor' || normalizedRole === 'teacher') {
+      const marks = new Map((profile.tutorSubjectMarks || []).map((item) => [normalizeEligibleSubject(item.subject || item.rawSubject), Number(item.mark)]));
+      const subjects = [...new Set([...getUserSubjects(profile), ...marks.keys()].filter(Boolean))].map((subject) => ({
+        subject,
+        mark: Number.isFinite(marks.get(subject)) ? marks.get(subject) : null,
+        approved: getApprovedTutorSubjects(profile).includes(subject),
+      }));
+      const assignments = mockStudentAssignments.filter((item) => item.active !== false && item.tutorId === userId).map((item) => {
+        const student = demoUsers.find((candidate) => candidate.uid === item.studentId);
+        return { id: `${item.studentId}-${item.subject}`, studentId: item.studentId, studentName: student?.displayName || 'Student', subject: item.subject, grade: student?.grade || '', status: 'active', accessRole: 'primary tutor' };
+      });
+      return { profile: commonProfile, tutor: { subjects, assignments, activePrimaryStudentCount: new Set(assignments.map((item) => item.studentId)).size, activeSharedStudentCount: 0 } };
+    }
+    if (normalizedRole === 'parent') {
+      const students = demoUsers.filter((item) => item.role === 'student' && item.parentId === userId).map((item) => ({ id: item.uid, name: item.displayName || item.name || 'Student', email: item.email || '', grade: item.grade || '' }));
+      return { profile: commonProfile, parent: { students } };
+    }
+    return { profile: commonProfile };
+  }
+  return getAdminWorkspaceData('user-details', { userId });
+};
+
+export const addAdminTutorSubject = async ({ tutorId, subject, mark } = {}) => {
+  const normalizedSubject = normalizeEligibleSubject(subject);
+  const numericMark = Number(mark);
+  if (!tutorId || !normalizedSubject) throw new Error('Choose a tutor and a subject from the subject list.');
+  if (!Number.isFinite(numericMark) || numericMark < 60 || numericMark > 100) {
+    throw new Error('Enter a mark from 60 to 100. Tutor subject approval requires at least 60.');
+  }
+
+  if (!isFirebaseConfigured) {
+    const profile = demoUsers.find((user) => user.uid === tutorId);
+    if (!profile || !(profile.role === 'tutor' || profile.role === 'teacher' || isTeacherProfile(profile))) throw new Error('This account is not a tutor or teacher.');
+    const existingMarks = Array.isArray(profile.tutorSubjectMarks) ? profile.tutorSubjectMarks : [];
+    if (existingMarks.some((item) => normalizeEligibleSubject(item.subject || item.rawSubject) === normalizedSubject)) {
+      throw new Error(`${normalizedSubject} already has a subject mark for this tutor.`);
+    }
+    profile.tutorSubjectMarks = mergeBestTutorSubjectMarks({
+      existingMarks,
+      extractedMarks: [{ subject: normalizedSubject, rawSubject: normalizedSubject, mark: numericMark }],
+      minimumMark: 60,
+    }).map((item) => item.subject === normalizedSubject ? { ...item, source: 'profile' } : item);
+    return { subject: normalizedSubject, mark: numericMark };
+  }
+
+  ensureDb();
+  const tutorRef = doc(db, collections.users, tutorId);
+  return runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(tutorRef);
+    if (!snapshot.exists()) throw new Error('This user account could not be found.');
+    const profile = snapshot.data();
+    if (!(profile.role === 'tutor' || profile.role === 'teacher' || isTeacherProfile(profile))) throw new Error('Subjects can only be added to tutor or teacher accounts.');
+    const existingMarks = Array.isArray(profile.tutorSubjectMarks) ? profile.tutorSubjectMarks : [];
+    if (existingMarks.some((item) => normalizeEligibleSubject(item.subject || item.rawSubject) === normalizedSubject)) {
+      throw new Error(`${normalizedSubject} already has a subject mark for this tutor.`);
+    }
+    const tutorSubjectMarks = mergeBestTutorSubjectMarks({
+      existingMarks,
+      extractedMarks: [{ subject: normalizedSubject, rawSubject: normalizedSubject, mark: numericMark }],
+      minimumMark: 60,
+    }).map((item) => item.subject === normalizedSubject ? { ...item, source: 'profile' } : item);
+    transaction.update(tutorRef, { tutorSubjectMarks, updatedAt: serverTimestamp() });
+    return { subject: normalizedSubject, mark: numericMark };
+  });
 };
 
 export const getAdminSubjectAssignmentData = async (subject = DEFAULT_SUBJECT) => {

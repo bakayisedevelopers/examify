@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
-import { LoaderCircle } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronRight, LoaderCircle, Search } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { LoadingState } from '../../components/common/LoadingState';
@@ -12,43 +13,21 @@ import {
   getAdminSubjectAssignmentData,
 } from '../../services/firestoreService';
 
-const UserList = ({ title, description, users = [], userType, loading }) => (
-  <section className="space-y-4">
-    <SectionHeader eyebrow="Accounts" title={title} description={description} />
-    <div className="space-y-3">
-      {loading ? <LoadingState label={`Loading ${title.toLowerCase()}…`} /> : null}
-      {users.map((user) => (
-        <div key={user.id} className="panel grid gap-4 p-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-          <div className="min-w-0">
-            <p className="text-lg font-semibold text-slate-950">{user.name}</p>
-            <p className="mt-3 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Subjects</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {user.subjects?.length ? user.subjects.map((subject) => (
-                <span key={subject} className="rounded-full bg-lime-100 px-3 py-1 text-sm font-medium text-lime-900">{subject}</span>
-              )) : <span className="text-sm text-slate-500">No subjects selected</span>}
-            </div>
-          </div>
-          <div className="rounded-2xl bg-lime-50 px-4 py-3 sm:min-w-40 sm:text-right">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-lime-800">
-              {userType === 'student' ? 'Subscription plan' : 'Assigned students'}
-            </p>
-            <p className="mt-1 text-lg font-bold text-slate-950">
-              {userType === 'student' ? (user.subscriptionPlanName || 'Free') : (user.studentCount ?? 0)}
-            </p>
-          </div>
-        </div>
-      ))}
-      {!loading && !users.length ? <div className="panel p-5 text-sm text-slate-500">No users are available in this category yet.</div> : null}
-    </div>
-  </section>
-);
+const roleLabel = (role = 'unknown') => String(role).replace(/[-_]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+const formatLastActive = (value) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  return `Last active ${new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)}`;
+};
 
 export const AdminUsersPage = () => {
   const { profile, logout } = useAuth();
   const { runOperation } = useOperationStatus();
-  const [summary, setSummary] = useState({ students: [], tutors: [] });
+  const [summary, setSummary] = useState({ users: [] });
   const [tutorOptions, setTutorOptions] = useState([]);
   const [tutorsLoaded, setTutorsLoaded] = useState(false);
+  const [usersError, setUsersError] = useState('');
+  const [assignmentsOpen, setAssignmentsOpen] = useState(false);
   const [assignmentsLoaded, setAssignmentsLoaded] = useState(false);
   const [assignmentSubject, setAssignmentSubject] = useState('');
   const [selectedSubject, setSelectedSubject] = useState('');
@@ -57,33 +36,40 @@ export const AdminUsersPage = () => {
   const [tutorId, setTutorId] = useState('');
   const [status, setStatus] = useState('');
   const [isAssigning, setIsAssigning] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [roleFilter, setRoleFilter] = useState('all');
   const selectedTutor = tutorOptions.find((tutor) => tutor.uid === tutorId);
+  const availableRoles = useMemo(() => [...new Set(summary.users.map((user) => user.role || 'unknown'))]
+    .sort((left, right) => left.localeCompare(right)), [summary.users]);
+  const visibleUsers = useMemo(() => {
+    const search = searchTerm.trim().toLowerCase();
+    return summary.users.filter((user) => {
+      const matchesRole = roleFilter === 'all' || user.role === roleFilter;
+      const matchesSearch = !search || `${user.name} ${user.email} ${user.role}`.toLowerCase().includes(search);
+      return matchesRole && matchesSearch;
+    });
+  }, [roleFilter, searchTerm, summary.users]);
 
-  useScreenLoadMetrics('Admin users and assignments', 'admin', tutorsLoaded && assignmentsLoaded);
+  useScreenLoadMetrics('Admin users', 'admin', tutorsLoaded);
 
   useEffect(() => {
     getAdminUserManagementData().then((data) => {
-      setSummary({ students: data.students ?? [], tutors: data.tutors ?? [] });
+      setSummary({ users: data.users ?? [] });
       setTutorOptions(data.tutorOptions ?? []);
       setTutorId(data.tutorOptions?.[0]?.uid ?? '');
       const initialSubject = data.initialSubject || data.tutorOptions?.[0]?.subjects?.[0] || '';
       setSelectedSubject(initialSubject);
-      setAssignmentSubject(initialSubject);
-      if (data.initialAssignments) {
-        setAssignmentData(data.initialAssignments);
-        setStudentId(data.initialAssignments.unassignedStudents?.[0]?.uid ?? '');
-        setAssignmentsLoaded(true);
-      }
+      setAssignmentSubject('');
     }).catch((error) => {
       console.error('[Examifying][AdminUsers] load:error', error);
-      setSummary({ students: [], tutors: [] });
+      setSummary({ users: [] });
       setTutorOptions([]);
-      setStatus(error.message || 'Could not load users and their subjects.');
+      setUsersError(error.message || 'Could not load users.');
     }).finally(() => setTutorsLoaded(true));
   }, []);
 
   useEffect(() => {
-    if (!tutorsLoaded) return undefined;
+    if (!tutorsLoaded || !assignmentsOpen) return undefined;
     if (!selectedSubject) {
       setAssignmentData({ students: [], tutors: [], assignments: [], unassignedStudents: [] });
       setAssignmentSubject('');
@@ -110,7 +96,7 @@ export const AdminUsersPage = () => {
       if (active) setAssignmentsLoaded(true);
     });
     return () => { active = false; };
-  }, [assignmentSubject, selectedSubject, tutorsLoaded]);
+  }, [assignmentSubject, assignmentsOpen, selectedSubject, tutorsLoaded]);
 
   const handleTutorChange = (nextTutorId) => {
     const tutor = tutorOptions.find((item) => item.uid === nextTutorId);
@@ -148,19 +134,25 @@ export const AdminUsersPage = () => {
   return (
     <AppShell
       title="User management"
-      subtitle="Manage student, tutor, and teacher accounts and subject assignments."
+      subtitle="Browse all Examifying accounts and open a profile for its role-specific details."
       role="admin"
       user={profile}
       onLogout={logout}
     >
-      <section className="panel space-y-5 p-6">
-        <SectionHeader
-          eyebrow="Assignments"
-          title="Assign tutors by subject"
-          description="Admins control which tutor is linked to each student for a subject. Tutors only see students assigned here."
-        />
+      <section className="panel space-y-5 p-5 sm:p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <SectionHeader
+            eyebrow="Assignments"
+            title="Assign tutors by subject"
+            description="Manage which tutor is linked to each student subject. The assignment data loads when this section is opened."
+          />
+          <button type="button" className="btn-secondary shrink-0" aria-expanded={assignmentsOpen} onClick={() => setAssignmentsOpen((open) => !open)}>
+            {assignmentsOpen ? 'Hide assignments' : 'Manage assignments'}
+            <ChevronDown className={`ml-2 inline h-4 w-4 transition-transform ${assignmentsOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
+          </button>
+        </div>
 
-        <div className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
+        {assignmentsOpen ? <div className="grid gap-4 border-t border-slate-800 pt-5 lg:grid-cols-[0.8fr_1.2fr]">
           <form onSubmit={handleAssign} className="space-y-4">
           <label>
               <span className="label">Tutor / Teacher</span>
@@ -192,7 +184,7 @@ export const AdminUsersPage = () => {
             </label>
 
             {!assignmentData.tutors.some((tutor) => tutor.uid === tutorId) && selectedSubject ? (
-              <p className="text-sm text-amber-700">This tutor is not currently approved for {selectedSubject}.</p>
+              <p className="text-sm text-amber-200">This tutor is not currently approved for {selectedSubject}.</p>
             ) : null}
             <button type="submit" className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-60" disabled={isAssigning || !studentId || !tutorId || !selectedSubject || !assignmentData.tutors.some((tutor) => tutor.uid === tutorId)}>
               {isAssigning ? 'Assigning...' : 'Assign tutor / teacher'}
@@ -217,25 +209,58 @@ export const AdminUsersPage = () => {
               </div>
             ) : null}
           </div>
-        </div>
+        </div> : null}
       </section>
 
-      <div className="grid gap-6 xl:grid-cols-2">
-        <UserList
-          title="Students"
-          description="Review each learner’s selected subjects and current subscription plan."
-          users={summary.students}
-          userType="student"
-          loading={!tutorsLoaded}
-        />
-        <UserList
-          title="Tutors & Teachers"
-          description="Review the subjects each tutor or teacher supports and their assigned student count."
-          users={summary.tutors}
-          userType="tutor"
-          loading={!tutorsLoaded}
-        />
-      </div>
+      <section className="space-y-4">
+        <SectionHeader eyebrow="Accounts" title="All users" description="Students, tutors, teachers, parents, admins, and other registered roles." />
+        <div className="panel space-y-4 p-4 sm:p-5">
+          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_13rem]">
+            <label className="relative block">
+              <span className="sr-only">Search users</span>
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+              <input className="input pl-10" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search by name, email, or role" />
+            </label>
+            <label>
+              <span className="sr-only">Filter by role</span>
+              <select className="input" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
+                <option value="all">All roles</option>
+                {availableRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}
+              </select>
+            </label>
+          </div>
+          {!tutorsLoaded ? <LoadingState label="Loading users…" /> : null}
+          {tutorsLoaded && usersError ? <div className="rounded-2xl border border-rose-400/30 bg-rose-400/10 p-4 text-sm font-medium text-rose-200" role="alert">{usersError}</div> : null}
+          {tutorsLoaded && !usersError && visibleUsers.length ? (
+            <div className="space-y-2" aria-label="All users">
+              {visibleUsers.map((user) => {
+                const lastActive = user.lastLoginAt ? formatLastActive(user.lastLoginAt) : '';
+                return (
+                  <Link
+                    key={user.id}
+                    to={`/admin/users/${encodeURIComponent(user.id)}`}
+                    className="group flex min-h-[4.5rem] items-center justify-between gap-3 rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-slate-100 transition hover:border-lime-400/50 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-300 sm:px-5"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-white sm:text-base">{user.name || 'Name unavailable'}</span>
+                      <span className="mt-1 block truncate text-xs text-slate-400">{lastActive || user.email || 'Account profile'}</span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-2 sm:gap-3">
+                      <span className="rounded-full border border-lime-300/70 bg-lime-100 px-2.5 py-1 text-xs font-semibold text-lime-950 sm:px-3">{roleLabel(user.role)}</span>
+                      <ChevronRight className="h-5 w-5 text-lime-300 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+                    </span>
+                  </Link>
+                );
+              })}
+            </div>
+          ) : null}
+          {tutorsLoaded && !usersError && !visibleUsers.length ? (
+            <div className="rounded-2xl border border-slate-700 bg-slate-900 p-5 text-sm text-slate-300">
+              {summary.users.length ? 'No users match these filters.' : 'No user accounts are available yet.'}
+            </div>
+          ) : null}
+        </div>
+      </section>
     </AppShell>
   );
 };
