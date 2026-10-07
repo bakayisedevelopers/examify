@@ -187,6 +187,22 @@
       ]
     },
     {
+      "collectionGroup": "subjects",
+      "fieldPath": "activeStaffIds",
+      "indexes": [
+        { "arrayConfig": "CONTAINS", "queryScope": "COLLECTION" },
+        { "arrayConfig": "CONTAINS", "queryScope": "COLLECTION_GROUP" }
+      ]
+    },
+    {
+      "collectionGroup": "subjects",
+      "fieldPath": "historicalStaffIds",
+      "indexes": [
+        { "arrayConfig": "CONTAINS", "queryScope": "COLLECTION" },
+        { "arrayConfig": "CONTAINS", "queryScope": "COLLECTION_GROUP" }
+      ]
+    },
+    {
       "collectionGroup": "payments",
       "fieldPath": "authorizationOnly",
       "indexes": [

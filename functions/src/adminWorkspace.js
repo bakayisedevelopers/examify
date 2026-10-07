@@ -175,13 +175,38 @@ const getStudentAdminDetails = async (db, userId, metrics) => {
 
 const getTutorAdminDetails = async (db, userId, profile, metrics) => {
   const collectionGroup = db.collectionGroup('subjects');
-  const [primarySnapshot, activeStaffSnapshot, historicalStaffSnapshot] = await Promise.all([
+  const reads = await Promise.allSettled([
     recordRead(metrics, () => collectionGroup.where('primaryTutorId', '==', userId).get()),
     recordRead(metrics, () => collectionGroup.where('activeStaffIds', 'array-contains', userId).get()),
     recordRead(metrics, () => collectionGroup.where('historicalStaffIds', 'array-contains', userId).get()),
   ]);
+  const failures = reads.filter((read) => read.status === 'rejected');
+  const missingIndexFailures = failures.filter((read) => {
+    const error = read.reason;
+    const code = String(error?.code ?? '');
+    return ['9', 'failed-precondition'].includes(code)
+      && /index/i.test(String(error?.details ?? error?.message ?? ''));
+  });
+  if (failures.some((read) => !missingIndexFailures.includes(read))) throw failures[0].reason;
+
+  let primaryDocuments;
+  let activeStaffDocuments;
+  let historicalStaffDocuments;
+  if (missingIndexFailures.length) {
+    logger.warn('Admin tutor details is using a temporary full subject read while a collection-group staff index builds.', {
+      tutorId: userId,
+      missingIndexCount: missingIndexFailures.length,
+    });
+    const allEpisodesSnapshot = await recordRead(metrics, () => db.collectionGroup('subjects').get());
+    const allEpisodes = allEpisodesSnapshot.docs;
+    primaryDocuments = allEpisodes.filter((document) => document.data().primaryTutorId === userId);
+    activeStaffDocuments = allEpisodes.filter((document) => (document.data().activeStaffIds ?? []).includes(userId));
+    historicalStaffDocuments = allEpisodes.filter((document) => (document.data().historicalStaffIds ?? []).includes(userId));
+  } else {
+    [primaryDocuments, activeStaffDocuments, historicalStaffDocuments] = reads.map((read) => read.value.docs);
+  }
   const documents = new Map();
-  [...primarySnapshot.docs, ...activeStaffSnapshot.docs, ...historicalStaffSnapshot.docs]
+  [...primaryDocuments, ...activeStaffDocuments, ...historicalStaffDocuments]
     .forEach((document) => documents.set(document.ref.path, document));
   const assignments = [...documents.values()].map((document) => {
     const episode = document.data();
