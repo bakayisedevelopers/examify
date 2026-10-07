@@ -1781,14 +1781,20 @@ export const reconcileUnfinalizedPaystackPayments = onSchedule(
 );
 
 export const getAdminAuthorizationRefundIssues = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const startedAt = Date.now();
+  const metrics = { firestoreReadOperations: 0, firestoreDocumentsReturned: 0 };
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError('unauthenticated', 'Sign in as an admin to review authorization refunds.');
   const db = getDb();
+  metrics.firestoreReadOperations += 1;
   const adminSnapshot = await db.collection('users').doc(uid).get();
+  metrics.firestoreDocumentsReturned += adminSnapshot.exists ? 1 : 0;
   if (!adminSnapshot.exists || adminSnapshot.data()?.role !== 'admin') {
     throw new HttpsError('permission-denied', 'Only an admin can review authorization refunds.');
   }
+  metrics.firestoreReadOperations += 1;
   const snapshot = await db.collectionGroup('payments').where('authorizationOnly', '==', true).limit(500).get();
+  metrics.firestoreDocumentsReturned += snapshot.size;
   const now = Date.now();
   const issues = snapshot.docs.map((paymentSnapshot) => {
     const payment = paymentSnapshot.data();
@@ -1809,6 +1815,11 @@ export const getAdminAuthorizationRefundIssues = onCall({ cpu: 'gcf_gen1' }, asy
       updatedAt: payment.updatedAt?.toDate?.().toISOString?.() ?? null,
     };
   }).filter(Boolean);
+  logger.info('Admin authorization refund issues loaded', {
+    durationMs: Date.now() - startedAt,
+    ...metrics,
+    issuesReturned: issues.length,
+  });
   return { issues };
 });
 

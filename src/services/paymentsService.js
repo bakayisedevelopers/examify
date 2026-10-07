@@ -1,6 +1,7 @@
 import { httpsCallable } from 'firebase/functions';
 import { functions, isFirebaseConfigured } from '../firebase/config';
 import { calculateSubscriptionQuote } from '../utils/subscriptionPlans';
+import { trackDataRequest } from './performanceTelemetry';
 
 export const initializeSubscriptionPayment = async (payload) => {
   const quote = calculateSubscriptionQuote(payload);
@@ -53,7 +54,9 @@ export const retryStudentSubscriptionPayment = async (studentId) => {
 
 export const getAdminAuthorizationRefundIssues = async () => {
   if (!isFirebaseConfigured) return { issues: [] };
-  const callable = httpsCallable(functions, 'getAdminAuthorizationRefundIssues');
-  const response = await callable();
-  return response.data;
+  return trackDataRequest('Admin authorization refunds', async () => {
+    const callable = httpsCallable(functions, 'getAdminAuthorizationRefundIssues');
+    const response = await callable();
+    return response.data;
+  });
 };

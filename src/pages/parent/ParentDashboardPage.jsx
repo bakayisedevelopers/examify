@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
+import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { SubscriptionLifecyclePanel } from '../../components/billing/SubscriptionLifecyclePanel';
@@ -64,6 +65,7 @@ export const ParentDashboardPage = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const [students, setStudents] = useState([]);
+  const [studentsLoaded, setStudentsLoaded] = useState(false);
   const [studentIdInput, setStudentIdInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
@@ -75,8 +77,14 @@ export const ParentDashboardPage = () => {
   const lastVerifiedReferenceRef = useRef(null);
   const handledDiscountLinkRef = useRef('');
 
+  useScreenLoadMetrics('Parent dashboard', 'parent', studentsLoaded);
+
   const loadStudents = async () => {
-    if (!profile?.uid) return;
+    if (!profile?.uid) {
+      setStudentsLoaded(true);
+      return [];
+    }
+    setStudentsLoaded(false);
     try {
       const parentStudents = await getStudentsForParent(profile.uid);
       
@@ -112,6 +120,8 @@ export const ParentDashboardPage = () => {
     } catch (err) {
       console.error(err);
       return [];
+    } finally {
+      setStudentsLoaded(true);
     }
   };
 

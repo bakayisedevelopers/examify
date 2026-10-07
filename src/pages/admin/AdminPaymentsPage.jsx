@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
+import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
 import { getAdminAuthorizationRefundIssues } from '../../services/paymentsService';
 
 const formatDate = (value) => {
@@ -14,6 +15,8 @@ export const AdminPaymentsPage = () => {
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  useScreenLoadMetrics('Admin payments', 'admin', !loading);
 
   const loadIssues = useCallback(async () => {
     setLoading(true);
