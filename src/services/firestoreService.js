@@ -2122,6 +2122,47 @@ export const getAdminTutorOptions = async () => {
   return getAdminWorkspaceData('tutors');
 };
 
+export const getAdminUserManagementData = async () => {
+  if (!isFirebaseConfigured) {
+    const users = demoUsers.filter((user) => user.role === 'student' || user.role === 'tutor' || isTeacherProfile(user));
+    const tutors = users
+      .filter((user) => user.role === 'tutor' || isTeacherProfile(user))
+      .map((user) => ({
+        id: user.uid,
+        name: user.displayName || user.email || 'Tutor',
+        subjects: getApprovedTutorSubjects(user),
+        studentCount: new Set(mockStudentAssignments
+          .filter((assignment) => assignment.active !== false && assignment.tutorId === user.uid)
+          .map((assignment) => assignment.studentId)).size,
+      }));
+
+    return {
+      students: users.filter((user) => user.role === 'student').map((user) => ({
+        id: user.uid,
+        name: user.displayName || user.email || 'Student',
+        subjects: getUserSubjects(user),
+        subscriptionPlanName: user.subscriptionPlanName || getEffectiveSubscriptionState({
+          subscription: {
+            planId: user.subscriptionPlanId,
+            status: user.subscriptionStatus,
+            billingPeriod: user.subscriptionBillingPeriod,
+            subjectCount: user.subscriptionSubjectCount,
+            renewalDate: user.subscriptionRenewalDate,
+            graceEndsAt: user.graceEndsAt,
+          },
+        }).subscriptionPlanName,
+      })),
+      tutors,
+      tutorOptions: getApprovedTutorOrTeacherProfiles(users).map((tutor) => ({
+        ...tutor,
+        subjects: getApprovedTutorSubjects(tutor),
+      })),
+    };
+  }
+
+  return getAdminWorkspaceData('user-management');
+};
+
 export const getAdminSubjectAssignmentData = async (subject = DEFAULT_SUBJECT) => {
   if (!isFirebaseConfigured) {
     const students = demoUsers.filter((user) => user.role === 'student' && getUserSubjects(user).includes(subject));
@@ -3600,7 +3641,7 @@ export const getLatestGuideQuizResult = async ({ userId, role }) => {
 
 export const getGuideQuizResultsSummary = async () => {
   if (!isFirebaseConfigured) {
-    const users = demoUsers.filter((user) => user.role === 'student' || user.role === 'tutor');
+    const users = demoUsers.filter((user) => user.role === 'student' || user.role === 'tutor' || isTeacherProfile(user));
     return {
       students: users
         .filter((user) => user.role === 'student')
@@ -3612,10 +3653,20 @@ export const getGuideQuizResultsSummary = async () => {
             id: user.uid,
             name: user.displayName || user.email || 'Student',
             percentage: latest?.percentage ?? null,
+            subjects: getUserSubjects(user),
+            subscriptionPlanName: user.subscriptionPlanName || getEffectiveSubscriptionState({
+              subscription: {
+                planId: user.subscriptionPlanId,
+                status: user.subscriptionStatus,
+                renewalDate: user.subscriptionRenewalDate,
+                graceEndsAt: user.graceEndsAt,
+                subjectCount: user.subscriptionSubjectCount,
+              },
+            }).subscriptionPlanName,
           };
         }),
       tutors: users
-        .filter((user) => user.role === 'tutor')
+        .filter((user) => user.role === 'tutor' || isTeacherProfile(user))
         .map((user) => {
           const latest = [...demoGuideQuizResults]
             .filter((item) => item.userId === user.uid && item.role === 'tutor')
@@ -3624,6 +3675,10 @@ export const getGuideQuizResultsSummary = async () => {
             id: user.uid,
             name: user.displayName || user.email || 'Tutor',
             percentage: latest?.percentage ?? null,
+            subjects: getApprovedTutorSubjects(user),
+            studentCount: new Set(mockStudentAssignments
+              .filter((assignment) => assignment.active !== false && assignment.tutorId === user.uid)
+              .map((assignment) => assignment.studentId)).size,
           };
         }),
     };

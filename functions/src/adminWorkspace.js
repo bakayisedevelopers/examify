@@ -99,6 +99,39 @@ const getGuideQuizSummary = async (db, users) => {
   };
 };
 
+const getUserManagementData = (users, activeEpisodes) => {
+  const subjectsByStudent = new Map();
+  const assignedStudentsByTutor = new Map();
+  activeEpisodes.forEach((episode) => {
+    if (episode.subjectKey) {
+      const subjects = subjectsByStudent.get(episode.studentId) ?? new Set();
+      subjects.add(normalizeSupportedSubject(episode.subjectKey) || episode.subjectKey);
+      subjectsByStudent.set(episode.studentId, subjects);
+    }
+    if (episode.primaryTutorId) {
+      const students = assignedStudentsByTutor.get(episode.primaryTutorId) ?? new Set();
+      students.add(episode.studentId);
+      assignedStudentsByTutor.set(episode.primaryTutorId, students);
+    }
+  });
+
+  return {
+    students: users.filter((profile) => profile.role === 'student').map((profile) => ({
+      id: profile.uid,
+      name: userLabel(profile, 'Student'),
+      subjects: [...(subjectsByStudent.get(profile.uid) ?? [])].sort((left, right) => left.localeCompare(right)),
+      subscriptionPlanName: profile.subscriptionPlanName || 'Free',
+    })),
+    tutors: users.filter((profile) => isTutor(profile)).map((profile) => ({
+      id: profile.uid,
+      name: userLabel(profile, 'Tutor'),
+      subjects: getApprovedSubjects(profile),
+      studentCount: assignedStudentsByTutor.get(profile.uid)?.size ?? 0,
+    })),
+    tutorOptions: getTutorOptions(users),
+  };
+};
+
 const getDashboard = async (db, users, userById, activeEpisodes) => {
   const paymentsSnapshot = await db.collectionGroup('payments').get();
   const payments = paymentsSnapshot.docs
@@ -135,7 +168,7 @@ export const getAdminWorkspaceData = onCall({ cpu: 'gcf_gen1' }, async (request)
   const db = getDb();
   await requireAdmin(request, db);
   const scope = String(request.data?.scope || '');
-  if (!['dashboard', 'tutors', 'assignments', 'guide-results'].includes(scope)) {
+  if (!['dashboard', 'tutors', 'assignments', 'guide-results', 'user-management'].includes(scope)) {
     throw new HttpsError('invalid-argument', 'Choose valid admin workspace data.');
   }
   if (scope === 'guide-results') {
@@ -145,6 +178,7 @@ export const getAdminWorkspaceData = onCall({ cpu: 'gcf_gen1' }, async (request)
   }
 
   const { users, userById, activeEpisodes } = await readUsersAndActiveEpisodes(db);
+  if (scope === 'user-management') return getUserManagementData(users, activeEpisodes);
   if (scope === 'dashboard') return getDashboard(db, users, userById, activeEpisodes);
   if (scope === 'tutors') return getTutorOptions(users);
 

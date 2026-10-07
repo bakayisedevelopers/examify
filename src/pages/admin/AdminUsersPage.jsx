@@ -4,24 +4,32 @@ import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
 import {
   assignStudentToTutor,
-  getAdminTutorOptions,
+  getAdminUserManagementData,
   getAdminSubjectAssignmentData,
-  getGuideQuizResultsSummary,
 } from '../../services/firestoreService';
 
-const ScoreList = ({ title, description, users = [] }) => (
+const UserList = ({ title, description, users = [], userType }) => (
   <section className="space-y-4">
-    <SectionHeader eyebrow="Guide results" title={title} description={description} />
+    <SectionHeader eyebrow="Accounts" title={title} description={description} />
     <div className="space-y-3">
       {users.map((user) => (
-        <div key={user.id} className="panel flex items-center justify-between gap-4 p-5">
-          <div>
+        <div key={user.id} className="panel grid gap-4 p-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+          <div className="min-w-0">
             <p className="text-lg font-semibold text-slate-950">{user.name}</p>
-            <p className="mt-1 text-sm text-slate-500">Latest Examifying Guide mark</p>
+            <p className="mt-3 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Subjects</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {user.subjects?.length ? user.subjects.map((subject) => (
+                <span key={subject} className="rounded-full bg-lime-100 px-3 py-1 text-sm font-medium text-lime-900">{subject}</span>
+              )) : <span className="text-sm text-slate-500">No subjects selected</span>}
+            </div>
           </div>
-          <div className="rounded-2xl bg-slate-50 px-4 py-3 text-right">
-            <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Mark</p>
-            <p className="mt-1 text-2xl font-bold text-slate-950">{user.percentage ?? '—'}{user.percentage !== null ? '%' : ''}</p>
+          <div className="rounded-2xl bg-lime-50 px-4 py-3 sm:min-w-40 sm:text-right">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-lime-800">
+              {userType === 'student' ? 'Subscription plan' : 'Assigned students'}
+            </p>
+            <p className="mt-1 text-lg font-bold text-slate-950">
+              {userType === 'student' ? (user.subscriptionPlanName || 'Free') : (user.studentCount ?? 0)}
+            </p>
           </div>
         </div>
       ))}
@@ -44,20 +52,16 @@ export const AdminUsersPage = () => {
   const selectedTutor = tutorOptions.find((tutor) => tutor.uid === tutorId);
 
   useEffect(() => {
-    getGuideQuizResultsSummary().then(setSummary).catch((error) => {
+    getAdminUserManagementData().then((data) => {
+      setSummary({ students: data.students ?? [], tutors: data.tutors ?? [] });
+      setTutorOptions(data.tutorOptions ?? []);
+      setTutorId(data.tutorOptions?.[0]?.uid ?? '');
+      setSelectedSubject(data.tutorOptions?.[0]?.subjects?.[0] ?? '');
+    }).catch((error) => {
       console.error('[Examifying][AdminUsers] load:error', error);
       setSummary({ students: [], tutors: [] });
-    });
-  }, []);
-
-  useEffect(() => {
-    getAdminTutorOptions().then((tutors) => {
-      setTutorOptions(tutors);
-      setTutorId(tutors[0]?.uid ?? '');
-      setSelectedSubject(tutors[0]?.subjects[0] ?? '');
-    }).catch((error) => {
-      console.error('[Examifying][AdminUsers] tutors:error', error);
-      setStatus(error.message || 'Could not load tutors and their subjects.');
+      setTutorOptions([]);
+      setStatus(error.message || 'Could not load users and their subjects.');
     }).finally(() => setTutorsLoaded(true));
   }, []);
 
@@ -107,7 +111,7 @@ export const AdminUsersPage = () => {
   return (
     <AppShell
       title="User management"
-      subtitle="Review tutor and student guide-test performance so you can confirm who understands the platform workflow."
+      subtitle="Manage student, tutor, and teacher accounts and subject assignments."
       role="admin"
       user={profile}
       onLogout={logout}
@@ -179,15 +183,17 @@ export const AdminUsersPage = () => {
       </section>
 
       <div className="grid gap-6 xl:grid-cols-2">
-        <ScoreList
+        <UserList
           title="Students"
-          description="Each learner appears with the latest percentage from the student Examifying Guide test."
+          description="Review each learner’s selected subjects and current subscription plan."
           users={summary.students}
+          userType="student"
         />
-        <ScoreList
+        <UserList
           title="Tutors & Teachers"
-          description="Each tutor or teacher appears with the latest percentage from the guide test."
+          description="Review the subjects each tutor or teacher supports and their assigned student count."
           users={summary.tutors}
+          userType="tutor"
         />
       </div>
     </AppShell>
