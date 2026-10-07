@@ -5,16 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/create-role-sites.mjs",
     "preview": "vite preview",
     "lint": "eslint .",
-    "functions:serve": "XDG_CONFIG_HOME=/tmp/examifying-firebase-config firebase emulators:start --only functions",
+    "functions:serve": "firebase emulators:start --only functions",
     "functions:lint": "cd functions && npm run lint",
-    "deploy": "XDG_CONFIG_HOME=/tmp/examifying-firebase-config firebase deploy --only hosting,functions",
-    "deploy:hosting": "XDG_CONFIG_HOME=/tmp/examifying-firebase-config firebase deploy --only hosting",
-    "deploy:functions": "XDG_CONFIG_HOME=/tmp/examifying-firebase-config firebase deploy --only functions"
+    "deploy": "firebase deploy --only hosting,functions",
+    "deploy:hosting": "firebase deploy --only hosting",
+    "deploy:functions": "firebase deploy --only functions"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.104.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
     "firebase": "^11.6.0",

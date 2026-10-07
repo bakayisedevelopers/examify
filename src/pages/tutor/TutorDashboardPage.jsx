@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
+import { LoadingState } from '../../components/common/LoadingState';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
 import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
@@ -9,6 +10,7 @@ import { getQuestionPapers, getStudentSubscriptionState, getTutorAssignedStudent
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 import { getApprovedTutorSubjects, normalizeEligibleSubject } from '../../utils/tutorSubjects';
 import { useEffectiveRole } from '../../utils/effectiveRole';
+import { warmNavigationRoute } from '../../routes/preloadNavigationRoute';
 
 
 const TutorReadinessPanel = ({ rows }) => {
@@ -148,6 +150,7 @@ export const TutorDashboardPage = () => {
       {status ? <div className="panel p-4 text-sm text-slate-700">{status}</div> : null}
       <SectionHeader eyebrow="Students" title="Assigned learners" description="Open a learner to switch between the subjects available to you." />
       <div className="space-y-4">
+        {readinessLoading ? <LoadingState label="Loading assigned students and subject readiness…" /> : null}
         {studentList.map((student) => {
           const firstSubject = student.subjects[0] ?? student.subject ?? DEFAULT_SUBJECT;
           return (
@@ -155,6 +158,9 @@ export const TutorDashboardPage = () => {
               key={student.studentId}
               type="button"
               onClick={() => navigate(`${basePath}/students/${student.studentId}?subject=${encodeURIComponent(firstSubject)}`)}
+              onMouseEnter={() => warmNavigationRoute(`${basePath}/students/${student.studentId}`)}
+              onFocus={() => warmNavigationRoute(`${basePath}/students/${student.studentId}`)}
+              onPointerDown={() => warmNavigationRoute(`${basePath}/students/${student.studentId}`)}
               className="panel block w-full p-5 text-left transition hover:shadow-lg"
             >
               <div className="flex items-center justify-between gap-3">
@@ -170,7 +176,7 @@ export const TutorDashboardPage = () => {
             </button>
           );
         })}
-        {approvedSubjects.length && !studentList.length ? <div className="panel p-5 text-sm text-slate-500">No students are assigned to you yet.</div> : null}
+        {!readinessLoading && !status && approvedSubjects.length && !studentList.length ? <div className="panel p-5 text-sm text-slate-500">No students are assigned to you yet.</div> : null}
       </div>
       {!readinessLoading ? <TutorReadinessPanel rows={readinessRows} /> : null}
     </AppShell>

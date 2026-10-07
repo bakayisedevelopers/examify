@@ -7,6 +7,7 @@ import { guideContentByRole } from '../data/guideContent';
 import { useAuth } from '../hooks/useAuth';
 import { getLatestGuideQuizResult, saveGuideQuizResult } from '../services/firestoreService';
 import { useEffectiveRole } from '../utils/effectiveRole';
+import { useOperationStatus } from '../hooks/useOperationStatus';
 
 const routeBaseByRole = {
   student: '/student',
@@ -16,6 +17,7 @@ const routeBaseByRole = {
 
 export const GuidePage = ({ role: propRole }) => {
   const { profile, logout } = useAuth();
+  const { runOperation } = useOperationStatus();
   const { role: userRole } = useEffectiveRole();
   const role = propRole || userRole;
   const guideRoleKey = role === 'teacher' ? 'teacher' : (role === 'tutor' ? 'tutor' : 'student');
@@ -72,7 +74,7 @@ export const GuidePage = ({ role: propRole }) => {
         percentage,
       };
 
-      const result = await saveGuideQuizResult(payload);
+      const result = await runOperation({ operationName: 'Saving guide results', successMessage: 'Your guide result has been saved.' }, () => saveGuideQuizResult(payload));
       setLatestResult(result);
       setStatus(`Guide test saved successfully. Your latest mark is ${percentage}%.`);
     } catch (error) {

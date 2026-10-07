@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, ChevronDown, LoaderCircle, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { AppShell } from '../components/common/AppShell';
+import { LoadingState } from '../components/common/LoadingState';
 import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
+import { useOperationStatus } from '../hooks/useOperationStatus';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
 import { cancelQuestionPaperAnalysis, getActiveSubjectsForStudent, getGlobalTopicList, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
@@ -197,7 +199,9 @@ const getPaperSearchText = (paper) => [
 
 export const PastExamPapersPage = () => {
   const { profile, user, logout } = useAuth();
+  const { runOperation } = useOperationStatus();
   const [papers, setPapers] = useState([]);
+  const [isLoadingPapers, setIsLoadingPapers] = useState(true);
   const [status, setStatus] = useState('');
   const [uploadTab, setUploadTab] = useState('single');
   const [singleForm, setSingleForm] = useState(defaultPaperForm(profile));
@@ -266,8 +270,18 @@ export const PastExamPapersPage = () => {
     };
 
   useEffect(() => {
-    const unsubscribe = subscribeQuestionPapers(setPapers);
-    return unsubscribe;
+    let active = true;
+    setIsLoadingPapers(true);
+    const unsubscribe = subscribeQuestionPapers((rows) => {
+      if (!active) return;
+      setPapers(rows);
+      setIsLoadingPapers(false);
+    }, (error) => {
+      if (!active) return;
+      setStatus(error.message || 'Could not load past papers.');
+      setIsLoadingPapers(false);
+    });
+    return () => { active = false; unsubscribe(); };
   }, []);
 
   const visiblePapers = useMemo(() => {
@@ -362,7 +376,7 @@ export const PastExamPapersPage = () => {
     setTopicResolverMethods({});
     setTopicResolverReviewed(false);
     try {
-      const migration = await initializeGlobalTopicCatalog();
+      const migration = await runOperation({ operationName: 'Preparing topic catalog', successMessage: 'The topic catalog is ready.' }, () => initializeGlobalTopicCatalog());
       const [records, savedMappings, catalogTopics] = await Promise.all([
         getTopicResolverSourceRecords({ subject: topicResolverSubject, grade: topicResolverGrade }),
         getTopicResolverMappings({ subject: topicResolverSubject, grade: topicResolverGrade }),
@@ -406,11 +420,11 @@ export const PastExamPapersPage = () => {
     try {
       for (let index = 0; index < unresolved.length; index += 25) {
         const rows = unresolved.slice(index, index + 25);
-        const result = await resolveTopicsWithGemini({
+        const result = await runOperation({ operationName: 'Matching topic names', successMessage: 'Topic matching finished.' }, () => resolveTopicsWithGemini({
           subject: topicResolverSubject,
           grade: topicResolverGrade,
           topics: rows.map((row) => row.sourceTopic),
-        });
+        }));
         const resolved = Array.isArray(result?.topics) ? result.topics : [];
         const resolutionTypes = Array.isArray(result?.resolutionTypes) ? result.resolutionTypes : [];
         setTopicResolverCorrections((current) => {
@@ -449,12 +463,12 @@ export const PastExamPapersPage = () => {
         canonicalTopic: currentResolverValue(row),
         resolutionType: ['gemini-suggested', 'saved-suggestion'].includes(topicResolverMethods[row.id] ?? row.matchType) ? 'suggested' : 'canonical',
       }));
-      const result = await saveTopicResolverMappings({
+      const result = await runOperation({ operationName: 'Saving reviewed topic mappings', successMessage: 'The reviewed topic mappings were saved.' }, () => saveTopicResolverMappings({
         subject: topicResolverSubject,
         grade: topicResolverGrade,
         rows: mappings,
         adminId: user?.uid,
-      });
+      }));
       const savedBySource = new Map(mappings.map((mapping) => [mapping.sourceTopic, mapping]));
       setTopicResolverRows((current) => current.map((row) => {
         const saved = savedBySource.get(row.sourceTopic);
@@ -540,16 +554,25 @@ export const PastExamPapersPage = () => {
       analysisBatchOutputs: [],
     };
     setStatus(`Adding ${paper.displayName || paper.paperFileName || 'paper'} to the analysis queue...`);
-    await updateQuestionPaper(paper.id, patch);
-    setPapers((current) => current.map((item) => item.id === paper.id ? { ...item, ...patch } : item));
-    setStatus('Analysis retry queued. It will start immediately if the queue is idle; otherwise it will wait for earlier papers to finish.');
+    try {
+      await runOperation({ operationName: 'Queuing paper analysis', successMessage: 'The paper was added to the analysis queue.' }, () => updateQuestionPaper(paper.id, patch));
+      setPapers((current) => current.map((item) => item.id === paper.id ? { ...item, ...patch } : item));
+      setStatus('Analysis retry queued. It will start immediately if the queue is idle; otherwise it will wait for earlier papers to finish.');
+    } catch (error) {
+      setStatus(error.message || 'Could not queue paper analysis.');
+    }
   };
 
   const stopPaperAnalysis = async (paper) => {
     if (!paper?.id) return;
     if (!window.confirm(`Stop the analysis for ${paper.displayName || paper.paperFileName || 'this paper'}? Any queued work for this paper will be cancelled.`)) return;
     setStatus(`Stopping analysis for ${paper.displayName || paper.paperFileName || 'paper'}...`);
-    await cancelQuestionPaperAnalysis(paper.id);
+    try {
+      await runOperation({ operationName: 'Stopping paper analysis', successMessage: 'Paper analysis was stopped.' }, () => cancelQuestionPaperAnalysis(paper.id));
+    } catch (error) {
+      setStatus(error.message || 'Could not stop paper analysis.');
+      return;
+    }
     const patch = {
       analysisStatus: 'Cancelled',
       analysisStage: 'Cancelled',
@@ -567,6 +590,7 @@ export const PastExamPapersPage = () => {
     event.preventDefault();
     if (!editingPaper || !editForm) return;
     try {
+      await runOperation({ operationName: 'Updating paper and uploaded documents', successMessage: 'The paper was updated successfully.' }, async () => {
       setStatus(`Updating ${editingPaper.displayName || editingPaper.paperFileName || 'paper'}...`);
       const uploads = editForm.paperFile || editForm.memoFile
         ? await uploadQuestionPaperDocuments({
@@ -624,6 +648,7 @@ export const PastExamPapersPage = () => {
       setPapers((current) => current.map((paper) => paper.id === editingPaper.id ? { ...paper, ...patch } : paper));
       setStatus(needsAnalysis ? 'Paper file updated. Analysis is running again in the background.' : 'Paper metadata updated without re-analysis.');
       closeEditPaper();
+      });
     } catch (error) {
       setStatus(error.message || 'Could not update paper.');
     }
@@ -669,7 +694,7 @@ export const PastExamPapersPage = () => {
       return;
     }
     try {
-      const saved = await saveReviewedPaper({ row: singleForm, index: 0, total: 1 });
+      const saved = await runOperation({ operationName: 'Uploading and saving question paper', successMessage: 'The question paper was saved and queued for analysis.' }, () => saveReviewedPaper({ row: singleForm, index: 0, total: 1 }));
       setPapers((current) => [saved, ...current.filter((paper) => paper.id !== saved.id)]);
       setStatus('Past paper saved. Analysis is running in the background.');
       setSingleForm(defaultPaperForm(profile));
@@ -816,14 +841,16 @@ export const PastExamPapersPage = () => {
       return;
     }
     try {
-      const saved = [];
-      for (let index = 0; index < bulkRows.length; index += 1) {
-        saved.push(await saveReviewedPaper({ row: bulkRows[index], index, total: bulkRows.length }));
-      }
-      setPapers((current) => [...saved, ...current.filter((paper) => !saved.some((item) => item.id === paper.id))]);
-      setBulkRows([]);
-      setBulkMemoFiles([]);
-      setStatus(`${saved.length} paper${saved.length === 1 ? '' : 's'} saved. Papers will be analyzed one at a time in upload order.`);
+      await runOperation({ operationName: `Uploading ${bulkRows.length} question papers`, successMessage: 'The question papers were saved and queued for analysis.' }, async () => {
+        const saved = [];
+        for (let index = 0; index < bulkRows.length; index += 1) {
+          saved.push(await saveReviewedPaper({ row: bulkRows[index], index, total: bulkRows.length }));
+        }
+        setPapers((current) => [...saved, ...current.filter((paper) => !saved.some((item) => item.id === paper.id))]);
+        setBulkRows([]);
+        setBulkMemoFiles([]);
+        setStatus(`${saved.length} paper${saved.length === 1 ? '' : 's'} saved. Papers will be analyzed one at a time in upload order.`);
+      });
     } catch (error) {
       setStatus(error.message || 'Bulk upload failed.');
     }
@@ -1017,7 +1044,7 @@ export const PastExamPapersPage = () => {
                       {sectionYears.map((year) => <option key={year} value={year}>{year}</option>)}
                     </select>
                   </div>
-                  {filteredSectionPapers.length ? (
+                  {isLoadingPapers ? <LoadingState label={`Loading ${title.toLowerCase()} papers…`} /> : filteredSectionPapers.length ? (
                     <div className="space-y-4">{filteredSectionPapers.map(renderPaperCard)}</div>
                   ) : (
                     <div className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
@@ -1032,7 +1059,8 @@ export const PastExamPapersPage = () => {
       ) : (
         <div className="space-y-4">
           {visiblePapers.map(renderPaperCard)}
-          {!visiblePapers.length ? <div className="panel p-5 text-sm text-slate-500">No papers match these filters.</div> : null}
+          {isLoadingPapers ? <LoadingState label="Loading past papers…" /> : null}
+          {!isLoadingPapers && !status && !visiblePapers.length ? <div className="panel p-5 text-sm text-slate-500">No papers match these filters.</div> : null}
         </div>
       )}
 

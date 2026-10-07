@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react';
 import { AppShell } from '../components/common/AppShell';
 import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
+import { useOperationStatus } from '../hooks/useOperationStatus';
 import { ROLES } from '../lib/constants';
 import { getQuestionPaperById, subscribeQuestionPaperAnalysisActivity, updateQuestionPaper } from '../services/firestoreService';
 
@@ -25,7 +26,11 @@ const StudentFullPagePdf = ({ paper, documentUrl, documentTitle, pageNumber, que
         </div>
       </header>
       {status || !viewerUrl ? (
-        <div role="status" className="grid min-h-0 flex-1 place-items-center p-6 text-center text-sm text-white">{status || `This ${documentTitle?.toLowerCase() || 'document'} is not available.`}</div>
+        <div role="status" className="grid min-h-0 flex-1 place-items-center p-6 text-center text-sm text-white">
+          {status === 'Loading paper...'
+            ? <span className="inline-flex items-center gap-2"><LoaderCircle className="h-4 w-4 animate-spin text-lime-400" aria-hidden="true" />Loading paper…</span>
+            : status || `This ${documentTitle?.toLowerCase() || 'document'} is not available.`}
+        </div>
       ) : (
         <iframe title={title} src={viewerUrl} className="min-h-0 flex-1 border-0 bg-slate-900" />
       )}
@@ -157,7 +162,7 @@ const ExtractedMetadataViewer = ({ paper, outputs }) => {
   );
 };
 
-const AnalysisReviewPanel = ({ paper, activity, onRetry, onOpenPage }) => {
+const AnalysisReviewPanel = ({ paper, activity, activityLoading, activityError, onRetry, onOpenPage }) => {
   const outputs = Array.isArray(paper.analysisBatchOutputs) ? paper.analysisBatchOutputs : [];
   const questions = Array.isArray(paper.questions) ? paper.questions : [];
 
@@ -178,7 +183,7 @@ const AnalysisReviewPanel = ({ paper, activity, onRetry, onOpenPage }) => {
         <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Memo pages</p><p className="mt-2 font-semibold text-slate-950">{paper.memoPageCount ?? 0}</p></div>
       </div>
       {paper.analysisError ? <div className="rounded-2xl bg-rose-50 p-4 text-sm font-medium text-rose-700">{paper.analysisError}</div> : null}
-      <LiveModelActivity paper={paper} activity={activity} />
+      <LiveModelActivity paper={paper} activity={activity} loading={activityLoading} error={activityError} />
       <div>
         <h3 className="font-semibold text-slate-950">Summary</h3>
         <p className="mt-2 text-sm leading-6 text-slate-600">{paper.paperAnalysisSummary || 'No summary stored yet.'}</p>
@@ -219,7 +224,7 @@ const AnalysisReviewPanel = ({ paper, activity, onRetry, onOpenPage }) => {
   );
 };
 
-const LiveModelActivity = ({ paper, activity }) => {
+const LiveModelActivity = ({ paper, activity, loading = false, error = '' }) => {
   const activeRunId = paper.activeAnalysisRunId || paper.queuedAnalysisRunId;
   const batches = activity
     .filter((batch) => !activeRunId || batch.runId === activeRunId)
@@ -257,7 +262,7 @@ const LiveModelActivity = ({ paper, activity }) => {
                   </tr>
                 );
               })}
-              {!batches.length ? <tr><td colSpan="5" className="px-4 py-5 text-center text-slate-500">Waiting for page batches to appear.</td></tr> : null}
+              {!batches.length ? <tr><td colSpan="5" className="px-4 py-5 text-center text-slate-500">{loading ? <span className="inline-flex items-center gap-2"><LoaderCircle className="h-4 w-4 animate-spin text-lime-400" aria-hidden="true" />Loading page batches…</span> : error || 'Waiting for page batches to appear.'}</td></tr> : null}
             </tbody>
           </table>
         </div>
@@ -271,8 +276,11 @@ export const PaperReaderPage = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { profile, logout } = useAuth();
+  const { runOperation } = useOperationStatus();
   const [paper, setPaper] = useState(null);
   const [analysisActivity, setAnalysisActivity] = useState([]);
+  const [analysisActivityLoading, setAnalysisActivityLoading] = useState(true);
+  const [analysisActivityError, setAnalysisActivityError] = useState('');
   const [status, setStatus] = useState('Loading paper...');
   const [actionStatus, setActionStatus] = useState('');
   const role = profile?.role ?? 'student';
@@ -301,7 +309,17 @@ export const PaperReaderPage = () => {
     return () => { active = false; };
   }, [paperId]);
 
-  useEffect(() => subscribeQuestionPaperAnalysisActivity(paperId, setAnalysisActivity), [paperId]);
+  useEffect(() => {
+    setAnalysisActivityLoading(true);
+    setAnalysisActivityError('');
+    return subscribeQuestionPaperAnalysisActivity(paperId, (activity) => {
+      setAnalysisActivity(activity);
+      setAnalysisActivityLoading(false);
+    }, (error) => {
+      setAnalysisActivityError(error?.message || 'Live analysis status could not be loaded.');
+      setAnalysisActivityLoading(false);
+    });
+  }, [paperId]);
 
   const pdfUrl = useMemo(() => {
     if (!documentUrl) return '';
@@ -326,9 +344,11 @@ export const PaperReaderPage = () => {
     if (!paper) return;
     try {
       setActionStatus('Adding analysis retry to the queue...');
-      await retryPaperAnalysis(paper);
-      const refreshed = await getQuestionPaperById(paper.id);
-      setPaper(refreshed);
+      await runOperation({ operationName: 'Retrying question paper analysis', successMessage: 'The paper was queued for analysis.' }, async () => {
+        await retryPaperAnalysis(paper);
+        const refreshed = await getQuestionPaperById(paper.id);
+        setPaper(refreshed);
+      });
       setActionStatus('Analysis retry queued. It will start immediately when no other paper is being analyzed.');
     } catch (error) {
       setActionStatus(error.message || 'Could not retry analysis.');
@@ -360,7 +380,11 @@ export const PaperReaderPage = () => {
           </div>
         </div>
         {status ? (
-          <div className="flex flex-1 items-center justify-center rounded-2xl bg-slate-50 p-8 text-center text-sm text-slate-500">{status}</div>
+          <div className="flex flex-1 items-center justify-center rounded-2xl bg-slate-50 p-8 text-center text-sm text-slate-500">
+            {status === 'Loading paper...'
+              ? <span className="inline-flex items-center gap-2"><LoaderCircle className="h-4 w-4 animate-spin text-lime-500" aria-hidden="true" />Loading paper…</span>
+              : status}
+          </div>
         ) : (
           <iframe
             title="Question paper reader"
@@ -370,7 +394,7 @@ export const PaperReaderPage = () => {
         )}
       </div>
       {actionStatus ? <div className="panel p-4 text-sm text-slate-600">{actionStatus}</div> : null}
-      {paper && canReviewAnalysis ? <AnalysisReviewPanel paper={paper} activity={analysisActivity} onRetry={handleRetry} onOpenPage={updatePage} /> : null}
+      {paper && canReviewAnalysis ? <AnalysisReviewPanel paper={paper} activity={analysisActivity} activityLoading={analysisActivityLoading} activityError={analysisActivityError} onRetry={handleRetry} onOpenPage={updatePage} /> : null}
     </AppShell>
   );
 };

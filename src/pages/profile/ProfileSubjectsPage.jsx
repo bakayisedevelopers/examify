@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
+import { LoadingState } from '../../components/common/LoadingState';
 import { useAuth } from '../../hooks/useAuth';
 import { ROLES } from '../../lib/constants';
 import { addStudentSubjects, getActiveSubjectsForStudent, getGlobalSubjects, getStudentSubjectHistoryOptions, getTutorMarksDocuments, removeUserSubject, updateUserSubjectAvailability } from '../../services/firestoreService';
 import { deleteTutorMarksDocument, retryTutorMarksDocument, uploadTutorMarksDocument } from '../../services/storageService';
 import { getApprovedTutorSubjects } from '../../utils/tutorSubjects';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { getTutorWhatsAppSettings, saveTutorWhatsAppGroupLink } from '../../services/whatsappService';
 import { normalizeWhatsAppGroupInviteLink } from '../../utils/whatsapp';
 
@@ -24,6 +26,7 @@ const formatDate = (value) => {
 
 export const ProfileSubjectsPage = ({ role }) => {
   const { profile, logout, refreshProfile } = useAuth();
+  const { runOperation } = useOperationStatus();
   const isTutorRole = role === ROLES.TUTOR || role === 'teacher';
   const subscriptionState = useStudentSubscriptionState(role === ROLES.STUDENT ? profile : null);
   const [selectedSubjects, setSelectedSubjects] = useState([]);
@@ -33,11 +36,14 @@ export const ProfileSubjectsPage = ({ role }) => {
   const [status, setStatus] = useState('');
   const [saving, setSaving] = useState(false);
   const [documents, setDocuments] = useState([]);
+  const [documentsLoading, setDocumentsLoading] = useState(isTutorRole);
   const [activeDocumentId, setActiveDocumentId] = useState('');
   const [activeStudentSubjects, setActiveStudentSubjects] = useState([]);
+  const [activeStudentSubjectsLoading, setActiveStudentSubjectsLoading] = useState(role === ROLES.STUDENT);
   const [globalSubjects, setGlobalSubjects] = useState([]);
   const [globalSubjectsLoading, setGlobalSubjectsLoading] = useState(role === ROLES.STUDENT);
   const [historyCandidates, setHistoryCandidates] = useState([]);
+  const [historyCandidatesLoading, setHistoryCandidatesLoading] = useState(false);
   const [selectedHistoryIds, setSelectedHistoryIds] = useState([]);
   const [historyCapacity, setHistoryCapacity] = useState(0);
   const [whatsappGroupLinks, setWhatsAppGroupLinks] = useState({});
@@ -45,8 +51,13 @@ export const ProfileSubjectsPage = ({ role }) => {
   const [whatsappSettingsLoading, setWhatsAppSettingsLoading] = useState(isTutorRole);
   const tutorUploadFormRef = useRef(null);
   const loadStudentSubjects = useCallback(async () => {
-    if (role !== ROLES.STUDENT || !profile?.uid) return;
-    setActiveStudentSubjects(await getActiveSubjectsForStudent(profile.uid));
+    if (role !== ROLES.STUDENT || !profile?.uid) { setActiveStudentSubjectsLoading(false); return; }
+    setActiveStudentSubjectsLoading(true);
+    try {
+      setActiveStudentSubjects(await getActiveSubjectsForStudent(profile.uid));
+    } finally {
+      setActiveStudentSubjectsLoading(false);
+    }
   }, [profile?.uid, role]);
   const currentSubjects = useMemo(() => {
     if (isTutorRole) return getApprovedTutorSubjects(profile);
@@ -63,9 +74,14 @@ export const ProfileSubjectsPage = ({ role }) => {
   const subjectAvailability = profile?.subjectAvailability ?? {};
 
   const loadTutorDocuments = useCallback(async () => {
-    if (!isTutorRole || !profile?.uid) return;
-    const uploadedDocuments = await getTutorMarksDocuments(profile.uid);
-    setDocuments(uploadedDocuments);
+    if (!isTutorRole || !profile?.uid) { setDocumentsLoading(false); return; }
+    setDocumentsLoading(true);
+    try {
+      const uploadedDocuments = await getTutorMarksDocuments(profile.uid);
+      setDocuments(uploadedDocuments);
+    } finally {
+      setDocumentsLoading(false);
+    }
   }, [isTutorRole, profile?.uid]);
 
   useEffect(() => {
@@ -113,8 +129,9 @@ export const ProfileSubjectsPage = ({ role }) => {
   }, [role]);
 
   useEffect(() => {
-    if (role !== ROLES.STUDENT || !profile?.uid || !profile?.grade) return undefined;
+    if (role !== ROLES.STUDENT || !profile?.uid || !profile?.grade) { setHistoryCandidatesLoading(false); return undefined; }
     let isActive = true;
+    setHistoryCandidatesLoading(true);
     getStudentSubjectHistoryOptions({ studentId: profile.uid, grade: profile.grade }).then((result) => {
       if (!isActive) return;
       setHistoryCandidates(Array.isArray(result.candidates) ? result.candidates : []);
@@ -125,6 +142,8 @@ export const ProfileSubjectsPage = ({ role }) => {
         setHistoryCandidates([]);
         setHistoryCapacity(0);
       }
+    }).finally(() => {
+      if (isActive) setHistoryCandidatesLoading(false);
     });
     return () => { isActive = false; };
   }, [profile?.grade, profile?.uid, role]);
@@ -172,9 +191,11 @@ export const ProfileSubjectsPage = ({ role }) => {
     try {
       setSaving(true);
       setStatus('Adding subjects...');
-      await addStudentSubjects({ studentId: profile.uid, subjects: selectedSubjects, restoreSubjectInstanceIds: selectedHistoryIds });
-      await loadStudentSubjects();
-      await refreshProfile(profile.uid);
+      await runOperation({ operationName: 'Adding subjects', successMessage: 'Your subjects were updated.' }, async () => {
+        await addStudentSubjects({ studentId: profile.uid, subjects: selectedSubjects, restoreSubjectInstanceIds: selectedHistoryIds });
+        await loadStudentSubjects();
+        await refreshProfile(profile.uid);
+      });
       setStatus(`${selectedSubjects.join(', ')} added to your subjects.`);
       setSelectedSubjects([]);
       setSelectedHistoryIds([]);
@@ -206,7 +227,7 @@ export const ProfileSubjectsPage = ({ role }) => {
       setSaving(true);
       setStatus('Uploading and checking marks...');
       setDocuments((current) => [temporaryDocument, ...current]);
-      const uploadResult = await uploadTutorMarksDocument({ file, tutor: profile, onProgress: setStatus });
+      const uploadResult = await runOperation({ operationName: 'Uploading and processing tutor marks', successMessage: 'The marks document was processed.' }, () => uploadTutorMarksDocument({ file, tutor: profile, onProgress: setStatus }));
       setResult(uploadResult);
       await refreshProfile(profile.uid);
       await loadTutorDocuments();
@@ -227,7 +248,7 @@ export const ProfileSubjectsPage = ({ role }) => {
       setActiveDocumentId(documentRecord.id);
       setStatus(`Retrying ${documentRecord.fileName}...`);
       setDocuments((current) => current.map((item) => item.id === documentRecord.id ? { ...item, status: 'processing', errorMessage: '' } : item));
-      const retryResult = await retryTutorMarksDocument({ documentRecord, tutor: profile, onProgress: setStatus });
+      const retryResult = await runOperation({ operationName: `Reprocessing ${documentRecord.fileName}`, successMessage: 'The marks document was processed.' }, () => retryTutorMarksDocument({ documentRecord, tutor: profile, onProgress: setStatus }));
       setResult(retryResult);
       await refreshProfile(profile.uid);
       await loadTutorDocuments();
@@ -247,7 +268,7 @@ export const ProfileSubjectsPage = ({ role }) => {
     try {
       setActiveDocumentId(documentRecord.id);
       setStatus(`Deleting ${documentRecord.fileName}...`);
-      await deleteTutorMarksDocument(documentRecord);
+      await runOperation({ operationName: 'Deleting uploaded marks document', successMessage: 'The document and its uploaded file were deleted.' }, () => deleteTutorMarksDocument(documentRecord));
       setDocuments((current) => current.filter((item) => item.id !== documentRecord.id));
       setStatus('Document deleted.');
     } catch (error) {
@@ -264,9 +285,11 @@ export const ProfileSubjectsPage = ({ role }) => {
     try {
       setSaving(true);
       setStatus(`Removing ${subject}...`);
-      await removeUserSubject({ uid: profile.uid, subject });
-      await loadStudentSubjects();
-      await refreshProfile(profile.uid);
+      await runOperation({ operationName: `Removing ${subject}`, successMessage: 'The subject was removed.' }, async () => {
+        await removeUserSubject({ uid: profile.uid, subject });
+        await loadStudentSubjects();
+        await refreshProfile(profile.uid);
+      });
       setStatus(`${subject} removed from your profile.`);
     } catch (error) {
       setStatus(error.message || 'Could not remove subject.');
@@ -281,8 +304,10 @@ export const ProfileSubjectsPage = ({ role }) => {
     try {
       setSaving(true);
       setStatus(`${nextAvailability ? 'Activating' : 'Pausing'} ${subject}...`);
-      await updateUserSubjectAvailability({ uid: profile.uid, subject, available: nextAvailability });
-      await refreshProfile(profile.uid);
+      await runOperation({ operationName: `${nextAvailability ? 'Activating' : 'Pausing'} ${subject}`, successMessage: 'Subject availability was updated.' }, async () => {
+        await updateUserSubjectAvailability({ uid: profile.uid, subject, available: nextAvailability });
+        await refreshProfile(profile.uid);
+      });
       setStatus(`${subject} is now ${nextAvailability ? 'active' : 'paused'}.`);
     } catch (error) {
       setStatus(error.message || 'Could not update subject availability.');
@@ -296,7 +321,7 @@ export const ProfileSubjectsPage = ({ role }) => {
       const groupLink = remove ? '' : normalizeWhatsAppGroupInviteLink(whatsappGroupDrafts[subject] || '');
       setSaving(true);
       setStatus(`${remove ? 'Removing' : 'Saving'} ${subject} WhatsApp group link...`);
-      const result = await saveTutorWhatsAppGroupLink({ subject, groupLink });
+      const result = await runOperation({ operationName: `${remove ? 'Removing' : 'Saving'} ${subject} group link`, successMessage: 'The lesson group link was updated.' }, () => saveTutorWhatsAppGroupLink({ subject, groupLink }));
       setWhatsAppGroupLinks((current) => ({ ...current, [subject]: result.groupLink || '' }));
       setWhatsAppGroupDrafts((current) => ({ ...current, [subject]: result.groupLink || '' }));
       setStatus(result.groupLink ? `${subject} WhatsApp group link saved.` : `${subject} WhatsApp group link removed.`);
@@ -315,7 +340,7 @@ export const ProfileSubjectsPage = ({ role }) => {
           {role === ROLES.STUDENT && subscriptionState?.paymentCompleted ? <p className="text-xs font-medium text-slate-500">{currentSubjects.length} of {subjectLimit} included subjects selected</p> : null}
         </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {currentSubjects.length ? currentSubjects.map((subject) => {
+          {activeStudentSubjectsLoading ? <LoadingState className="sm:col-span-2 lg:col-span-3" label="Loading selected subjects…" /> : currentSubjects.length ? currentSubjects.map((subject) => {
             const isStudentSubjectActive = subjectAvailability[subject] !== false;
 
             return (
@@ -409,10 +434,12 @@ export const ProfileSubjectsPage = ({ role }) => {
               Add to list
             </button>
           </div>
-          {restorableHistoryCandidates.length ? <fieldset className="space-y-2 rounded-2xl bg-amber-50 p-4">
+          {globalSubjectsLoading ? <LoadingState className="min-h-12 p-3" label="Loading available subjects…" /> : null}
+          {restorableHistoryCandidates.length || historyCandidatesLoading ? <fieldset className="space-y-2 rounded-2xl bg-amber-50 p-4">
             <legend className="px-1 text-xs font-semibold uppercase tracking-[0.15em] text-amber-800">Recent topic history (optional)</legend>
             <p className="text-xs text-amber-900">Choose a subject below if needed, then opt in to copy only its topics and understanding scores. Staff and lessons are not copied.</p>
             <div className="space-y-2">
+              {historyCandidatesLoading ? <LoadingState label="Loading eligible subject history…" /> : null}
               {restorableHistoryCandidates.map((candidate) => (
                 <label key={candidate.episodeId} className="flex items-start gap-3 rounded-xl bg-white/80 p-3 text-sm text-slate-700">
                   <input type="checkbox" className="mt-0.5" checked={selectedHistoryIds.includes(candidate.episodeId)} onChange={(event) => handleRestoreHistoryChoice(candidate, event.target.checked)} disabled={historyCapacity === 0 || !selectedSubjects.includes(candidate.subject) && remainingSubjectSlots === 0} />
@@ -459,6 +486,7 @@ export const ProfileSubjectsPage = ({ role }) => {
           <section className="panel p-5">
             <p className="text-sm font-semibold text-slate-950">Uploaded marks documents</p>
             <div className="mt-4 space-y-3">
+              {documentsLoading ? <LoadingState label="Loading uploaded documents…" /> : null}
               {documents.map((documentRecord) => (
                 <div key={documentRecord.id} className="rounded-2xl bg-slate-50 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
@@ -492,7 +520,7 @@ export const ProfileSubjectsPage = ({ role }) => {
                   </div>
                 </div>
               ))}
-              {!documents.length ? <p className="text-sm text-slate-500">No marks documents have been uploaded yet.</p> : null}
+              {!documentsLoading && !documents.length ? <p className="text-sm text-slate-500">No marks documents have been uploaded yet.</p> : null}
             </div>
           </section>
         </>

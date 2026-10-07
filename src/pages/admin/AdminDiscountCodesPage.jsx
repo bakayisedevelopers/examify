@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Check, Copy, Link2, RefreshCw, Tag, X } from 'lucide-react';
+import { Check, Copy, Link2, LoaderCircle, RefreshCw, Tag, X } from 'lucide-react';
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { createDiscountCode, listDiscountCodes, setDiscountCodeActive, updateDiscountCodeTitle } from '../../services/discountCodesService';
 
 const localDateTimeValue = (date) => {
@@ -36,6 +37,7 @@ const buildShareLink = (code) => {
 
 export const AdminDiscountCodesPage = () => {
   const { profile, logout } = useAuth();
+  const { runOperation } = useOperationStatus();
   const [codes, setCodes] = useState([]);
   const [form, setForm] = useState(defaultForm);
   const [status, setStatus] = useState('');
@@ -87,7 +89,7 @@ export const AdminDiscountCodesPage = () => {
           ? Number(form.discountDurationMonths === 'custom' ? form.customDiscountDurationMonths : form.discountDurationMonths)
           : null,
       };
-      const result = await createDiscountCode(payload);
+      const result = await runOperation({ operationName: 'Creating discount code', successMessage: 'The discount code was created.' }, () => createDiscountCode(payload));
       setForm(defaultForm());
       setStatus(`${form.title.trim()} (${result.code}) created.`);
       await refresh();
@@ -102,8 +104,10 @@ export const AdminDiscountCodesPage = () => {
     setWorkingCode(code.code);
     setStatus('');
     try {
-      await setDiscountCodeActive({ code: code.code, active: !code.active });
-      await refresh();
+      await runOperation({ operationName: `${code.active ? 'Deactivating' : 'Activating'} discount code`, successMessage: 'The discount code status was updated.' }, async () => {
+        await setDiscountCodeActive({ code: code.code, active: !code.active });
+        await refresh();
+      });
     } catch (error) {
       setStatus(error?.message || 'Could not update the discount code.');
     } finally {
@@ -131,7 +135,7 @@ export const AdminDiscountCodesPage = () => {
     setSavingTitleCode(code.code);
     setStatus('');
     try {
-      const result = await updateDiscountCodeTitle({ code: code.code, title });
+      const result = await runOperation({ operationName: 'Saving discount code title', successMessage: 'The discount title was updated.' }, () => updateDiscountCodeTitle({ code: code.code, title }));
       setCodes((current) => current.map((entry) => (
         entry.code === result.code ? { ...entry, title: result.title } : entry
       )));
@@ -221,7 +225,7 @@ export const AdminDiscountCodesPage = () => {
                 </tr>
               ))}
               {!isLoading && codes.length === 0 ? <tr><td colSpan="10" className="px-5 py-10 text-center text-slate-400">No discount codes created yet.</td></tr> : null}
-              {isLoading ? <tr><td colSpan="10" className="px-5 py-10 text-center text-slate-400">Loading discount codes…</td></tr> : null}
+              {isLoading ? <tr><td colSpan="10" className="px-5 py-10 text-center text-slate-400"><span className="inline-flex items-center gap-2"><LoaderCircle className="h-4 w-4 animate-spin text-lime-500" aria-hidden="true" />Loading discount codes…</span></td></tr> : null}
             </tbody>
           </table>
         </div>

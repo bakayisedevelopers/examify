@@ -2,12 +2,14 @@ import { useState } from 'react';
 import { useLocation, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { Logo } from '../../components/common/Logo';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { getPortal, getPortalConfig, getPortalForProfile, getPortalSiteUrl, getSignupPathForPortal, isProfileAllowedOnPortal } from '../../utils/portal';
 
 export const LoginPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { login, logout } = useAuth();
+  const { runOperation } = useOperationStatus();
   const [form, setForm] = useState({ email: '', password: '' });
   const [status, setStatus] = useState('');
   const [accountPortal, setAccountPortal] = useState(null);
@@ -39,7 +41,7 @@ export const LoginPage = () => {
     setStatus('');
     setAccountPortal(null);
     try {
-      const result = await login(form);
+      const result = await runOperation({ operationName: 'Signing in', successMessage: 'Signed in successfully.', autoDismissMs: 650 }, () => login(form));
       if (!isProfileAllowedOnPortal(result.profile, portal)) {
         const correctPortal = getPortalForProfile(result.profile);
         await logout();

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ExternalLink, MessageCircle } from 'lucide-react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
+import { LoadingState } from '../../components/common/LoadingState';
 import { LessonAccessDetails } from '../../components/lessons/LessonAccessDetails';
 import { useAuth } from '../../hooks/useAuth';
 import { getLessonById } from '../../services/firestoreService';
@@ -19,10 +20,14 @@ export const StudentLessonDetailsPage = () => {
   const { profile, logout } = useAuth();
   const [lesson, setLesson] = useState(null);
   const [whatsappAccess, setWhatsAppAccess] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
     let active = true;
     const subjectInstanceId = searchParams.get('subjectInstanceId') || '';
+    setIsLoading(true);
+    setLoadError('');
     setLesson(null);
     setWhatsAppAccess(null);
     getLessonById(lessonId, { studentId: profile?.uid, subjectInstanceId: subjectInstanceId || undefined })
@@ -38,13 +43,19 @@ export const StudentLessonDetailsPage = () => {
           }
         }
       })
-      .catch((error) => console.error('[Examifying][StudentLesson] load:error', error));
+      .catch((error) => {
+        console.error('[Examifying][StudentLesson] load:error', error);
+        if (active) setLoadError(error.message || 'Could not load lesson details.');
+      })
+      .finally(() => { if (active) setIsLoading(false); });
     return () => { active = false; };
   }, [lessonId, profile?.uid, searchParams]);
 
   return (
     <AppShell title="Lesson details" subtitle={lesson ? `${lesson.subject} • ${lesson.lessonDate || lesson.completedOn || 'No date'}` : 'Loading lesson'} role="student" user={profile} onLogout={logout}>
       <Link to="/student/lessons" className="btn-secondary inline-flex w-fit">Back to lessons</Link>
+      {isLoading ? <LoadingState label="Loading lesson details…" /> : null}
+      {loadError ? <div className="panel p-4 text-sm text-rose-700" role="alert">{loadError}</div> : null}
       {lesson ? (() => {
         const missed = lesson.status === 'missed' || lesson.attendanceStatus === 'missed' || lesson.attended === false;
         const planned = lesson.status === 'planned';

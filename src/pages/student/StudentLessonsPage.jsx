@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
+import { LoadingState } from '../../components/common/LoadingState';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
 import { getLessonsForStudent } from '../../services/firestoreService';
@@ -8,16 +9,25 @@ import { getLessonsForStudent } from '../../services/firestoreService';
 export const StudentLessonsPage = () => {
   const { profile, logout } = useAuth();
   const [lessons, setLessons] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
-    if (!profile?.uid) return;
-    getLessonsForStudent(profile.uid).then(setLessons);
+    if (!profile?.uid) { setIsLoading(false); return undefined; }
+    let active = true;
+    setIsLoading(true);
+    setLoadError('');
+    getLessonsForStudent(profile.uid).then((rows) => { if (active) setLessons(rows); })
+      .catch((error) => { if (active) setLoadError(error.message || 'Could not load lessons.'); })
+      .finally(() => { if (active) setIsLoading(false); });
+    return () => { active = false; };
   }, [profile?.uid]);
 
   return (
     <AppShell title="Lessons" subtitle="Completed and upcoming lesson context from your tutors." role="student" user={profile} onLogout={logout}>
       <SectionHeader eyebrow="Lessons" title="Lesson history" description="Completed lessons show topics, reports, and understanding scores used for exercise generation." />
       <div className="grid gap-4">
+        {isLoading ? <LoadingState label="Loading your lessons…" /> : null}
         {lessons.map((lesson) => {
           const missed = lesson.status === 'missed' || lesson.attendanceStatus === 'missed' || lesson.attended === false;
           const planned = lesson.status === 'planned';
@@ -34,8 +44,9 @@ export const StudentLessonsPage = () => {
             </Link>
           );
         })}
-        {!lessons.length ? <div className="panel p-5 text-sm text-slate-500">No lessons have been completed yet.</div> : null}
+        {!isLoading && !loadError && !lessons.length ? <div className="panel p-5 text-sm text-slate-500">No lessons have been completed yet.</div> : null}
       </div>
+      {loadError ? <div className="panel p-4 text-sm text-rose-700" role="alert">{loadError}</div> : null}
     </AppShell>
   );
 };

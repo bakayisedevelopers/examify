@@ -1,6 +1,8 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from 'react';
 import { Save, LoaderCircle } from 'lucide-react';
 import { updateStudentTopicScoreForTutor } from '../../services/firestoreService';
+import { OperationStatusOverlay } from '../common/OperationStatusOverlay';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 
 const asQuestion = (question, index) => ({
   questionReference: String(question?.questionReference || `Question ${index + 1}`),
@@ -29,6 +31,7 @@ export const TutorTopicScoreEditor = forwardRef(({
   const [marks, setMarks] = useState({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const { operationStatus, runOperation, closeOperationStatus } = useOperationStatus();
 
   useEffect(() => {
     const savedScores = JSON.parse(initialScoresKey || '[]');
@@ -59,7 +62,7 @@ export const TutorTopicScoreEditor = forwardRef(({
     [index]: { ...(current[index] || {}), ...patch },
   }));
 
-  const save = async () => {
+  const save = useCallback(async () => {
     if (!allMarksValid) {
       setMessage('Enter marks earned for every question with an available mark allocation.');
       return;
@@ -67,7 +70,11 @@ export const TutorTopicScoreEditor = forwardRef(({
     setSaving(true);
     setMessage('');
     try {
-      const result = await updateStudentTopicScoreForTutor({
+      const result = await runOperation({
+        operationName: 'Saving topic understanding scores',
+        successMessage: 'The topic scores were saved successfully.',
+        failureMessage: 'Could not save topic marks.',
+      }, () => updateStudentTopicScoreForTutor({
         tutorId,
         studentId,
         subject,
@@ -75,7 +82,7 @@ export const TutorTopicScoreEditor = forwardRef(({
         exerciseId,
         peerAssignmentId,
         questionMarks,
-      });
+      }));
       onSaved?.(result.topic, result.understandingLevel);
       const average = result.averageUnderstandingLevel ?? result.understandingLevel;
       setMessage(`Saved ${Math.round(calculatedScore * 100)}% from the question marks. 28-day topic average: ${Math.round(average * 100)}%.`);
@@ -84,7 +91,7 @@ export const TutorTopicScoreEditor = forwardRef(({
     } finally {
       setSaving(false);
     }
-  };
+  }, [allMarksValid, calculatedScore, exerciseId, onSaved, peerAssignmentId, questionMarks, runOperation, studentId, subject, topic, tutorId]);
 
   const saveDisabled = saving || !tutorId || !allMarksValid;
   useImperativeHandle(ref, () => ({ save }), [save]);
@@ -133,6 +140,9 @@ export const TutorTopicScoreEditor = forwardRef(({
         {!compact && value !== undefined && value !== null && Number(value) <= 1 ? <p className="text-xs text-slate-500">Current 28-day average: {Math.round(Number(value) * 100)}%</p> : null}
       </div> : null}
       {message ? <p role="status" className="text-xs text-slate-600">{message}</p> : null}
+      <OperationStatusOverlay state={operationStatus?.state} operationName={operationStatus?.operationName} message={operationStatus?.message} onDone={closeOperationStatus} />
     </div>
   );
 });
+
+TutorTopicScoreEditor.displayName = 'TutorTopicScoreEditor';

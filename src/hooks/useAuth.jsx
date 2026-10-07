@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth, isFirebaseConfigured } from '../firebase/config';
 import {
@@ -11,11 +11,13 @@ import {
 } from '../services/authService';
 import { mockUsers } from '../data/mockData';
 import { loadStudentSubscriptionState } from '../services/studentSubscriptionStateStore';
+import { queryClient } from '../lib/queryClient';
 
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
   const [state, setState] = useState({ user: null, profile: null, loading: true, error: null });
+  const lastAuthUid = useRef(null);
 
   const refreshProfile = async (uid, userOverride = null) => {
     const profile = await getUserProfile(uid);
@@ -30,6 +32,10 @@ export const AuthProvider = ({ children }) => {
     }
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      const nextUid = firebaseUser?.uid ?? null;
+      if (lastAuthUid.current !== nextUid) queryClient.clear();
+      lastAuthUid.current = nextUid;
+
       if (!firebaseUser) {
         setState({ user: null, profile: null, loading: false, error: null });
         return;
@@ -51,6 +57,7 @@ export const AuthProvider = ({ children }) => {
     refreshProfile,
     login: async (payload) => {
       const result = await loginWithEmail(payload);
+      queryClient.clear();
       setState({ user: result.user, profile: result.profile, loading: false, error: null });
       if (result.profile?.role === 'student') {
         void loadStudentSubscriptionState(result.profile, { maxAgeMs: 30_000 });
@@ -59,6 +66,7 @@ export const AuthProvider = ({ children }) => {
     },
     register: async (payload) => {
       const result = await registerWithEmail(payload);
+      queryClient.clear();
       setState({ user: result.user, profile: result.profile, loading: false, error: null });
       if (result.profile?.role === 'student') {
         void loadStudentSubscriptionState(result.profile, { maxAgeMs: 30_000 });
@@ -76,6 +84,7 @@ export const AuthProvider = ({ children }) => {
     loginAsDemo: async (email) => {
       const mockUser = mockUsers[email];
       if (!mockUser) throw new Error('Unknown demo account');
+      queryClient.clear();
       if (mockUser.role === 'student') {
         await loadStudentSubscriptionState(mockUser, { maxAgeMs: 30_000 });
       }
@@ -84,6 +93,7 @@ export const AuthProvider = ({ children }) => {
     },
     loginWithGoogle: async () => {
       const result = await signInWithGoogle();
+      queryClient.clear();
       setState({ user: result.user, profile: result.profile, loading: false, error: null });
       if (result.profile?.role === 'student') {
         void loadStudentSubscriptionState(result.profile, { maxAgeMs: 30_000 });
@@ -92,6 +102,7 @@ export const AuthProvider = ({ children }) => {
     },
     logout: async () => {
       await logout();
+      queryClient.clear();
       setState({ user: null, profile: null, loading: false, error: null });
     },
   }), [state]);

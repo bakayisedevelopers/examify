@@ -1,18 +1,22 @@
 import { useEffect, useState } from 'react';
+import { LoaderCircle } from 'lucide-react';
 import { AppShell } from '../../components/common/AppShell';
 import { SectionHeader } from '../../components/common/SectionHeader';
+import { LoadingState } from '../../components/common/LoadingState';
 import { useAuth } from '../../hooks/useAuth';
 import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import {
   assignStudentToTutor,
   getAdminUserManagementData,
   getAdminSubjectAssignmentData,
 } from '../../services/firestoreService';
 
-const UserList = ({ title, description, users = [], userType }) => (
+const UserList = ({ title, description, users = [], userType, loading }) => (
   <section className="space-y-4">
     <SectionHeader eyebrow="Accounts" title={title} description={description} />
     <div className="space-y-3">
+      {loading ? <LoadingState label={`Loading ${title.toLowerCase()}…`} /> : null}
       {users.map((user) => (
         <div key={user.id} className="panel grid gap-4 p-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
           <div className="min-w-0">
@@ -34,13 +38,14 @@ const UserList = ({ title, description, users = [], userType }) => (
           </div>
         </div>
       ))}
-      {!users.length ? <div className="panel p-5 text-sm text-slate-500">No users are available in this category yet.</div> : null}
+      {!loading && !users.length ? <div className="panel p-5 text-sm text-slate-500">No users are available in this category yet.</div> : null}
     </div>
   </section>
 );
 
 export const AdminUsersPage = () => {
   const { profile, logout } = useAuth();
+  const { runOperation } = useOperationStatus();
   const [summary, setSummary] = useState({ students: [], tutors: [] });
   const [tutorOptions, setTutorOptions] = useState([]);
   const [tutorsLoaded, setTutorsLoaded] = useState(false);
@@ -126,10 +131,12 @@ export const AdminUsersPage = () => {
     setIsAssigning(true);
     try {
       setStatus('Assigning student...');
-      await assignStudentToTutor({ studentId, tutorId, subject: selectedSubject });
-      const data = await getAdminSubjectAssignmentData(selectedSubject);
-      setAssignmentData(data);
-      setStudentId(data.unassignedStudents[0]?.uid ?? '');
+      await runOperation({ operationName: 'Assigning student to tutor', successMessage: 'The student assignment was saved.' }, async () => {
+        await assignStudentToTutor({ studentId, tutorId, subject: selectedSubject });
+        const data = await getAdminSubjectAssignmentData(selectedSubject);
+        setAssignmentData(data);
+        setStudentId(data.unassignedStudents[0]?.uid ?? '');
+      });
       setStatus('Student assigned successfully.');
     } catch (error) {
       setStatus(error.message || 'Could not assign student.');
@@ -190,20 +197,21 @@ export const AdminUsersPage = () => {
             <button type="submit" className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-60" disabled={isAssigning || !studentId || !tutorId || !selectedSubject || !assignmentData.tutors.some((tutor) => tutor.uid === tutorId)}>
               {isAssigning ? 'Assigning...' : 'Assign tutor / teacher'}
             </button>
-            {!tutorsLoaded ? <p className="text-sm text-slate-500">Loading tutors...</p> : null}
+            {!tutorsLoaded ? <p className="inline-flex items-center gap-2 text-sm text-slate-300" role="status"><LoaderCircle className="h-4 w-4 animate-spin text-lime-300" aria-hidden="true" />Loading tutors and teachers…</p> : null}
             {tutorsLoaded && !tutorOptions.length ? <p className="text-sm text-slate-500">No tutors or teachers have approved subjects yet.</p> : null}
             {status ? <p className="text-sm text-slate-600">{status}</p> : null}
           </form>
 
           <div className="space-y-3">
             <p className="text-sm font-semibold text-slate-950">Current {selectedSubject || 'subject'} assignments</p>
+            {!assignmentsLoaded ? <LoadingState label="Loading subject assignments…" /> : null}
             {assignmentData.assignments.map((assignment) => (
               <div key={assignment.id} className="rounded-2xl bg-slate-50 p-4 text-sm">
                 <p className="font-semibold text-slate-900">{assignment.studentName}</p>
                 <p className="mt-1 text-slate-500">{assignment.tutorRoleLabel || 'Tutor'}: {assignment.tutorName}</p>
               </div>
             ))}
-            {!assignmentData.assignments.length ? (
+            {assignmentsLoaded && !status && !assignmentData.assignments.length ? (
               <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">
                 No students are assigned for this subject yet.
               </div>
@@ -218,12 +226,14 @@ export const AdminUsersPage = () => {
           description="Review each learner’s selected subjects and current subscription plan."
           users={summary.students}
           userType="student"
+          loading={!tutorsLoaded}
         />
         <UserList
           title="Tutors & Teachers"
           description="Review the subjects each tutor or teacher supports and their assigned student count."
           users={summary.tutors}
           userType="tutor"
+          loading={!tutorsLoaded}
         />
       </div>
     </AppShell>

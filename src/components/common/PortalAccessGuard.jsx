@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { getPortal, getPortalConfig, getPortalForProfile, getPortalSiteUrl, isProfileAllowedOnPortal } from '../../utils/portal';
 
 export const PortalAccessGuard = ({ children }) => {
   const { profile, logout } = useAuth();
+  const { runOperation } = useOperationStatus();
   const [signingOut, setSigningOut] = useState(false);
   const [error, setError] = useState('');
   const portal = getPortal();
@@ -18,7 +20,7 @@ export const PortalAccessGuard = ({ children }) => {
     setSigningOut(true);
     setError('');
     try {
-      await logout();
+      await runOperation({ operationName: 'Signing out', successMessage: 'You have been signed out.', autoDismissMs: 650 }, logout);
     } catch (signOutError) {
       setError(signOutError.message || 'Could not sign out. Please try again.');
     } finally {

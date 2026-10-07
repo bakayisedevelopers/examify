@@ -3,9 +3,11 @@ import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
 import { ROLES } from '../../lib/constants';
 import { signTutorAgreement } from '../../services/firestoreService';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 
 export const TutorAgreementPage = () => {
   const { profile, logout, refreshProfile } = useAuth();
+  const { runOperation } = useOperationStatus();
   const [legalName, setLegalName] = useState(profile?.tutorAgreement?.legalName ?? profile?.displayName ?? '');
   const [accepted, setAccepted] = useState(Boolean(profile?.tutorAgreement?.accepted));
   const [status, setStatus] = useState('');
@@ -16,8 +18,11 @@ export const TutorAgreementPage = () => {
     try {
       setSaving(true);
       setStatus('Saving tutor agreement...');
-      const agreement = await signTutorAgreement({ tutorId: profile.uid, legalName, accepted });
-      await refreshProfile(profile.uid);
+      const agreement = await runOperation({ operationName: 'Signing tutor agreement', successMessage: 'The tutor agreement was saved.' }, async () => {
+        const saved = await signTutorAgreement({ tutorId: profile.uid, legalName, accepted });
+        await refreshProfile(profile.uid);
+        return saved;
+      });
       setStatus(`Tutor agreement signed on ${new Date(agreement.signedAt).toLocaleString()}.`);
     } catch (error) {
       setStatus(error.message || 'Could not sign agreement.');

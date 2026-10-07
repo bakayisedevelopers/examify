@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
+import { LoadingState } from '../../components/common/LoadingState';
 import { useAuth } from '../../hooks/useAuth';
 import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
 import { getAdminAuthorizationRefundIssues } from '../../services/paymentsService';
@@ -50,7 +51,7 @@ export const AdminPaymentsPage = () => {
           </div>
 
           {error && <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-800">{error}</p>}
-          {loading && <p className="text-sm text-slate-600">Loading refund records…</p>}
+          {loading && <LoadingState label="Loading refund records…" />}
           {!loading && !error && issues.length === 0 && (
             <p className="rounded-xl bg-lime-50 p-3 text-sm text-slate-700">No authorization refunds need review.</p>
           )}

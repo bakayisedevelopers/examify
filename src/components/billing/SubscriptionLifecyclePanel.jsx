@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Ban, CalendarClock, RotateCcw, Undo2 } from 'lucide-react';
 import { manageStudentSubscription, retryStudentSubscriptionPayment } from '../../services/paymentsService';
 import { refreshStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 
 const asDate = (value) => {
   if (value?.toDate) return value.toDate();
@@ -22,6 +23,7 @@ export const SubscriptionLifecyclePanel = ({
   onStateChange,
   onContinuePayment,
 }) => {
+  const { runOperation } = useOperationStatus();
   const [busyAction, setBusyAction] = useState('');
   const [message, setMessage] = useState('');
   const [currentState, setCurrentState] = useState(subscriptionState);
@@ -48,14 +50,14 @@ export const SubscriptionLifecyclePanel = ({
     try {
       let result;
       if (action === 'retry') {
-        result = await retryStudentSubscriptionPayment(studentId);
+        result = await runOperation({ operationName: 'Retrying subscription payment', successMessage: 'The payment request finished.' }, () => retryStudentSubscriptionPayment(studentId));
         setMessage(result.charged
           ? 'Payment succeeded. Your subscription is renewed.'
           : result.status === 'processing'
             ? 'The payment is processing. We will update the subscription when it is confirmed.'
             : 'The payment was not completed. You can try again after the retry window or choose a plan below.');
       } else {
-        result = await manageStudentSubscription({ studentId, action });
+        result = await runOperation({ operationName: 'Updating subscription', successMessage: 'The subscription was updated.' }, () => manageStudentSubscription({ studentId, action }));
         if (result.freeImmediately) setMessage('Renewal stopped. Your paid period has ended, so the account is now on Free.');
         else if (action === 'cancel') setMessage(`Renewal cancelled. Paid access remains until ${formatDate(result.renewalDate)}.`);
         else if (action === 'resume') setMessage('Automatic renewal is back on.');

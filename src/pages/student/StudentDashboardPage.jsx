@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ChevronDown, CreditCard } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
+import { LoadingState } from '../../components/common/LoadingState';
+import { OperationStatusOverlay } from '../../components/common/OperationStatusOverlay';
 import { MarkingCanvas as ImageEditor } from '../../components/canvas/pictureEditorCanvas';
 import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
 import { useAuth } from '../../hooks/useAuth';
 import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { canOpenExercise } from '../../utils/exerciseRules';
 import {
   generateExercisePlanIfEligible,
@@ -17,7 +20,8 @@ import {
   getTodayExercises,
   subscribeToExerciseGenerationStatus,
 } from '../../services/firestoreService';
-import { loadStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
+import { getCachedStudentSubscriptionState, loadStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
+import { getCachedStudentDashboardState, updateCachedStudentDashboardState } from '../../services/studentDashboardStateStore';
 import { uploadPeerReviewImage } from '../../services/storageService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 
@@ -103,26 +107,74 @@ const ReadinessChecklist = ({ rows, studentName }) => {
 export const StudentDashboardPage = () => {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
-  const [availableSubjects, setAvailableSubjects] = useState([]);
-  const [availableSubjectEpisodes, setAvailableSubjectEpisodes] = useState([]);
-  const [isLoadingSubjects, setIsLoadingSubjects] = useState(true);
-  const [todayExercises, setTodayExercises] = useState([]);
-  const [peerAssignments, setPeerAssignments] = useState([]);
+  const { operationStatus, runOperation, closeOperationStatus } = useOperationStatus();
+  const cachedDashboardState = getCachedStudentDashboardState(profile?.uid);
+  const cachedSubscriptionState = getCachedStudentSubscriptionState(profile?.uid);
+  const hasCachedAccessState = Boolean(cachedDashboardState?.accessChecked || cachedSubscriptionState);
+  const [lastAppData, setLastAppData] = useState(() => cachedDashboardState ? { uid: profile?.uid, ...cachedDashboardState } : null);
+  const visibleLastAppData = lastAppData?.uid === profile?.uid ? lastAppData : null;
+  const saveLastAppData = useCallback((patch) => {
+    if (!profile?.uid) return;
+    const next = updateCachedStudentDashboardState(profile.uid, patch);
+    setLastAppData({ uid: profile.uid, ...next });
+  }, [profile?.uid]);
+  const [availableSubjects, setAvailableSubjects] = useState(() => cachedDashboardState?.availableSubjects ?? []);
+  const [availableSubjectEpisodes, setAvailableSubjectEpisodes] = useState(() => cachedDashboardState?.availableSubjectEpisodes ?? []);
+  const [isLoadingSubjects, setIsLoadingSubjects] = useState(() => !cachedDashboardState?.subjectsLoaded);
+  const [todayExercises, setTodayExercises] = useState(() => cachedDashboardState?.todayExercises ?? []);
+  const [peerAssignments, setPeerAssignments] = useState(() => cachedDashboardState?.peerAssignments ?? []);
   const [reviewingAssignment, setReviewingAssignment] = useState(null);
   const [loadError, setLoadError] = useState('');
-  const [paymentLocked, setPaymentLocked] = useState(true);
-  const [isLoadingExercises, setIsLoadingExercises] = useState(true);
-  const [isLoadingPeerAssignments, setIsLoadingPeerAssignments] = useState(true);
-  const [isCheckingAccess, setIsCheckingAccess] = useState(true);
+  const [paymentLocked, setPaymentLocked] = useState(() => cachedDashboardState?.paymentLocked ?? true);
+  const [isLoadingExercises, setIsLoadingExercises] = useState(() => !cachedDashboardState?.exercisesLoaded);
+  const [isLoadingPeerAssignments, setIsLoadingPeerAssignments] = useState(() => !cachedDashboardState?.peerAssignmentsLoaded);
+  const [isCheckingAccess, setIsCheckingAccess] = useState(() => !hasCachedAccessState);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
-  const [readinessRows, setReadinessRows] = useState([]);
+  const [readinessRows, setReadinessRows] = useState(() => cachedDashboardState?.readinessRows ?? []);
   const [generationStatuses, setGenerationStatuses] = useState({});
   const [initialRetrySubjects, setInitialRetrySubjects] = useState([]);
   const [retryingInitialSubject, setRetryingInitialSubject] = useState('');
-  const [subscriptionPlanId, setSubscriptionPlanId] = useState('free');
-  const [subscriptionPlanName, setSubscriptionPlanName] = useState('Free');
-  const [requiresSubscriptionSelection, setRequiresSubscriptionSelection] = useState(true);
+  const [subscriptionPlanId, setSubscriptionPlanId] = useState(() => cachedDashboardState?.subscriptionPlanId ?? cachedSubscriptionState?.subscriptionPlanId ?? 'free');
+  const [subscriptionPlanName, setSubscriptionPlanName] = useState(() => cachedDashboardState?.subscriptionPlanName ?? cachedSubscriptionState?.subscriptionPlanName ?? 'Free');
+  const [requiresSubscriptionSelection, setRequiresSubscriptionSelection] = useState(() => cachedDashboardState?.requiresSubscriptionSelection ?? cachedSubscriptionState?.requiresSubscriptionSelection ?? true);
+
+  useEffect(() => {
+    const snapshot = getCachedStudentDashboardState(profile?.uid);
+    if (!snapshot) {
+      setLastAppData(null);
+      if (profile?.uid) {
+        const currentSubscription = getCachedStudentSubscriptionState(profile.uid);
+        setAvailableSubjects([]);
+        setAvailableSubjectEpisodes([]);
+        setTodayExercises([]);
+        setPeerAssignments([]);
+        setReadinessRows([]);
+        setIsLoadingSubjects(true);
+        setIsLoadingExercises(true);
+        setIsLoadingPeerAssignments(true);
+        setPaymentLocked(currentSubscription ? !currentSubscription.paymentCompleted : true);
+        setSubscriptionPlanId(currentSubscription?.subscriptionPlanId ?? 'free');
+        setSubscriptionPlanName(currentSubscription?.subscriptionPlanName ?? 'Free');
+        setRequiresSubscriptionSelection(currentSubscription?.requiresSubscriptionSelection ?? true);
+        setIsCheckingAccess(!currentSubscription);
+      }
+      return;
+    }
+    setLastAppData({ uid: profile.uid, ...snapshot });
+    setAvailableSubjects(snapshot.availableSubjects ?? []);
+    setAvailableSubjectEpisodes(snapshot.availableSubjectEpisodes ?? []);
+    setIsLoadingSubjects(!snapshot.subjectsLoaded);
+    setTodayExercises(snapshot.todayExercises ?? []);
+    setPeerAssignments(snapshot.peerAssignments ?? []);
+    setReadinessRows(snapshot.readinessRows ?? []);
+    setSubscriptionPlanId(snapshot.subscriptionPlanId ?? 'free');
+    setSubscriptionPlanName(snapshot.subscriptionPlanName ?? 'Free');
+    setRequiresSubscriptionSelection(snapshot.requiresSubscriptionSelection ?? true);
+    setPaymentLocked(snapshot.paymentLocked ?? true);
+    setIsLoadingExercises(!snapshot.exercisesLoaded);
+    setIsLoadingPeerAssignments(!snapshot.peerAssignmentsLoaded);
+  }, [profile?.uid]);
 
   useScreenLoadMetrics(
     'Student Home',
@@ -138,12 +190,28 @@ export const StudentDashboardPage = () => {
       setIsLoadingSubjects(false);
       return undefined;
     }
-    setIsLoadingSubjects(true);
+    const cachedState = getCachedStudentDashboardState(profile.uid);
+    setIsLoadingSubjects(!cachedState?.subjectsLoaded);
     getActiveSubjectEpisodesForStudent(profile.uid)
       .then((episodes) => {
         if (!active) return;
-        setAvailableSubjectEpisodes(episodes);
-        setAvailableSubjects([...new Set(episodes.map((episode) => episode.subjectKey).filter(Boolean))].sort());
+        const subjects = [...new Set(episodes.map((episode) => episode.subjectKey).filter(Boolean))].sort();
+        const episodeSignature = (items = []) => JSON.stringify([...items]
+          .map((episode) => ({
+            id: episode.id,
+            studentId: episode.studentId,
+            subjectKey: episode.subjectKey,
+            status: episode.status,
+            accessRole: episode.accessRole,
+          }))
+          .sort((left, right) => String(left.id).localeCompare(String(right.id))));
+        if (episodeSignature(cachedState?.availableSubjectEpisodes) !== episodeSignature(episodes)) {
+          setAvailableSubjectEpisodes(episodes);
+        }
+        if (JSON.stringify(cachedState?.availableSubjects ?? []) !== JSON.stringify(subjects)) {
+          setAvailableSubjects(subjects);
+        }
+        saveLastAppData({ availableSubjects: subjects, availableSubjectEpisodes: episodes, subjectsLoaded: true });
         setIsLoadingSubjects(false);
       })
       .catch((error) => {
@@ -152,7 +220,7 @@ export const StudentDashboardPage = () => {
         setIsLoadingSubjects(false);
       });
     return () => { active = false; };
-  }, [profile?.uid]);
+  }, [profile?.uid, saveLastAppData]);
 
   useEffect(() => {
     if (!profile?.uid) return undefined;
@@ -172,11 +240,11 @@ export const StudentDashboardPage = () => {
       setIsGenerating(true);
       setGenerationProgress(25);
 
-      const result = await generateExercisePlanIfEligible({
-        student: profile,
-        mode,
-        subject,
-      });
+      const result = await runOperation({
+        operationName: `Generating ${subject} exercises`,
+        successMessage: 'Exercise generation has finished.',
+        failureMessage: 'Could not generate the exercise plan.',
+      }, () => generateExercisePlanIfEligible({ student: profile, mode, subject }));
 
       setGenerationProgress(75);
       return result;
@@ -186,9 +254,10 @@ export const StudentDashboardPage = () => {
       if (!profile?.uid || isLoadingSubjects) return;
       try {
         setLoadError('');
-        setPaymentLocked(true);
-        setIsLoadingExercises(true);
-        setIsLoadingPeerAssignments(true);
+        const previousData = getCachedStudentDashboardState(profile.uid);
+        if (!previousData) setPaymentLocked(true);
+        setIsLoadingExercises(!previousData?.exercisesLoaded);
+        setIsLoadingPeerAssignments(!previousData?.peerAssignmentsLoaded);
         setIsCheckingAccess(true);
         setInitialRetrySubjects([]);
         const readiness = [];
@@ -202,7 +271,9 @@ export const StudentDashboardPage = () => {
           .then((nestedRows) => {
             if (active) {
               const rows = nestedRows.flat();
-              setTodayExercises(rows.filter(Boolean).sort((left, right) => String(left.subject).localeCompare(String(right.subject))));
+              const nextExercises = rows.filter(Boolean).sort((left, right) => String(left.subject).localeCompare(String(right.subject)));
+              setTodayExercises(nextExercises);
+              saveLastAppData({ todayExercises: nextExercises, exercisesLoaded: true });
               setIsLoadingExercises(false);
             }
             return nestedRows;
@@ -218,6 +289,7 @@ export const StudentDashboardPage = () => {
           .then((rows) => {
             if (active) {
               setPeerAssignments(rows);
+              saveLastAppData({ peerAssignments: rows, peerAssignmentsLoaded: true });
               setIsLoadingPeerAssignments(false);
             }
             return rows;
@@ -245,8 +317,16 @@ export const StudentDashboardPage = () => {
         const anyPaidSubject = entitlementStates.some(({ access }) => Boolean(access.paidSubscriptionActive));
         setPaymentLocked(!anyPaidSubject);
         setIsCheckingAccess(false);
+        saveLastAppData({
+          subscriptionPlanId: effectiveSubscription.subscriptionPlanId || 'free',
+          subscriptionPlanName: effectiveSubscription.subscriptionPlanName || 'Free',
+          requiresSubscriptionSelection: Boolean(effectiveSubscription.requiresSubscriptionSelection),
+          paymentLocked: !anyPaidSubject,
+          accessChecked: true,
+        });
         if (!anyPaidSubject) {
           setReadinessRows([]);
+          saveLastAppData({ readinessRows: [] });
           setInitialRetrySubjects([]);
           return;
         }
@@ -296,19 +376,23 @@ export const StudentDashboardPage = () => {
 
           if (!active) return;
           setReadinessRows(readiness);
+          saveLastAppData({ readinessRows: readiness });
           setGenerationProgress(100);
         } catch (error) {
           if (active) setLoadError((current) => current || error?.message || 'Subject readiness could not be loaded yet.');
         }
       } catch (error) {
         if (!active) return;
-        setTodayExercises([]);
-        setReadinessRows([]);
-        setInitialRetrySubjects([]);
-        setSubscriptionPlanId('free');
-        setSubscriptionPlanName('Free');
-        setRequiresSubscriptionSelection(true);
-        setPaymentLocked(true);
+        const previousData = getCachedStudentDashboardState(profile?.uid);
+        if (!previousData) {
+          setTodayExercises([]);
+          setReadinessRows([]);
+          setInitialRetrySubjects([]);
+          setSubscriptionPlanId('free');
+          setSubscriptionPlanName('Free');
+          setRequiresSubscriptionSelection(true);
+          setPaymentLocked(true);
+        }
         setIsLoadingExercises(false);
         setIsLoadingPeerAssignments(false);
         setIsCheckingAccess(false);
@@ -320,7 +404,7 @@ export const StudentDashboardPage = () => {
 
     load();
     return () => { active = false; };
-  }, [availableSubjects, availableSubjectEpisodes, isLoadingSubjects, profile]);
+  }, [availableSubjects, availableSubjectEpisodes, isLoadingSubjects, profile, runOperation, saveLastAppData]);
 
   const retryInitialGeneration = async (subject) => {
     if (!subject || retryingInitialSubject) return;
@@ -328,11 +412,11 @@ export const StudentDashboardPage = () => {
     setIsGenerating(true);
     setGenerationProgress(25);
     try {
-      const result = await generateExercisePlanIfEligible({
-        student: profile,
-        mode: 'initial',
-        subject,
-      });
+      const result = await runOperation({
+        operationName: `Generating ${subject} exercises`,
+        successMessage: 'Exercise generation has finished.',
+        failureMessage: 'Initial exercise generation failed.',
+      }, () => generateExercisePlanIfEligible({ student: profile, mode: 'initial', subject }));
       setGenerationProgress(100);
       if (!result.generated) return;
 
@@ -347,8 +431,12 @@ export const StudentDashboardPage = () => {
     }
   };
 
-  const handleSavePeerMarking = async (files) => {
-    if (!reviewingAssignment) return;
+  const handleSavePeerMarking = async (files) => runOperation({
+    operationName: 'Submitting peer marking',
+    successMessage: 'Your marked pages were uploaded and the marking submission was saved.',
+    failureMessage: 'Could not submit peer marking.',
+  }, async () => {
+    if (!reviewingAssignment) throw new Error('No peer-marking assignment is open.');
     const reviewImages = await Promise.all(files.map(async (file, index) => {
       const reviewFileName = (file.name || reviewingAssignment.submittedFileName || 'submission.png').replace(/\.[^/.]+$/, `-peer-review-${index + 1}.png`);
       const renamedFile = new File([file], reviewFileName, { type: file.type || 'image/png' });
@@ -361,22 +449,13 @@ export const StudentDashboardPage = () => {
       return { ...upload, pageNumber: index + 1 };
     }));
     await completePeerMarkingAssignment({ assignmentId: reviewingAssignment.id, assignmentPath: reviewingAssignment.assignmentPath, reviewerId: profile.uid, reviewImages });
-    setPeerAssignments(await getPeerMarkingAssignmentsForStudent(profile.uid));
+    const refreshedAssignments = await getPeerMarkingAssignmentsForStudent(profile.uid);
+    setPeerAssignments(refreshedAssignments);
+    saveLastAppData({ peerAssignments: refreshedAssignments, peerAssignmentsLoaded: true });
     setReviewingAssignment(null);
-  };
+  });
 
-  if (isCheckingAccess) {
-    return (
-      <AppShell title="Overview" subtitle="Checking your subscription access." role="student" user={profile} onLogout={logout}>
-        <div className="panel flex min-h-40 items-center justify-center gap-3 p-6 text-sm text-slate-500" role="status">
-          <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-lime-500 border-r-transparent" aria-hidden="true" />
-          Checking subscription...
-        </div>
-      </AppShell>
-    );
-  }
-
-  if (subscriptionPlanId === 'free') {
+  if (subscriptionPlanId === 'free' && (hasCachedAccessState || !isCheckingAccess)) {
     return (
       <AppShell
         title="Past papers"
@@ -385,6 +464,7 @@ export const StudentDashboardPage = () => {
         user={profile}
         onLogout={logout}
       >
+        {isCheckingAccess ? <p className="inline-flex items-center gap-2 text-sm text-slate-300" role="status"><span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-lime-300 border-r-transparent" aria-hidden="true" />Refreshing your subscription status in the background.</p> : null}
         <section className="panel mx-auto max-w-3xl space-y-4 p-6">
           <div>
             <p className="text-sm font-semibold text-lime-700">Current plan: {subscriptionPlanName}</p>
@@ -418,6 +498,7 @@ export const StudentDashboardPage = () => {
       onLogout={logout}
     >
       {loadError ? <div className="panel p-4 text-sm text-amber-700">{loadError}</div> : null}
+      {isCheckingAccess && (visibleLastAppData?.accessChecked || hasCachedAccessState) ? <p className="inline-flex items-center gap-2 text-xs font-medium text-slate-300" role="status"><span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-lime-300 border-r-transparent" aria-hidden="true" />Refreshing subscription and access in the background; showing your last loaded data.</p> : null}
       {!availableSubjects.length && !requiresSubscriptionSelection ? (
         <div className="panel p-5 text-sm text-slate-600">
           Add a subject to your active plan before exercises can be assigned. <button type="button" className="ml-1 font-semibold text-brand-700 underline" onClick={() => navigate('/student/profile/subjects')}>Manage subjects</button>
@@ -467,12 +548,9 @@ export const StudentDashboardPage = () => {
           <p className="mt-2 max-w-2xl text-sm text-emerald-950/80">Open today’s exercise to view the question pages and submit your work.</p>
         </div>
         <div className="grid gap-4 lg:grid-cols-2">
-          {isLoadingExercises || isCheckingAccess ? (
-            <div className="panel col-span-full flex min-h-40 items-center justify-center gap-3 p-6 text-sm text-slate-500" role="status">
-              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-lime-500 border-r-transparent" aria-hidden="true" />
-              Loading today’s exercises...
-            </div>
-          ) : isGenerating ? null : !paymentLocked && todayExercises.length ? todayExercises.map((exercise) => (
+          {(isLoadingExercises || (isCheckingAccess && !hasCachedAccessState)) && !todayExercises.length ? (
+            <LoadingState className="col-span-full min-h-40" label="Loading today’s exercises…" />
+          ) : isGenerating && !todayExercises.length ? null : !paymentLocked && todayExercises.length ? todayExercises.map((exercise) => (
             <TodayExerciseCard key={exercise.id} exercise={exercise} onOpen={() => {
               const params = new URLSearchParams();
               if (exercise.subjectInstanceId) params.set('subjectInstanceId', exercise.subjectInstanceId);
@@ -487,8 +565,10 @@ export const StudentDashboardPage = () => {
         {!isGenerating ? <ReadinessChecklist rows={readinessRows} studentName={profile?.displayName || profile?.name || profile?.email || 'Student'} /> : null}
       </section>
 
-      {!isLoadingPeerAssignments && peerAssignments.length ? (
+      {isLoadingPeerAssignments && !peerAssignments.length ? <LoadingState label="Checking for work assigned to you to mark…" /> : null}
+      {peerAssignments.length > 0 ? (
         <section className="space-y-4">
+          {isLoadingPeerAssignments ? <p className="inline-flex items-center gap-2 text-xs font-medium text-slate-300" role="status"><span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-lime-300 border-r-transparent" aria-hidden="true" />Refreshing assigned marking work…</p> : null}
           <div className="rounded-2xl bg-gradient-to-r from-lime-300 via-lime-400 to-emerald-400 p-5 text-slate-950 shadow-soft sm:p-6">
             <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-950/70">Peer marking</p>
             <h2 className="mt-1 text-2xl font-extrabold tracking-tight">Work to Mark</h2>
@@ -515,6 +595,12 @@ export const StudentDashboardPage = () => {
           </div>
         </section>
       ) : null}
+      <OperationStatusOverlay
+        state={operationStatus?.state}
+        operationName={operationStatus?.operationName}
+        message={operationStatus?.message}
+        onDone={closeOperationStatus}
+      />
     </AppShell>
   );
 };

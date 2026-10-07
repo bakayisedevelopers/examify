@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import { LoaderCircle } from 'lucide-react';
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { updateUserProfileDetails } from '../../services/authService';
 import { getStudentSubjectHistoryOptions } from '../../services/firestoreService';
 import { ROLES, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
@@ -8,6 +10,7 @@ import { getTutorWhatsAppSettings } from '../../services/whatsappService';
 
 export const ProfilePersonalDetailsPage = ({ role }) => {
   const { profile, logout, refreshProfile, isDemoMode } = useAuth();
+  const { runOperation } = useOperationStatus();
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
   const [grade, setGrade] = useState(profile?.grade || SOUTH_AFRICAN_GRADES[0]);
   const [whatsappNumber, setWhatsAppNumber] = useState(profile?.whatsappNumber || '');
@@ -68,16 +71,19 @@ export const ProfilePersonalDetailsPage = ({ role }) => {
     setMessage('');
 
     try {
-      const result = await updateUserProfileDetails({
-        uid: profile?.uid,
-        displayName,
-        grade: role === ROLES.STUDENT ? grade : undefined,
-        whatsappNumber: role === ROLES.STUDENT || isTutorRole ? whatsappNumber : undefined,
-        role,
-        newPassword: password || undefined,
-        restoreSubjectInstanceIds: role === ROLES.STUDENT ? selectedHistoryIds : [],
+      const result = await runOperation({ operationName: 'Saving personal details', successMessage: 'Your personal details were saved.' }, async () => {
+        const saved = await updateUserProfileDetails({
+          uid: profile?.uid,
+          displayName,
+          grade: role === ROLES.STUDENT ? grade : undefined,
+          whatsappNumber: role === ROLES.STUDENT || isTutorRole ? whatsappNumber : undefined,
+          role,
+          newPassword: password || undefined,
+          restoreSubjectInstanceIds: role === ROLES.STUDENT ? selectedHistoryIds : [],
+        });
+        if (!isDemoMode) await refreshProfile(profile.uid);
+        return saved;
       });
-      if (!isDemoMode) await refreshProfile(profile.uid);
       setPassword('');
       const restored = result.gradeChangeResult?.restoredSubjects ?? [];
       setMessage(result.gradeChangeResult && !result.gradeChangeResult.unchanged
@@ -116,7 +122,7 @@ export const ProfilePersonalDetailsPage = ({ role }) => {
                 <p className="text-sm font-semibold text-amber-950">Choose recent subject history to restore (optional)</p>
                 <p className="mt-1 text-xs text-amber-900">Changing grade cancels current subjects. Only selected same-grade histories from the last three months are copied, and only topics plus understanding scores are restored. Add any other subjects after the grade change.</p>
               </div>
-              {historyLoading ? <p className="text-sm text-amber-900" role="status">Checking eligible subject history…</p> : null}
+              {historyLoading ? <p className="flex items-center gap-2 text-sm text-amber-900" role="status"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Checking eligible subject history…</p> : null}
               {historyError ? <p className="text-sm font-medium text-rose-700" role="alert">{historyError}</p> : null}
               {!historyLoading && !historyError && !historyCandidates.length ? <p className="text-sm text-amber-900">No eligible subject history was found for {grade}.</p> : null}
               {historyCandidates.length ? <>

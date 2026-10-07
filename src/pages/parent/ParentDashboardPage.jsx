@@ -1,8 +1,10 @@
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
 import { AppShell } from '../../components/common/AppShell';
+import { LoadingState } from '../../components/common/LoadingState';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { SubscriptionLifecyclePanel } from '../../components/billing/SubscriptionLifecyclePanel';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
@@ -62,6 +64,7 @@ const EditDetailsForm = ({ student, onSave, onCancel }) => {
 
 export const ParentDashboardPage = () => {
   const { profile, logout } = useAuth();
+  const { runOperation } = useOperationStatus();
   const location = useLocation();
   const navigate = useNavigate();
   const [students, setStudents] = useState([]);
@@ -79,7 +82,7 @@ export const ParentDashboardPage = () => {
 
   useScreenLoadMetrics('Parent dashboard', 'parent', studentsLoaded);
 
-  const loadStudents = async () => {
+  const loadStudents = useCallback(async () => {
     if (!profile?.uid) {
       setStudentsLoaded(true);
       return [];
@@ -123,11 +126,11 @@ export const ParentDashboardPage = () => {
     } finally {
       setStudentsLoaded(true);
     }
-  };
+  }, [profile?.uid]);
 
   useEffect(() => {
     loadStudents();
-  }, [profile?.uid]);
+  }, [loadStudents]);
 
   useEffect(() => {
     const code = new URLSearchParams(location.search).get('discountCode')?.trim().toUpperCase() || '';
@@ -156,7 +159,7 @@ export const ParentDashboardPage = () => {
         setLoading(true);
         setStatus('Verifying your payment...');
 
-        const verification = await verifySubscriptionPayment(reference, paymentStudentId);
+        const verification = await runOperation({ operationName: 'Verifying student payment', successMessage: 'Payment verification finished.', autoDismissMs: 1200 }, () => verifySubscriptionPayment(reference, paymentStudentId));
 
         if (verification?.status !== 'success') {
           setStatus(`Payment verification returned status: ${verification?.status ?? 'unknown'}`);
@@ -181,7 +184,7 @@ export const ParentDashboardPage = () => {
     };
 
     runVerification();
-  }, [location.pathname, location.search, navigate, profile?.uid]);
+  }, [loadStudents, location.pathname, location.search, navigate, profile?.uid, runOperation]);
 
   const handleLinkStudent = async (e) => {
     e.preventDefault();
@@ -190,13 +193,12 @@ export const ParentDashboardPage = () => {
     setLoading(true);
     setStatus('');
     try {
-      await assignStudentToParent({
-        parentId: profile.uid,
-        studentIdentifier: studentIdInput.trim(),
+      await runOperation({ operationName: 'Linking student account', successMessage: 'The student account was linked.' }, async () => {
+        await assignStudentToParent({ parentId: profile.uid, studentIdentifier: studentIdInput.trim() });
+        await loadStudents();
       });
       setStatus('Student successfully linked!');
       setStudentIdInput('');
-      await loadStudents();
     } catch (err) {
       setStatus(err.message || 'Failed to link student.');
     } finally {
@@ -207,13 +209,11 @@ export const ParentDashboardPage = () => {
   const handleSaveDetails = async (studentId, form) => {
     try {
       setLoading(true);
-      await updateStudentProfileByParent({
-        parentId: profile.uid,
-        studentId,
-        updates: form
+      await runOperation({ operationName: 'Updating student details', successMessage: 'The student details were saved.' }, async () => {
+        await updateStudentProfileByParent({ parentId: profile.uid, studentId, updates: form });
+        await loadStudents();
       });
       setEditingStudentId(null);
-      await loadStudents();
       setStatus('Student details updated.');
     } catch (err) {
       setStatus(err.message || 'Failed to update details');
@@ -225,11 +225,11 @@ export const ParentDashboardPage = () => {
   const handlePayForStudent = async (student, selection) => {
     try {
       setLoading(true);
-      const result = await initializeSubscriptionPayment({
+      const result = await runOperation({ operationName: 'Starting student subscription checkout', successMessage: 'The subscription request is ready.' }, () => initializeSubscriptionPayment({
         studentId: student.uid,
         ...selection,
         callbackUrl: `${window.location.origin}${location.pathname}`,
-      });
+      }));
 
       if (result.freeCheckout) {
         const renewalNote = result.discount?.billingDuration === 'recurring' && result.discount?.percentOff === 100
@@ -278,12 +278,12 @@ export const ParentDashboardPage = () => {
     if (!pendingAuthorizationCheckout?.reference || !pendingAuthorizationCheckout?.studentId) return;
     setIsCancellingAuthorizationCheckout(true);
     try {
-      const result = await cancelSubscriptionPaymentCheckout({
+      const result = await runOperation({ operationName: 'Closing pending payment checkout', successMessage: 'The checkout status was confirmed.' }, () => cancelSubscriptionPaymentCheckout({
         studentId: pendingAuthorizationCheckout.studentId,
         reference: pendingAuthorizationCheckout.reference,
-      });
+      }));
       if (result.paymentSucceeded) {
-        const verification = await verifySubscriptionPayment(pendingAuthorizationCheckout.reference, pendingAuthorizationCheckout.studentId);
+        const verification = await runOperation({ operationName: 'Verifying student payment', successMessage: 'Payment verification finished.', autoDismissMs: 1200 }, () => verifySubscriptionPayment(pendingAuthorizationCheckout.reference, pendingAuthorizationCheckout.studentId));
         if (verification?.status === 'success') {
           const updatedStudents = await loadStudents();
           if (!updatedStudents.some((student) => student.uid === pendingAuthorizationCheckout.studentId && student.paymentCompleted)) {
@@ -356,7 +356,7 @@ export const ParentDashboardPage = () => {
         </div>
       )}
 
-      {students.length === 0 ? (
+      {!studentsLoaded ? <LoadingState label="Loading your linked students and summaries…" /> : students.length === 0 ? (
         <div className="py-12 bg-slate-900/60 rounded-2xl border border-dashed border-slate-700 flex flex-col items-center justify-center text-slate-400">
           <Users className="h-12 w-12 text-slate-500 mb-4" />
           <p className="text-lg font-medium text-white">No students linked yet</p>

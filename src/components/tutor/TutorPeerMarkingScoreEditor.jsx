@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { LoaderCircle, Save } from 'lucide-react';
 import { saveTutorPeerMarkingReview } from '../../services/firestoreService';
+import { OperationStatusOverlay } from '../common/OperationStatusOverlay';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
+import { getPeerMarkingTopicNames, getTopicQuestionLinks } from '../../utils/exerciseTopicRows';
 
 const normalizeKey = (value) => String(value || '').trim().toLocaleLowerCase();
 const scorePercent = (value) => {
@@ -9,11 +12,13 @@ const scorePercent = (value) => {
 };
 
 export const TutorPeerMarkingScoreEditor = ({ tutorId, studentId, assignment, onSaved, compact = false }) => {
-  const topics = useMemo(() => [...new Set((Array.isArray(assignment.topics) && assignment.topics.length
-    ? assignment.topics
-    : [assignment.topic]).map((topic) => String(topic || '').trim()).filter(Boolean))], [assignment.topics, assignment.topic]);
+  const topics = useMemo(() => getPeerMarkingTopicNames(assignment), [assignment]);
+  const questionLinks = useMemo(
+    () => getTopicQuestionLinks(assignment.questionLinks, assignment.topicBreakdown),
+    [assignment.questionLinks, assignment.topicBreakdown],
+  );
   const questionsByTopic = useMemo(() => Object.fromEntries(topics.map((topic) => {
-    const matchedQuestions = (assignment.questionLinks ?? []).filter((link) => normalizeKey(link.topic) === normalizeKey(topic));
+    const matchedQuestions = questionLinks.filter((link) => normalizeKey(link.topic) === normalizeKey(topic));
     return [topic, (matchedQuestions.length ? matchedQuestions : [{ questionReference: assignment.title || 'Marked question', marks: 0 }])
       .map((question, index) => ({
         questionReference: String(question.questionReference || `Question ${index + 1}`),
@@ -21,10 +26,11 @@ export const TutorPeerMarkingScoreEditor = ({ tutorId, studentId, assignment, on
         pageNumber: Number(question.pageNumber) || 0,
         totalMarks: Number(question.marks ?? question.totalMarks) || 0,
       }))];
-  })), [assignment.questionLinks, assignment.title, topics]);
+  })), [assignment.title, questionLinks, topics]);
   const [marks, setMarks] = useState({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const { operationStatus, runOperation, closeOperationStatus } = useOperationStatus();
 
   useEffect(() => {
     const initialMarks = {};
@@ -70,7 +76,11 @@ export const TutorPeerMarkingScoreEditor = ({ tutorId, studentId, assignment, on
     setSaving(true);
     setMessage('');
     try {
-      const result = await saveTutorPeerMarkingReview({ tutorId, studentId, peerAssignmentId: assignment.id, topicMarks });
+      const result = await runOperation({
+        operationName: 'Saving peer-marking scores',
+        successMessage: 'The review scores were saved successfully.',
+        failureMessage: 'Could not save the review scores.',
+      }, () => saveTutorPeerMarkingReview({ tutorId, studentId, peerAssignmentId: assignment.id, topicMarks }));
       const summary = (result.topicScores ?? []).map((entry) => `${entry.topic}: ${scorePercent(entry.averageUnderstandingLevel ?? entry.understandingLevel)}%`).join(' · ');
       setMessage(`Review scores saved. ${summary}`);
       onSaved?.(result);
@@ -116,6 +126,7 @@ export const TutorPeerMarkingScoreEditor = ({ tutorId, studentId, assignment, on
         {saving ? 'Saving...' : 'Save'}
       </button>
       {message ? <p role="status" className="text-xs text-slate-600">{message}</p> : null}
+      <OperationStatusOverlay state={operationStatus?.state} operationName={operationStatus?.operationName} message={operationStatus?.message} onDone={closeOperationStatus} />
     </div>
   );
 };

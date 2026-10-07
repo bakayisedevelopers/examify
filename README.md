@@ -74,7 +74,7 @@ Frontend variables:
 - `VITE_FIREBASE_MESSAGING_SENDER_ID`
 - `VITE_FIREBASE_APP_ID`
 - `VITE_FIRESTORE_DATABASE_ID` (use `(default)` or your named database such as `tutoring`)
-- `VITE_FIREBASE_AI_MODEL` (for example `gemini-2.5-flash`)
+- `VITE_FIREBASE_VAPID_KEY` (for web push notifications)
 
 Functions variables:
 
@@ -82,9 +82,11 @@ Functions variables:
 - `PAYSTACK_BASE_URL`
 - `PAYSTACK_CALLBACK_URL`
 - `FIRESTORE_DATABASE_ID` (use `(default)` or your named database such as `tutoring`)
-- `KILO_BASE_URL` (defaults to `https://api.kilo.ai/api/openrouter`)
-- `KILO_TEXT_MODEL` and `KILO_FALLBACK_TEXT_MODEL`
+- `KILO_BASE_URL` (defaults to `https://api.kilo.ai/api/gateway`)
+- `KILO_TEXT_MODEL`, `KILO_FALLBACK_TEXT_MODEL`, `KILO_EXERCISE_MODELS`, and `KILO_EXERCISE_FALLBACK_MODEL`
 - `KILO_VISION_MODEL` and comma-separated `KILO_FALLBACK_VISION_MODELS`
+- `GEMINI_BASE_URL`, `GEMINI_MODEL`, and `GEMINI_API_KEY`
+- `RESEND_API_KEY`
 
 ### 3. Run the app
 
@@ -113,7 +115,8 @@ Any password is accepted in demo mode.
 - `PAYSTACK_SECRET_KEY`: In Paystack Dashboard → **Settings** → **API Keys & Webhooks**. Test keys start with `sk_test_`; live keys start with `sk_live_`.
 - `PAYSTACK_BASE_URL`: Keep this as `https://api.paystack.co` unless Paystack specifically instructs you to change it.
 - `PAYSTACK_CALLBACK_URL`: Use the frontend URL Paystack should send the user back to after payment, for example `http://localhost:5173/student/billing` in local development or your production domain route later.
-- `VITE_FIREBASE_AI_MODEL`: Set the Firebase AI Logic Gemini model used by the web app, for example `gemini-2.5-flash`.
+- `GEMINI_API_KEY`: A Google AI Studio API key for the Functions Gemini integration.
+- `RESEND_API_KEY`: An API key from Resend for Functions email delivery.
 - `VITE_FIRESTORE_DATABASE_ID` / `FIRESTORE_DATABASE_ID`: Set these to `(default)` for the default Firestore database, or to your named database such as `tutoring`.
 
 ## Production notes

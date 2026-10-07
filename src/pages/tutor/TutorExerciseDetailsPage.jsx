@@ -2,16 +2,20 @@ import { useEffect, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
+import { LoadingState } from '../../components/common/LoadingState';
 import { ExerciseCard } from '../../components/dashboard/ExerciseCard';
 import { useAuth } from '../../hooks/useAuth';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { deleteExerciseAssignmentForTutor, getCompletedPeerMarkingWorkForTutor, getExerciseAssignmentById, getStudentTopicScoresForTutor, getTopicUnderstandingQuestionScores, getTutorAssignedStudentContexts, getTutorAssignmentHistoryContexts, getTutorAssignmentHistoryData } from '../../services/firestoreService';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
 import { getExerciseAvailability, getExerciseStatusLabels } from '../../utils/exerciseRules';
 import { useEffectiveRole } from '../../utils/effectiveRole';
+import { getExerciseTopicNames, getPeerMarkingTopicNames, uniqueTopicNames } from '../../utils/exerciseTopicRows';
 
 export const TutorExerciseDetailsPage = () => {
   const { exerciseId } = useParams();
   const { profile, logout } = useAuth();
+  const { runOperation } = useOperationStatus();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const periodId = searchParams.get('period');
@@ -20,6 +24,7 @@ export const TutorExerciseDetailsPage = () => {
   const { role, basePath } = useEffectiveRole();
   const [exercise, setExercise] = useState(null);
   const [status, setStatus] = useState('Loading exercise...');
+  const [isLoading, setIsLoading] = useState(true);
   const [isDeleting, setIsDeleting] = useState(false);
   const [topicScores, setTopicScores] = useState({});
   const [accessRole, setAccessRole] = useState('viewer');
@@ -28,6 +33,7 @@ export const TutorExerciseDetailsPage = () => {
   const [scoreEntries, setScoreEntries] = useState([]);
 
   useEffect(() => {
+    setIsLoading(true);
     getExerciseAssignmentById(exerciseId, { tutorId: profile?.uid, studentId, subjectInstanceId, periodId })
       .then(async (result) => {
         if (!result) {
@@ -43,11 +49,7 @@ export const TutorExerciseDetailsPage = () => {
           setExercise(archivedExercise);
           setTopicScores(Object.fromEntries((archivedExercise.topicUnderstandingScores ?? []).map((entry) => [entry.topic, entry.understandingLevel])));
           setCompletedMarkingAssignments([]);
-          const archivedTopics = [...new Set([
-            ...(archivedExercise.questionLinks ?? []).map((item) => item.topic),
-            ...(archivedExercise.topicBreakdown ?? []).map((item) => item.topic),
-            ...String(archivedExercise.topic ?? '').split('|'),
-          ].map((topic) => String(topic ?? '').trim()).filter(Boolean))];
+          const archivedTopics = getExerciseTopicNames(archivedExercise);
           setScoreEntries(await getTopicUnderstandingQuestionScores({
             studentId: archivedExercise.studentId || result.studentId,
             subjectInstanceId: archivedExercise.subjectInstanceId || result.subjectInstanceId,
@@ -76,14 +78,10 @@ export const TutorExerciseDetailsPage = () => {
           });
           setTopicScores(scores);
           setAccessRole(selectedContext?.accessRole || 'viewer');
-          const topicNames = [...new Set([
-            ...(result.questionLinks ?? []).map((item) => item.topic),
-            ...(result.topicBreakdown ?? []).map((item) => item.topic),
-            ...String(result.topic ?? '').split('|'),
-            ...markingAssignments.flatMap((item) => [
-              ...(item.topics ?? []), item.topic, ...(item.questionLinks ?? []).map((link) => link.topic),
-            ]),
-          ].map((topic) => String(topic ?? '').trim()).filter(Boolean))];
+          const topicNames = uniqueTopicNames([
+            ...getExerciseTopicNames(result),
+            ...markingAssignments.flatMap(getPeerMarkingTopicNames),
+          ]);
           setCompletedMarkingAssignments(markingAssignments);
           setScoreEntries(await getTopicUnderstandingQuestionScores({
             studentId: result.studentId,
@@ -93,7 +91,8 @@ export const TutorExerciseDetailsPage = () => {
           }).catch(() => []));
         }
       })
-      .catch((error) => setStatus(error.message || 'Could not load exercise.'));
+      .catch((error) => setStatus(error.message || 'Could not load exercise.'))
+      .finally(() => setIsLoading(false));
   }, [exerciseId, profile?.uid, periodId, studentId, subjectInstanceId]);
 
   const availability = exercise ? getExerciseAvailability(exercise.assignmentDate, Boolean(exercise.submittedImageUrl || exercise.submitted === 'Yes')) : null;
@@ -103,8 +102,10 @@ export const TutorExerciseDetailsPage = () => {
     if (!exercise || !window.confirm(`Delete “${exercise.title || 'this exercise'}”? This cannot be undone.`)) return;
     setIsDeleting(true);
     try {
-      const result = await deleteExerciseAssignmentForTutor({ tutorId: profile.uid, exerciseId: exercise.id });
-      await deleteExerciseSubmissionFiles(result.storageUrls);
+      await runOperation({ operationName: 'Deleting exercise and uploaded work', successMessage: 'The exercise and its submitted files were deleted.' }, async () => {
+        const result = await deleteExerciseAssignmentForTutor({ tutorId: profile.uid, exerciseId: exercise.id });
+        await deleteExerciseSubmissionFiles(result.storageUrls);
+      });
       navigate(`${basePath}/exercises`, { replace: true });
     } catch (error) {
       setStatus(error.message || 'Could not delete exercise.');
@@ -114,7 +115,8 @@ export const TutorExerciseDetailsPage = () => {
 
   return (
     <AppShell title="Exercise details" subtitle={exercise ? `${exercise.subject} • ${exercise.assignmentDate}` : status} role={role} user={profile} onLogout={logout}>
-      {status ? <div className="panel p-5 text-sm text-slate-500">{status}</div> : null}
+      {isLoading ? <LoadingState label="Loading exercise, scores, and marking history…" /> : null}
+      {status && !isLoading ? <div className="panel p-5 text-sm text-slate-500">{status}</div> : null}
       {isHistorical ? <div className="panel border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-800">Historical assignment record · read-only</div> : null}
       {exercise && availability ? (
         <div className="space-y-4">

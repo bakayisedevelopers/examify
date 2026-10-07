@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ShieldCheck, X } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { isFirebaseConfigured } from '../../firebase/config';
 import {
   createCookieConsent,
@@ -16,6 +17,7 @@ const timestamp = (consent) => consent?.updatedAt ? Date.parse(consent.updatedAt
 
 export const CookieConsentManager = () => {
   const { user, loading: authLoading } = useAuth();
+  const { runOperation } = useOperationStatus();
   const [consent, setConsent] = useState(() => readLocalCookieConsent());
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
@@ -82,7 +84,7 @@ export const CookieConsentManager = () => {
 
     if (user?.uid && isFirebaseConfigured) {
       try {
-        await saveAccountCookieConsent(user.uid, nextConsent);
+        await runOperation({ operationName: 'Saving privacy choices', successMessage: 'Your privacy choice was saved.' }, () => saveAccountCookieConsent(user.uid, nextConsent));
       } catch (error) {
         console.warn('Cookie preference account sync failed:', error);
         setSyncMessage('Your choice is saved on this device, but could not be synced to your account.');

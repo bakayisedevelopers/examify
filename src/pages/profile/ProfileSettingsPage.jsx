@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { updateUserSettings } from '../../services/firestoreService';
 import { deleteCurrentUserAccount } from '../../services/authService';
 
@@ -82,6 +83,7 @@ const buildNotificationPreferences = (profile) => Object.fromEntries(NOTIFICATIO
 
 export const ProfileSettingsPage = ({ role }) => {
   const { profile, logout, refreshProfile } = useAuth();
+  const { runOperation } = useOperationStatus();
   const [preferences, setPreferences] = useState(() => buildNotificationPreferences(profile));
   const [marketingEmailOptIn, setMarketingEmailOptIn] = useState(profile?.marketingEmailOptIn === true);
   const [status, setStatus] = useState('');
@@ -106,12 +108,14 @@ export const ProfileSettingsPage = ({ role }) => {
     try {
       setSaving(true);
       setStatus('Saving notification settings…');
-      await updateUserSettings({
-        uid: profile.uid,
-        settings: { notificationPreferences: preferences },
-        marketingEmailOptIn,
+      await runOperation({ operationName: 'Saving notification settings', successMessage: 'Your notification preferences are saved.' }, async () => {
+        await updateUserSettings({
+          uid: profile.uid,
+          settings: { notificationPreferences: preferences },
+          marketingEmailOptIn,
+        });
+        await refreshProfile(profile.uid);
       });
-      await refreshProfile(profile.uid);
       setStatus('Notification settings saved.');
     } catch (error) {
       setStatus(error.message || 'Could not save notification settings.');
@@ -130,7 +134,7 @@ export const ProfileSettingsPage = ({ role }) => {
     try {
       setDeleting(true);
       setStatus('Deleting account…');
-      await deleteCurrentUserAccount(profile.uid);
+      await runOperation({ operationName: 'Deleting your account', successMessage: 'Your account deletion was confirmed.' }, () => deleteCurrentUserAccount(profile.uid));
     } catch (error) {
       const message = error?.code === 'auth/requires-recent-login'
         ? 'Please log out, log back in, and then delete the account again.'

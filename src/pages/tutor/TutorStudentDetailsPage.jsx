@@ -1,12 +1,16 @@
 import { useEffect, useState } from 'react';
 import { FileText, Trash2, UserPlus, X } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { LoaderCircle } from 'lucide-react';
 import { AppShell } from '../../components/common/AppShell';
+import { LoadingState } from '../../components/common/LoadingState';
+import { OperationStatusOverlay } from '../../components/common/OperationStatusOverlay';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
 import { useAuth } from '../../hooks/useAuth';
 import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import {
   generateExercisePlanIfEligible,
   getGlobalTopicOptionGroups,
@@ -16,7 +20,7 @@ import {
   getTutorAssignmentHistoryContexts,
   getTutorAssignmentHistoryData,
   getTutorExercisesForAssignedStudents,
-  getTutorLessonsForAssignedStudents,
+  getTutorLessonRowsForAssignedStudents,
   removeCompletedTopicFromLesson,
   getCompletedPeerMarkingWorkForTutor,
   deleteLessonSession,
@@ -53,12 +57,107 @@ const understandingScorePercent = (value) => {
   const score = Number(value);
   return Number.isFinite(score) ? Math.round(score > 1 ? score : score * 100) : 0;
 };
+
+const loadTutorStudentDetailCore = async ({ tutorId, studentId, periodId, subject, historyRows, currentContexts }) => {
+  if (periodId) {
+    const archivedContext = historyRows.find((item) => item.assignmentPeriodId === periodId);
+    if (!archivedContext) {
+      return {
+        kind: 'unavailable-history',
+        historyRows,
+        currentAssignmentSubjects: [...new Set(currentContexts.map((item) => item.subject).filter(Boolean))],
+        status: 'This assignment history is not available to your account.',
+      };
+    }
+    const archivedData = await getTutorAssignmentHistoryData({ tutorId, studentId, periodId, historyContexts: historyRows });
+    return {
+      kind: 'historical',
+      historyRows,
+      currentAssignmentSubjects: [...new Set(currentContexts.map((item) => item.subject).filter(Boolean))],
+      student: { ...archivedContext, accessRole: 'viewer', historicalAccessRole: archivedContext.accessRole },
+      studentSubjects: [archivedContext.subject],
+      exercises: archivedData.exercises,
+      lessons: archivedData.lessons,
+      peerMarkedWork: archivedData.peerMarkedWork,
+      status: 'Historical assignment records are read-only.',
+    };
+  }
+
+  const accessibleSubjects = [...new Set(currentContexts
+    .filter((item) => item.studentId === studentId)
+    .map((item) => item.subject)
+    .filter(Boolean))];
+  const activeSubject = accessibleSubjects.includes(subject) ? subject : accessibleSubjects[0];
+  if (!activeSubject) {
+    return {
+      kind: 'unavailable-current',
+      historyRows,
+      studentSubjects: accessibleSubjects,
+      currentAssignmentSubjects: accessibleSubjects,
+      status: historyRows.length ? 'No current access. Previous assignment records remain available below.' : 'You do not have access to this student.',
+    };
+  }
+
+  const studentContext = currentContexts.find((item) => item.studentId === studentId && item.subject === activeSubject) ?? null;
+  const [exerciseRows, subjectLessons, peerMarkedRows] = await Promise.all([
+    getTutorExercisesForAssignedStudents(tutorId, [studentContext]),
+    getTutorLessonRowsForAssignedStudents(tutorId, [studentContext]),
+    getCompletedPeerMarkingWorkForTutor({ tutorId, studentId, subject: activeSubject }),
+  ]);
+
+  return {
+    kind: 'current',
+    historyRows,
+    student: studentContext,
+    studentContext,
+    studentSubjects: accessibleSubjects,
+    currentAssignmentSubjects: accessibleSubjects,
+    activeSubject,
+    exercises: exerciseRows.filter((item) => item.studentId === studentId && item.subject === activeSubject),
+    lessons: subjectLessons.filter((item) => item.studentId === studentId && item.subject === activeSubject),
+    peerMarkedWork: peerMarkedRows,
+    status: '',
+  };
+};
+
+const loadTutorStudentDetailAncillary = async ({ tutorId, studentId, activeSubject, studentContext, currentContexts }) => {
+  const eligibleContexts = currentContexts.filter((item) => item.studentId === studentId && item.accessRole === 'co-owner');
+  const [papersResult, eligibilityResult, staffAccessResult] = await Promise.all([
+    getQuestionPapers({ subject: activeSubject, grade: studentContext?.grade, region: studentContext?.province })
+      .then((value) => ({ value }))
+      .catch((error) => ({ error })),
+    getLessonEligibleSubjectGradePairs(eligibleContexts)
+      .then((pairs) => ({ pairs }))
+      .catch((error) => ({ error })),
+    getStaffStudentAccess({ studentId, subject: activeSubject, tutorId, subjectInstanceId: studentContext?.subjectInstanceId })
+      .then((value) => ({ value }))
+      .catch((error) => ({ error })),
+  ]);
+  const topicOptionsResult = papersResult.value
+    ? await getGlobalTopicOptionGroups({
+      subject: activeSubject,
+      grade: studentContext?.grade,
+      studentIds: [studentId],
+      questionPapers: papersResult.value,
+    }).then((value) => ({ value })).catch((error) => ({ error }))
+    : { error: papersResult.error };
+  return {
+    staffAccess: staffAccessResult.value ?? [],
+    lessonEligibleSubjects: [...new Set((eligibilityResult.pairs ?? []).map((pair) => pair.subject))].sort(),
+    lessonEligibilityError: eligibilityResult.error?.message || '',
+    topicOptions: topicOptionsResult.value ?? emptyTopicGroups,
+    error: papersResult.error || staffAccessResult.error || topicOptionsResult.error || null,
+  };
+};
+
 export const TutorStudentDetailsPage = () => {
   const { studentId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const subject = searchParams.get('subject') || DEFAULT_SUBJECT;
   const periodId = searchParams.get('period');
   const { profile, logout } = useAuth();
+  const { operationStatus, runOperation, closeOperationStatus } = useOperationStatus();
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
   const [student, setStudent] = useState(null);
@@ -91,134 +190,164 @@ export const TutorStudentDetailsPage = () => {
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [removingLessonTopicKey, setRemovingLessonTopicKey] = useState('');
 
-  useScreenLoadMetrics(
-    'Student details',
-    location.pathname.startsWith('/teacher') ? 'teacher' : 'tutor',
-    Boolean(student) && !lessonEligibilityLoading,
-    `${studentId}:${subject}:${periodId ?? ''}`,
-  );
-
   useEffect(() => {
     if (!studentId || !profile?.uid || periodId || student?.subject !== subject || !student?.subjectInstanceId) return undefined;
     setRegenerationStatus(null);
     return subscribeToExerciseGenerationStatus(studentId, subject, setRegenerationStatus, student.subjectInstanceId);
   }, [profile?.uid, studentId, subject, periodId, student?.subject, student?.subjectInstanceId]);
 
-  const load = async () => {
-    if (!profile?.uid) return;
-    if (!periodId) {
-      setLessonEligibleSubjects([]);
-      setLessonEligibilityLoading(true);
-      setLessonEligibilityError('');
-    }
-    const [historyRows, currentContexts] = await Promise.all([
-      getTutorAssignmentHistoryContexts(profile.uid, studentId),
-      getTutorAssignedStudentContexts(profile.uid, studentId),
-    ]);
-    setAssignmentHistory(historyRows);
+  const detailKey = ['tutor', 'student-details', profile?.uid ?? '', studentId ?? ''];
+  const contextsQuery = useQuery({
+    queryKey: [...detailKey, 'current-contexts'],
+    queryFn: () => getTutorAssignedStudentContexts(profile.uid, studentId),
+    enabled: Boolean(profile?.uid && studentId),
+    staleTime: 15_000,
+  });
+  const historyQuery = useQuery({
+    queryKey: [...detailKey, 'history-contexts'],
+    queryFn: () => getTutorAssignmentHistoryContexts(profile.uid, studentId),
+    enabled: Boolean(profile?.uid && studentId),
+    staleTime: 15_000,
+  });
+  const currentContexts = contextsQuery.data ?? [];
+  const historyRows = historyQuery.data ?? [];
+  const accessibleSubjects = [...new Set(currentContexts
+    .filter((item) => item.studentId === studentId)
+    .map((item) => item.subject)
+    .filter(Boolean))];
+  const activeSubject = accessibleSubjects.includes(subject) ? subject : accessibleSubjects[0];
+  const activeStudentContext = currentContexts.find((item) => item.studentId === studentId && item.subject === activeSubject) ?? null;
+  const archivedContext = historyRows.find((item) => item.assignmentPeriodId === periodId);
+  const coreSubject = periodId ? archivedContext?.subject : activeSubject;
+  const studentDetailsQuery = useQuery({
+    queryKey: [
+      ...detailKey,
+      'core',
+      periodId ?? 'current',
+      coreSubject ?? subject,
+      activeStudentContext?.subjectInstanceId ?? '',
+      activeStudentContext?.accessRole ?? '',
+      activeStudentContext?.grade ?? '',
+      activeStudentContext?.province ?? '',
+    ],
+    queryFn: () => loadTutorStudentDetailCore({
+      tutorId: profile.uid,
+      studentId,
+      periodId,
+      subject: coreSubject ?? subject,
+      historyRows,
+      currentContexts,
+    }),
+    enabled: Boolean(profile?.uid && studentId && contextsQuery.isSuccess && historyQuery.isSuccess
+      && (periodId ? Boolean(archivedContext) || historyQuery.isSuccess : true)),
+    staleTime: 15_000,
+  });
+  const coreData = studentDetailsQuery.data;
+  const detailListsLoading = Boolean(profile?.uid && studentId && !coreData && !studentDetailsQuery.isError
+    && (contextsQuery.isPending || historyQuery.isPending || studentDetailsQuery.isPending));
+  const ancillaryQuery = useQuery({
+    queryKey: [...detailKey, 'ancillary', activeSubject ?? '', coreData?.studentContext?.subjectInstanceId ?? ''],
+    queryFn: () => loadTutorStudentDetailAncillary({
+      tutorId: profile.uid,
+      studentId,
+      activeSubject: coreData.activeSubject,
+      studentContext: coreData.studentContext,
+      currentContexts,
+    }),
+    enabled: Boolean(isDetailsOpen && student?.accessRole === 'co-owner' && coreData?.kind === 'current' && profile?.uid && studentId),
+    staleTime: 15_000,
+  });
+  const staffMembersQuery = useQuery({
+    queryKey: [...detailKey, 'staff-options', activeSubject ?? ''],
+    queryFn: () => getStaffMembersForAccess({ tutorId: profile.uid, subject: activeSubject }),
+    enabled: Boolean(isDetailsOpen && student?.accessRole === 'co-owner' && profile?.uid && activeSubject),
+    staleTime: 60_000,
+  });
 
-    if (periodId) {
-      setLessonEligibleSubjects([]);
-      setLessonEligibilityLoading(false);
-      const archivedContext = historyRows.find((item) => item.assignmentPeriodId === periodId);
-      if (!archivedContext) {
-        setStudent(null);
-        setStudentSubjects([]);
-        setExercises([]);
-        setLessons([]);
-        setPeerMarkedWork([]);
-        setStatus('This assignment history is not available to your account.');
-        return;
-      }
-      const archivedData = await getTutorAssignmentHistoryData({ tutorId: profile.uid, studentId, periodId, historyContexts: historyRows });
-      setCurrentAssignmentSubjects([...new Set(currentContexts.filter((item) => item.studentId === studentId).map((item) => item.subject))]);
-      const archivedSubject = archivedContext.subject;
-      setStudent({ ...archivedContext, accessRole: 'viewer', historicalAccessRole: archivedContext.accessRole });
-      setStudentSubjects([archivedSubject]);
-      setExercises(archivedData.exercises);
-      setLessons(archivedData.lessons);
-      setPeerMarkedWork(archivedData.peerMarkedWork);
-      setStaffAccess([]);
-      setStaffMembers([]);
-      setStatus('Historical assignment records are read-only.');
-      if (subject !== archivedSubject) setSearchParams({ period: periodId, subject: archivedSubject }, { replace: true });
-      return;
-    }
-
-    const contexts = currentContexts;
-    const accessibleSubjects = [...new Set(contexts
-      .filter((item) => item.studentId === studentId)
-      .map((item) => item.subject)
-      .filter(Boolean))];
-    setStudentSubjects(accessibleSubjects);
-    setCurrentAssignmentSubjects(accessibleSubjects);
-    const activeSubject = accessibleSubjects.includes(subject) ? subject : accessibleSubjects[0];
-    if (!activeSubject) {
-      setLessonEligibleSubjects([]);
-      setLessonEligibilityLoading(false);
-      setStudent(null);
-      setStatus(historyRows.length ? 'No current access. Previous assignment records remain available below.' : 'You do not have access to this student.');
-      return;
-    }
-    if (activeSubject !== subject) setSearchParams({ subject: activeSubject }, { replace: true });
-    const studentContext = contexts.find((item) => item.studentId === studentId && item.subject === activeSubject) ?? null;
-    setLessonEligibilityLoading(true);
-    setLessonEligibilityError('');
-    let papers;
-    let eligibilityResult;
-    let exerciseRows;
-    let subjectLessons;
-    let peerMarkedRows;
-    try {
-      [papers, eligibilityResult, exerciseRows, subjectLessons, peerMarkedRows] = await Promise.all([
-        getQuestionPapers({ subject: activeSubject, grade: studentContext?.grade, region: studentContext?.province }),
-        getLessonEligibleSubjectGradePairs(contexts.filter((item) => item.studentId === studentId && item.accessRole === 'co-owner'))
-          .then((pairs) => ({ pairs }))
-          .catch((error) => ({ error })),
-        getTutorExercisesForAssignedStudents(profile.uid, [studentContext]),
-        getTutorLessonsForAssignedStudents(profile.uid, [studentContext]),
-        getCompletedPeerMarkingWorkForTutor({ tutorId: profile.uid, studentId, subject: activeSubject }),
-      ]);
-    } catch (error) {
-      setLessonEligibilityLoading(false);
-      throw error;
-    }
-    const eligiblePairs = eligibilityResult.pairs || [];
-    exerciseRows = exerciseRows.filter((item) => item.studentId === studentId && item.subject === activeSubject);
-    subjectLessons = subjectLessons.filter((item) => item.studentId === studentId && item.subject === activeSubject);
-    setLessonEligibleSubjects([...new Set(eligiblePairs.map((pair) => pair.subject))].sort());
-    setLessonEligibilityError(eligibilityResult.error?.message || '');
-    setLessonEligibilityLoading(false);
-    setStudent(studentContext);
-    setExercises(exerciseRows);
-    setLessons(subjectLessons);
-    setPeerMarkedWork(peerMarkedRows);
-    const [staffAccessResult, staffMembersResult, topicOptionsResult] = await Promise.all([
-      getStaffStudentAccess({ studentId, subject: activeSubject, tutorId: profile.uid, subjectInstanceId: studentContext?.subjectInstanceId })
-        .then((value) => ({ value }))
-        .catch((error) => ({ error })),
-      studentContext?.accessRole === 'co-owner'
-        ? getStaffMembersForAccess({ tutorId: profile.uid, subject: activeSubject })
-          .then((value) => ({ value }))
-          .catch((error) => ({ error }))
-        : Promise.resolve({ value: [] }),
-      getGlobalTopicOptionGroups({
-        subject: activeSubject,
-        grade: studentContext?.grade,
-        studentIds: [studentId],
-        questionPapers: papers,
-      }).then((value) => ({ value })).catch((error) => ({ error })),
-    ]);
-    setStaffAccess(staffAccessResult.value ?? []);
-    setStaffMembers(staffMembersResult.value ?? []);
-    setTopicOptions(topicOptionsResult.value ?? emptyTopicGroups);
-    const ancillaryError = staffAccessResult.error || staffMembersResult.error || topicOptionsResult.error;
-    if (ancillaryError) setStatus(ancillaryError.message || 'Some student details could not be loaded.');
-  };
+  useScreenLoadMetrics(
+    'Student details',
+    location.pathname.startsWith('/teacher') ? 'teacher' : 'tutor',
+    studentDetailsQuery.isSuccess || studentDetailsQuery.isError || Boolean(contextsQuery.error || historyQuery.error),
+    `${studentId}:${subject}:${periodId ?? ''}`,
+  );
 
   useEffect(() => {
-    load().catch((error) => setStatus(error.message || 'Could not load student details.'));
-  }, [profile?.uid, studentId, subject, periodId]);
+    if (contextsQuery.isFetching || historyQuery.isFetching || studentDetailsQuery.isFetching) {
+      setLessonEligibilityLoading(!studentDetailsQuery.data);
+    }
+  }, [contextsQuery.isFetching, historyQuery.isFetching, studentDetailsQuery.data, studentDetailsQuery.isFetching]);
+
+  useEffect(() => {
+    if (historyQuery.data) setAssignmentHistory(historyQuery.data);
+  }, [historyQuery.data]);
+
+  useEffect(() => {
+    if (contextsQuery.error || historyQuery.error) {
+      setLessonEligibilityLoading(false);
+      setStatus((contextsQuery.error || historyQuery.error).message || 'Could not load student access.');
+    }
+  }, [contextsQuery.error, historyQuery.error]);
+
+  useEffect(() => {
+    if (studentDetailsQuery.isError) {
+      setLessonEligibilityLoading(false);
+      setStatus(studentDetailsQuery.error?.message || 'Could not load student details.');
+      return;
+    }
+    if (!coreData) return;
+
+    setAssignmentHistory(coreData.historyRows);
+    setStudent(coreData.student ?? null);
+    setStudentSubjects(coreData.studentSubjects ?? []);
+    setCurrentAssignmentSubjects(coreData.currentAssignmentSubjects ?? []);
+    if (coreData.kind !== 'current') {
+      setLessonEligibleSubjects([]);
+      setLessonEligibilityError('');
+    }
+    setExercises(coreData.exercises ?? []);
+    setLessons(coreData.lessons ?? []);
+    setPeerMarkedWork(coreData.peerMarkedWork ?? []);
+    setLessonEligibilityLoading(false);
+    if (coreData.kind === 'historical') {
+      setStaffAccess([]);
+      setStaffMembers([]);
+    }
+    if (coreData.status) setStatus(coreData.status);
+    if (coreData.kind === 'current' && coreData.activeSubject !== subject) {
+      setSearchParams({ subject: coreData.activeSubject }, { replace: true });
+    } else if (coreData.kind === 'historical' && coreData.student?.subject !== subject) {
+      setSearchParams({ period: periodId, subject: coreData.student.subject }, { replace: true });
+    }
+  }, [coreData, periodId, setSearchParams, studentDetailsQuery.error, studentDetailsQuery.isError, subject]);
+
+  useEffect(() => {
+    if (!ancillaryQuery.data) return;
+    setStaffAccess(ancillaryQuery.data.staffAccess);
+    setLessonEligibleSubjects(ancillaryQuery.data.lessonEligibleSubjects);
+    setLessonEligibilityError(ancillaryQuery.data.lessonEligibilityError);
+    setTopicOptions(ancillaryQuery.data.topicOptions);
+    if (ancillaryQuery.data.error) setStatus(ancillaryQuery.data.error.message || 'Some student details could not be loaded.');
+  }, [ancillaryQuery.data]);
+
+  useEffect(() => {
+    if (isDetailsOpen && ancillaryQuery.isFetching && !ancillaryQuery.data) setLessonEligibilityLoading(true);
+    else if (ancillaryQuery.data) setLessonEligibilityLoading(false);
+  }, [ancillaryQuery.data, ancillaryQuery.isFetching, isDetailsOpen]);
+
+  useEffect(() => {
+    if (staffMembersQuery.data) setStaffMembers(staffMembersQuery.data);
+  }, [staffMembersQuery.data]);
+
+  const load = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: [...detailKey, 'current-contexts'], exact: true }),
+      queryClient.invalidateQueries({ queryKey: [...detailKey, 'history-contexts'], exact: true }),
+    ]);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: [...detailKey, 'core'] }),
+      queryClient.invalidateQueries({ queryKey: [...detailKey, 'ancillary'] }),
+    ]);
+  };
 
   const canManage = student?.accessRole === 'co-owner';
   const canMark = canManage || student?.accessRole === 'marker';
@@ -228,14 +357,21 @@ export const TutorStudentDetailsPage = () => {
     if (!window.confirm(`Remove “${topic}” from this completed lesson? Its lesson score will be removed and the topic will remain completed only if another completed lesson covers it.`)) return;
     setRemovingLessonTopicKey(operationKey);
     try {
-      const result = await removeCompletedTopicFromLesson({
-        studentId,
-        subjectInstanceId: student.subjectInstanceId,
-        lessonId: lesson.id,
-        subject,
-        topic,
+      const result = await runOperation({
+        operationName: `Removing ${topic} from the lesson`,
+        successMessage: 'The completed lesson topic was updated.',
+        failureMessage: 'Could not remove the completed topic.',
+      }, async () => {
+        const savedResult = await removeCompletedTopicFromLesson({
+          studentId,
+          subjectInstanceId: student.subjectInstanceId,
+          lessonId: lesson.id,
+          subject,
+          topic,
+        });
+        await load();
+        return savedResult;
       });
-      await load();
       setStatus(result.lessonStatus === 'incomplete'
         ? `Removed ${topic}. The lesson has no remaining completed topics and is now incomplete.`
         : result.topicRemainsCompleted
@@ -266,9 +402,12 @@ export const TutorStudentDetailsPage = () => {
     if (!selectedStaffId || !canManage) return;
     setSavingStaffAccess(true);
     try {
-      await setStaffStudentAccess({ actorId: profile.uid, studentId, tutorId: selectedStaffId, subject, accessRole: selectedAccessRole });
+      await runOperation({ operationName: 'Updating staff access', successMessage: 'Staff access was updated.' }, async () => {
+        await setStaffStudentAccess({ actorId: profile.uid, studentId, tutorId: selectedStaffId, subject, accessRole: selectedAccessRole });
+        setStaffAccess(await getStaffStudentAccess({ studentId, subject, tutorId: profile.uid, subjectInstanceId: student?.subjectInstanceId }));
+        await queryClient.invalidateQueries({ queryKey: [...detailKey, 'ancillary'] });
+      });
       setStatus('Staff access updated.');
-      setStaffAccess(await getStaffStudentAccess({ studentId, subject, tutorId: profile.uid, subjectInstanceId: student?.subjectInstanceId }));
       setSelectedStaffId('');
     } catch (error) {
       setStatus(error.message || 'Could not update staff access.');
@@ -279,8 +418,11 @@ export const TutorStudentDetailsPage = () => {
 
   const removeStaffAccess = async (accessId) => {
     try {
-      await revokeStaffStudentAccess({ actorId: profile.uid, studentId, subject, accessId });
-      setStaffAccess(await getStaffStudentAccess({ studentId, subject, tutorId: profile.uid, subjectInstanceId: student?.subjectInstanceId }));
+      await runOperation({ operationName: 'Removing staff access', successMessage: 'Staff access was removed.' }, async () => {
+        await revokeStaffStudentAccess({ actorId: profile.uid, studentId, subject, accessId });
+        setStaffAccess(await getStaffStudentAccess({ studentId, subject, tutorId: profile.uid, subjectInstanceId: student?.subjectInstanceId }));
+        await queryClient.invalidateQueries({ queryKey: [...detailKey, 'ancillary'] });
+      });
       setStatus('Staff access removed.');
     } catch (error) {
       setStatus(error.message || 'Could not remove staff access.');
@@ -301,12 +443,16 @@ export const TutorStudentDetailsPage = () => {
     setIsRegenerating(true);
     setStatus('Starting exercise regeneration...');
     try {
-      const result = await regenerateFutureUnsubmittedExercisesForTutor({
+      const result = await runOperation({
+        operationName: `Regenerating ${subject} exercises`,
+        successMessage: 'Exercise generation has finished.',
+        failureMessage: 'Could not regenerate exercises.',
+      }, () => regenerateFutureUnsubmittedExercisesForTutor({
         tutorId: profile.uid,
         student: { ...student, uid: studentId },
         subject,
         onProgress: setStatus,
-      });
+      }));
       setStatus(result.generated
         ? `${result.reason} The student can now see the updated exercises.`
         : `No exercises were replaced: ${result.reason || 'No complete replacement set was available.'}`);
@@ -322,9 +468,12 @@ export const TutorStudentDetailsPage = () => {
     if (!window.confirm(`Delete “${exercise.title || 'this exercise'}” for ${student?.displayName || student?.name || 'this student'}? This cannot be undone.`)) return;
     setDeletingExerciseId(exercise.id);
     try {
-      const result = await deleteExerciseAssignmentForTutor({ tutorId: profile.uid, exerciseId: exercise.id });
-      await deleteExerciseSubmissionFiles(result.storageUrls);
-      setExercises((current) => current.filter((item) => item.id !== exercise.id));
+      await runOperation({ operationName: 'Deleting exercise and uploaded work', successMessage: 'The exercise and its submitted files were deleted.' }, async () => {
+        const result = await deleteExerciseAssignmentForTutor({ tutorId: profile.uid, exerciseId: exercise.id });
+        await deleteExerciseSubmissionFiles(result.storageUrls);
+        setExercises((current) => current.filter((item) => item.id !== exercise.id));
+        await queryClient.invalidateQueries({ queryKey: [...detailKey, 'core'] });
+      });
       setStatus('Exercise deleted.');
     } catch (error) {
       setStatus(error.message || 'Could not delete exercise.');
@@ -346,55 +495,65 @@ export const TutorStudentDetailsPage = () => {
       setStatus('Choose at least one topic, date, lesson type, score from 0 to 10, and enter the lesson report.');
       return;
     }
-    const topics = lessonForm.topicUnderstandingScores.map((entry) => entry.topic);
-    const understandingLevel = Math.round(lessonForm.topicUnderstandingScores.reduce((sum, entry) => sum + Number(entry.understandingLevel ?? 5), 0) / topics.length);
-    const topicScoresText = lessonForm.topicUnderstandingScores.map((entry) => `${entry.topic}: ${Math.round(Number(entry.understandingLevel) * 10)}%`).join('\n');
-    const report = [`--- ${topics.join(' | ')} ---`, 'Topics completed:', topicScoresText, 'Tutor report:', lessonForm.topicReport, `Date: ${new Date().toLocaleString()}`].join('\n');
+    try {
+      await runOperation({
+        operationName: 'Completing lesson and updating exercises',
+        successMessage: 'The lesson, report, and topic scores have been saved.',
+        failureMessage: 'Could not complete and save this lesson.',
+      }, async () => {
+        const topics = lessonForm.topicUnderstandingScores.map((entry) => entry.topic);
+        const understandingLevel = Math.round(lessonForm.topicUnderstandingScores.reduce((sum, entry) => sum + Number(entry.understandingLevel ?? 5), 0) / topics.length);
+        const topicScoresText = lessonForm.topicUnderstandingScores.map((entry) => `${entry.topic}: ${Math.round(Number(entry.understandingLevel) * 10)}%`).join('\n');
+        const report = [`--- ${topics.join(' | ')} ---`, 'Topics completed:', topicScoresText, 'Tutor report:', lessonForm.topicReport, `Date: ${new Date().toLocaleString()}`].join('\n');
 
-    const completedEntries = lessonForm.topicUnderstandingScores.map((entry) => ({ ...entry, topicReport: lessonForm.topicReport }));
-    const plannedLessons = lessons.filter((item) => item.status === 'planned' || item.status === 'incomplete');
-    const lessonToComplete = plannedLessons.find((item) =>
-      (item.topics?.length ? item.topics : [item.topic]).some((itemTopic) => topics.some((topicName) => topicName.toLocaleLowerCase() === String(itemTopic).toLocaleLowerCase())),
-    );
-    const lessonPayload = {
-      tutorId: profile.uid,
-      studentId,
-      subject,
-      topic: topics[0],
-      topics,
-      topicUnderstandingScores: completedEntries,
-      topicReport: lessonForm.topicReport,
-      understandingLevel,
-      studentName: student?.displayName || student?.name || 'Student',
-      lessonDate: lessonForm.lessonDate,
-      lessonType: lessonForm.lessonType,
-      whatsappLessonLink: lessonForm.whatsappLessonLink,
-      locationDetails: lessonForm.locationDetails,
-      status: 'completed',
-    };
-    const lesson = lessonToComplete
-      ? await updateCompletedLesson({ lessonId: lessonToComplete.id, ...lessonPayload })
-      : await saveCompletedLesson({ ...lessonPayload, requestId: lessonLogRequestId });
-    await saveTutorReport({ reportId: `lesson-${lesson.id}`, tutorId: profile.uid, studentId, subject, reportType: 'lesson', note: report, studentName: student?.displayName || student?.name || 'Student' });
-    const completedTopicKeys = new Set(topics.map((topicName) => topicName.toLocaleLowerCase()));
-    const duplicatePlannedLessons = plannedLessons.filter((item) => item.id !== lessonToComplete?.id
-      && (item.topics?.length ? item.topics : [item.topic]).some((itemTopic) => completedTopicKeys.has(String(itemTopic).toLocaleLowerCase())));
-    if (duplicatePlannedLessons.length) {
-      await deleteLessonSession({ tutorId: profile.uid, lessonRows: duplicatePlannedLessons });
+        const completedEntries = lessonForm.topicUnderstandingScores.map((entry) => ({ ...entry, topicReport: lessonForm.topicReport }));
+        const plannedLessons = lessons.filter((item) => item.status === 'planned' || item.status === 'incomplete');
+        const lessonToComplete = plannedLessons.find((item) =>
+          (item.topics?.length ? item.topics : [item.topic]).some((itemTopic) => topics.some((topicName) => topicName.toLocaleLowerCase() === String(itemTopic).toLocaleLowerCase())),
+        );
+        const lessonPayload = {
+          tutorId: profile.uid,
+          studentId,
+          subject,
+          topic: topics[0],
+          topics,
+          topicUnderstandingScores: completedEntries,
+          topicReport: lessonForm.topicReport,
+          understandingLevel,
+          studentName: student?.displayName || student?.name || 'Student',
+          lessonDate: lessonForm.lessonDate,
+          lessonType: lessonForm.lessonType,
+          whatsappLessonLink: lessonForm.whatsappLessonLink,
+          locationDetails: lessonForm.locationDetails,
+          status: 'completed',
+        };
+        const lesson = lessonToComplete
+          ? await updateCompletedLesson({ lessonId: lessonToComplete.id, ...lessonPayload })
+          : await saveCompletedLesson({ ...lessonPayload, requestId: lessonLogRequestId });
+        await saveTutorReport({ reportId: `lesson-${lesson.id}`, tutorId: profile.uid, studentId, subject, reportType: 'lesson', note: report, studentName: student?.displayName || student?.name || 'Student' });
+        const completedTopicKeys = new Set(topics.map((topicName) => topicName.toLocaleLowerCase()));
+        const duplicatePlannedLessons = plannedLessons.filter((item) => item.id !== lessonToComplete?.id
+          && (item.topics?.length ? item.topics : [item.topic]).some((itemTopic) => completedTopicKeys.has(String(itemTopic).toLocaleLowerCase())));
+        if (duplicatePlannedLessons.length) {
+          await deleteLessonSession({ tutorId: profile.uid, lessonRows: duplicatePlannedLessons });
+        }
+        const generation = await generateExercisePlanIfEligible({
+          student: { ...student, uid: studentId },
+          subject,
+          mode: 'weekly',
+          completedLesson: lesson,
+          understandingLevel,
+          onProgress: setStatus,
+        });
+        setLessonForm(emptyLessonForm);
+        setStatus(generation.generated
+          ? 'Lesson completed and exercises regenerated.'
+          : `Lesson completed and saved. Exercise generation did not start: ${generation.reason || 'unknown reason'}`);
+        await load();
+      });
+    } catch (error) {
+      setStatus(error.message || 'Could not complete and save this lesson.');
     }
-    const generation = await generateExercisePlanIfEligible({
-      student: { ...student, uid: studentId },
-      subject,
-      mode: 'weekly',
-      completedLesson: lesson,
-      understandingLevel,
-      onProgress: setStatus,
-    });
-    setLessonForm(emptyLessonForm);
-    setStatus(generation.generated
-      ? 'Lesson completed and exercises regenerated.'
-      : `Lesson completed and saved. Exercise generation did not start: ${generation.reason || 'unknown reason'}`);
-    await load();
   };
 
   return (
@@ -405,6 +564,7 @@ export const TutorStudentDetailsPage = () => {
           <span>{regenerationInProgress ? regenerationStatus?.message || status || 'Regenerating exercises...' : status}</span>
         </div>
       ) : null}
+      {detailListsLoading ? <LoadingState label="Loading student exercises, lessons, and marking history…" /> : null}
       <Link to={`${basePath}`} className="hidden w-fit items-center gap-2 text-lime-400 hover:text-lime-300 sm:inline-flex"><span aria-hidden="true">&lt;</span><span>Assigned students</span></Link>
 
       {student?.historicalAccessRole ? <div className="panel border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-800">
@@ -456,8 +616,8 @@ export const TutorStudentDetailsPage = () => {
       {canManage ? <section className="panel space-y-4 p-5">
         <SectionHeader eyebrow="Staff access" title="Share this student" description="Grant another tutor or teacher co-owner, marker, or viewer access for this subject." />
         <div className="grid gap-3 md:grid-cols-[1fr_180px_auto]">
-          <select className="input" value={selectedStaffId} onChange={(event) => setSelectedStaffId(event.target.value)}>
-            <option value="">Choose tutor or teacher</option>
+          <select className="input" value={selectedStaffId} onChange={(event) => setSelectedStaffId(event.target.value)} disabled={staffMembersQuery.isFetching}>
+            <option value="">{staffMembersQuery.isFetching ? 'Loading tutors and teachers…' : 'Choose tutor or teacher'}</option>
             {staffMembers.map((member) => <option key={member.uid} value={member.uid}>{member.displayName || member.email} {member.isTeacher === true || member.isTeacher === 'true' || member.role === 'teacher' ? '(Teacher)' : '(Tutor)'}</option>)}
           </select>
           <select className="input" value={selectedAccessRole} onChange={(event) => setSelectedAccessRole(event.target.value)}>
@@ -468,11 +628,12 @@ export const TutorStudentDetailsPage = () => {
           </button>
         </div>
         <div className="divide-y divide-slate-200">
+          {ancillaryQuery.isFetching || staffMembersQuery.isFetching ? <LoadingState label="Loading staff access…" /> : null}
           {staffAccess.map((entry) => <div key={entry.id} className="flex items-center justify-between gap-3 py-3">
             <div><p className="font-medium text-slate-900">{entry.displayName}</p><p className="text-sm capitalize text-slate-500">{entry.accessRole}</p></div>
             <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => removeStaffAccess(entry.id)}><X className="h-4 w-4" aria-hidden="true" /> Remove</button>
           </div>)}
-          {!staffAccess.length ? <p className="py-2 text-sm text-slate-500">No additional staff have access.</p> : null}
+          {!ancillaryQuery.isFetching && !staffAccess.length ? <p className="py-2 text-sm text-slate-500">No additional staff have access.</p> : null}
         </div>
       </section> : null}
 
@@ -489,7 +650,7 @@ export const TutorStudentDetailsPage = () => {
                 setStatus('');
                 setSearchParams({ subject: event.target.value });
               }}
-              disabled={lessonEligibilityLoading || !lessonEligibleSubjects.length}
+              disabled={lessonEligibilityLoading || ancillaryQuery.isFetching || !lessonEligibleSubjects.length}
             >
               <option value="">{lessonEligibilityLoading ? 'Checking analyzed papers…' : 'Choose an analyzed subject'}</option>
               {lessonEligibleSubjects.map((eligibleSubject) => <option key={eligibleSubject} value={eligibleSubject}>{eligibleSubject}</option>)}
@@ -513,10 +674,11 @@ export const TutorStudentDetailsPage = () => {
           )}
           <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
             <select className="input" value={lessonForm.selectedTopic} onChange={(event) => setLessonForm((current) => ({ ...current, selectedTopic: event.target.value }))} disabled={!lessonEligibleSubjects.includes(subject) || !topicOptions.all.length}>
-              <option value="">{topicOptions.all.length ? 'Choose topic' : 'No topics available'}</option>
+              <option value="">{ancillaryQuery.isFetching ? 'Loading topics…' : topicOptions.all.length ? 'Choose topic' : 'No topics available'}</option>
               {topicOptions.extracted.length ? <optgroup label="Past paper extracted topics">{topicOptions.extracted.map((topic) => <option key={`paper-${topic}`}>{topic}</option>)}</optgroup> : null}
               {topicOptions.manual.length ? <optgroup label="Manual topic list">{topicOptions.manual.map((topic) => <option key={`manual-${topic}`}>{topic}</option>)}</optgroup> : null}
             </select>
+            {ancillaryQuery.isFetching && !ancillaryQuery.data ? <LoadingState className="min-h-12 p-3" label="Loading topic choices…" /> : null}
             <button type="button" className="btn-secondary" onClick={addTopic} disabled={!lessonForm.selectedTopic}>Add topic</button>
           </div>
           <p className="text-sm text-slate-600">Enter an understanding score from 0 to 10 for every topic covered in this lesson.</p>
@@ -528,7 +690,7 @@ export const TutorStudentDetailsPage = () => {
             </div>
           ))}
           <textarea className="input min-h-32" value={lessonForm.topicReport} onChange={(event) => setLessonForm((current) => ({ ...current, topicReport: event.target.value }))} placeholder="Lesson report" />
-          <button type="button" className="btn-primary" onClick={completeLesson} disabled={lessonEligibilityLoading || !lessonEligibleSubjects.includes(subject) || !lessonForm.topicUnderstandingScores.length || !lessonForm.topicReport.trim() || !hasValidScores(lessonForm.topicUnderstandingScores)}>Lesson completed</button>
+          <button type="button" className="btn-primary" onClick={completeLesson} disabled={lessonEligibilityLoading || ancillaryQuery.isFetching || !lessonEligibleSubjects.includes(subject) || !lessonForm.topicUnderstandingScores.length || !lessonForm.topicReport.trim() || !hasValidScores(lessonForm.topicUnderstandingScores)}>Lesson completed</button>
         </section>
       ) : null}
 
@@ -557,7 +719,7 @@ export const TutorStudentDetailsPage = () => {
               })}</div>
             </div> : null}
           </div>;
-        })}{!lessons.length ? <p className="text-sm text-slate-500">No lessons yet.</p> : null}</div>
+        })}{!detailListsLoading && !studentDetailsQuery.isError && !lessons.length ? <p className="text-sm text-slate-500">No lessons yet.</p> : null}</div>
       </section>
       </section></div> : null}
 
@@ -587,7 +749,7 @@ export const TutorStudentDetailsPage = () => {
                 <Trash2 className="h-4 w-4" aria-hidden="true" /> {deletingExerciseId === exercise.id ? 'Deleting...' : 'Delete'}
               </button> : null}
             </div>
-          ))}{!exercises.length ? <p className="text-sm text-slate-400">No exercises yet.</p> : null}</div>
+          ))}{!detailListsLoading && !studentDetailsQuery.isError && !exercises.length ? <p className="text-sm text-slate-400">No exercises yet.</p> : null}</div>
       </section>
 
       <section className="space-y-4">
@@ -628,8 +790,14 @@ export const TutorStudentDetailsPage = () => {
             </div>
           </article>
         ))}
-        {!peerMarkedWork.length ? <div className="panel p-5 text-sm text-slate-500">No completed peer-marking work is available yet.</div> : null}
+        {!detailListsLoading && !studentDetailsQuery.isError && !peerMarkedWork.length ? <div className="panel p-5 text-sm text-slate-500">No completed peer-marking work is available yet.</div> : null}
       </section>
+      <OperationStatusOverlay
+        state={operationStatus?.state}
+        operationName={operationStatus?.operationName}
+        message={operationStatus?.message}
+        onDone={closeOperationStatus}
+      />
     </AppShell>
   );
 };

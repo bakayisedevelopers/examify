@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { StatCard } from '../../components/common/StatCard';
 import { SectionHeader } from '../../components/common/SectionHeader';
+import { LoadingState } from '../../components/common/LoadingState';
 import { useAuth } from '../../hooks/useAuth';
 import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
 import { getRecentExerciseGenerationWarningsForAdmin, getRoleDashboardData } from '../../services/firestoreService';
@@ -12,6 +13,7 @@ export const AdminDashboardPage = () => {
   const [dashboard, setDashboard] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [generationWarnings, setGenerationWarnings] = useState([]);
+  const [warningsLoading, setWarningsLoading] = useState(true);
 
   useScreenLoadMetrics('Admin dashboard', 'admin', Boolean(dashboard || loadError));
 
@@ -22,7 +24,7 @@ export const AdminDashboardPage = () => {
     });
     getRecentExerciseGenerationWarningsForAdmin().then(setGenerationWarnings).catch((error) => {
       console.error('[Examifying][AdminDashboard] generation warnings load:error', error);
-    });
+    }).finally(() => setWarningsLoading(false));
   }, []);
 
   const latestWarnings = [...new Map([...generationWarnings]
@@ -32,9 +34,10 @@ export const AdminDashboardPage = () => {
   return (
     <AppShell title="Admin dashboard" subtitle="Monitor users, tutors, papers, subscriptions, and overall platform activity across Examifying." role="admin" user={profile} onLogout={logout}>
       {loadError ? <div className="panel border border-rose-200 p-4 text-sm font-medium text-rose-700" role="alert">{loadError}</div> : null}
-      {!dashboard && !loadError ? <div className="panel p-5 text-sm text-slate-500" role="status">Loading admin dashboard…</div> : null}
+      {!dashboard && !loadError ? <LoadingState label="Loading admin dashboard…" /> : null}
       {dashboard ? <>
-      {latestWarnings.length ? <section className="panel border border-amber-300/30 p-5">
+      {warningsLoading ? <LoadingState label="Loading exercise-generation alerts…" /> : null}
+      {latestWarnings.length && !warningsLoading ? <section className="panel border border-amber-300/30 p-5">
         <SectionHeader eyebrow="Question coverage" title="More analyzed questions needed" description="Some topics or exercise dates could not be fully covered by distinct analyzed paper questions. Add and analyze more past papers to expand coverage." />
         <div className="mt-4 space-y-3">
           {latestWarnings.map((warning) => <div key={`${warning.studentId}:${warning.subject}:${warning.id}`} className="rounded-lg border border-amber-200/20 bg-amber-400/5 p-3">

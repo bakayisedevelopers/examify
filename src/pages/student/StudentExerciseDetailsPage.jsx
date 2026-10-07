@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
+import { LoadingState } from '../../components/common/LoadingState';
 import { ExerciseCard } from '../../components/dashboard/ExerciseCard';
 import { useAuth } from '../../hooks/useAuth';
 import { getCompletedPeerMarkingAssignmentsForStudent, getExerciseAssignmentById, getStudentEntitlementState, getTopicUnderstandingQuestionScores } from '../../services/firestoreService';
 import { getExerciseAvailability } from '../../utils/exerciseRules';
+import { getExerciseTopicNames, getPeerMarkingTopicNames, uniqueTopicNames } from '../../utils/exerciseTopicRows';
 
 export const StudentExerciseDetailsPage = () => {
   const { exerciseId } = useParams();
@@ -14,11 +16,13 @@ export const StudentExerciseDetailsPage = () => {
   const [exercise, setExercise] = useState(null);
   const [paymentLocked, setPaymentLocked] = useState(false);
   const [status, setStatus] = useState('Loading exercise...');
+  const [isLoading, setIsLoading] = useState(true);
   const [completedMarkingAssignments, setCompletedMarkingAssignments] = useState([]);
   const [scoreEntries, setScoreEntries] = useState([]);
 
   useEffect(() => {
     let active = true;
+    setIsLoading(true);
     const load = async () => {
       try {
         const assignment = await getExerciseAssignmentById(exerciseId, { studentId: profile?.uid, subjectInstanceId });
@@ -34,14 +38,10 @@ export const StudentExerciseDetailsPage = () => {
         ]);
         if (!active) return;
         setPaymentLocked(!access.paymentCompleted);
-        const topicNames = [...new Set([
-          ...(assignment.questionLinks ?? []).map((item) => item.topic),
-          ...(assignment.topicBreakdown ?? []).map((item) => item.topic),
-          ...String(assignment.topic ?? '').split('|'),
-          ...markingAssignments.flatMap((item) => [
-            ...(item.topics ?? []), item.topic, ...(item.questionLinks ?? []).map((link) => link.topic),
-          ]),
-        ].map((topic) => String(topic ?? '').trim()).filter(Boolean))];
+        const topicNames = uniqueTopicNames([
+          ...getExerciseTopicNames(assignment),
+          ...markingAssignments.flatMap(getPeerMarkingTopicNames),
+        ]);
         const questionScores = await getTopicUnderstandingQuestionScores({
           studentId: assignment.studentId || profile?.uid,
           subjectInstanceId: assignment.subjectInstanceId,
@@ -57,7 +57,7 @@ export const StudentExerciseDetailsPage = () => {
         setStatus(error.message ?? 'Could not load exercise.');
       }
     };
-    load();
+    load().finally(() => { if (active) setIsLoading(false); });
     return () => { active = false; };
   }, [exerciseId, profile?.uid, subjectInstanceId]);
 
@@ -65,7 +65,8 @@ export const StudentExerciseDetailsPage = () => {
 
   return (
     <AppShell title="Exercise details" subtitle={exercise ? `${exercise.subject} • ${exercise.assignmentDate}` : status} role="student" user={profile} onLogout={logout}>
-      {status ? <div className="panel p-5 text-sm text-slate-500">{status}</div> : null}
+      {isLoading ? <LoadingState label="Loading exercise details and scores…" /> : null}
+      {status && !isLoading ? <div className="panel p-5 text-sm text-slate-500">{status}</div> : null}
       {exercise && availability ? (
         <div className="space-y-4">
           <Link to="/student" className="btn-secondary inline-flex w-fit">Back to today’s exercises</Link>

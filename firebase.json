@@ -6,7 +6,7 @@
   "hosting": [
     {
       "target": "student",
-      "public": "dist",
+      "public": "dist-sites/student",
       "ignore": [
         "firebase.json",
         "**/.*",
@@ -21,7 +21,7 @@
     },
     {
       "target": "tutor",
-      "public": "dist",
+      "public": "dist-sites/tutor",
       "ignore": [
         "firebase.json",
         "**/.*",
@@ -36,7 +36,7 @@
     },
     {
       "target": "teacher",
-      "public": "dist",
+      "public": "dist-sites/teacher",
       "ignore": [
         "firebase.json",
         "**/.*",
@@ -51,7 +51,7 @@
     },
     {
       "target": "parent",
-      "public": "dist",
+      "public": "dist-sites/parent",
       "ignore": [
         "firebase.json",
         "**/.*",
@@ -66,7 +66,7 @@
     },
     {
       "target": "admin",
-      "public": "dist",
+      "public": "dist-sites/admin",
       "ignore": [
         "firebase.json",
         "**/.*",

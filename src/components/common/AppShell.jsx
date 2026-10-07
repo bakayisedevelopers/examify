@@ -1,27 +1,22 @@
 import { useMemo, useState } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, BookOpen, ClipboardCheck, CreditCard, FileText, LogOut, Users, ShieldCheck, Menu, X, ChevronLeft, GraduationCap, Tag } from 'lucide-react';
+import { LayoutDashboard, BookOpen, CreditCard, LogOut, Users, Menu, X, ChevronLeft, GraduationCap, Tag } from 'lucide-react';
 import { Logo } from './Logo';
 import { ROLES } from '../../lib/constants';
 import { useAuth } from '../../hooks/useAuth';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 
 const navigationByRole = {
   [ROLES.STUDENT]: [
     { to: '/student', label: 'Overview', icon: LayoutDashboard },
-    // { to: '/student/exercises', label: 'Exercises', icon: BookOpen },
     { to: '/student/lessons', label: 'Lessons', icon: GraduationCap },
     { to: '/student/papers', label: 'Past papers', icon: BookOpen },
-    { to: '/student/peer-reviews', label: 'Peer reviews', icon: ClipboardCheck },
-    { to: '/student/guide', label: 'Examifying Guide', icon: ClipboardCheck },
   ],
   [ROLES.TUTOR]: [
     { to: '/tutor', label: 'Overview', icon: LayoutDashboard },
-    { to: '/tutor/exercises', label: 'Exercises', icon: ClipboardCheck },
     { to: '/tutor/lessons', label: 'Lessons', icon: GraduationCap },
     { to: '/tutor/papers', label: 'Past papers', icon: BookOpen },
-    { to: '/tutor/reports', label: 'Reports', icon: FileText },
-    { to: '/tutor/guide', label: 'Examifying Guide', icon: ClipboardCheck },
   ],
   [ROLES.ADMIN]: [
     { to: '/admin', label: 'Overview', icon: LayoutDashboard },
@@ -29,7 +24,6 @@ const navigationByRole = {
     { to: '/admin/papers', label: 'Past papers', icon: BookOpen },
     { to: '/admin/payments', label: 'Payments', icon: CreditCard },
     { to: '/admin/discount-codes', label: 'Discount codes', icon: Tag },
-    { to: '/admin/settings', label: 'Settings', icon: ShieldCheck },
   ],
   [ROLES.PARENT]: [
     { to: '/parent', label: 'Overview', icon: LayoutDashboard },
@@ -37,17 +31,15 @@ const navigationByRole = {
 };
 
 import { useEffectiveRole } from '../../utils/effectiveRole';
+import { warmNavigationRoute } from '../../routes/preloadNavigationRoute';
 
 const getNavigationForRole = (role, isTeacher) => {
   const prefix = isTeacher ? '/teacher' : `/${role}`;
   if (role === ROLES.TUTOR || isTeacher) {
     return [
       { to: prefix, label: 'Overview', icon: LayoutDashboard },
-      { to: `${prefix}/exercises`, label: 'Exercises', icon: ClipboardCheck },
       { to: `${prefix}/lessons`, label: 'Lessons', icon: GraduationCap },
       { to: `${prefix}/papers`, label: 'Past papers', icon: BookOpen },
-      { to: `${prefix}/reports`, label: 'Reports', icon: FileText },
-      { to: `${prefix}/guide`, label: 'Examifying Guide', icon: ClipboardCheck },
     ];
   }
   return navigationByRole[role] ?? [];
@@ -60,11 +52,10 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
   const { profile, user: authUser } = useAuth();
   const account = useMemo(() => ({ ...(authUser ?? {}), ...(profile ?? {}), ...(user ?? {}) }), [authUser, profile, user]);
   const subscriptionState = useStudentSubscriptionState(effectiveRole === ROLES.STUDENT ? account : null);
+  const { runOperation } = useOperationStatus();
   const isFreeStudent = effectiveRole === ROLES.STUDENT && !subscriptionState?.paymentCompleted;
   const roleNavigation = getNavigationForRole(effectiveRole, effectiveRole === 'teacher');
-  const navigation = isFreeStudent
-    ? roleNavigation.filter((item) => item.to === '/student/papers')
-    : roleNavigation;
+  const navigation = roleNavigation;
   const homePath = isFreeStudent ? '/student/papers' : `/${effectiveRole}`;
   const profilePath = `/${effectiveRole}/profile`;
   const displayName = account.displayName || account.name || account.fullName || 'Account';
@@ -77,9 +68,10 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
     .map((part) => part[0].toUpperCase())
     .join('') || 'U';
   const identityLabel = effectiveRole === ROLES.STUDENT
-    ? (subscriptionState?.subscriptionPlanName || 'Checking subscription')
+    ? (subscriptionState?.subscriptionPlanName || 'Student')
     : ({ teacher: 'Teacher', tutor: 'Tutor', admin: 'Admin', parent: 'Parent' }[effectiveRole] || 'Account');
   const navigate = useNavigate();
+  const handleLogout = () => runOperation({ operationName: 'Signing out', successMessage: 'You have been signed out.', autoDismissMs: 650 }, () => onLogout?.()).catch(() => {});
 
   return (
     <div className="fixed inset-0 overflow-hidden bg-slate-950 text-slate-100 selection:bg-lime-400 selection:text-slate-950 lg:static lg:h-screen">
@@ -148,6 +140,9 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
           <Link
             to={profilePath}
             onClick={() => setIsMobileMenuOpen(false)}
+            onMouseEnter={() => warmNavigationRoute(profilePath)}
+            onFocus={() => warmNavigationRoute(profilePath)}
+            onPointerDown={() => warmNavigationRoute(profilePath)}
           className="mb-5 hidden min-w-0 flex-col items-center border-b border-slate-800 pb-5 text-center transition hover:opacity-90 lg:flex"
           >
             <span className="relative flex h-14 w-14 flex-none items-center justify-center overflow-hidden rounded-full border border-slate-700 bg-slate-800 text-sm font-semibold text-lime-300">
@@ -167,6 +162,9 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
                 to={to}
                 end={to === `/${effectiveRole}`}
                 onClick={() => setIsMobileMenuOpen(false)}
+                onMouseEnter={() => warmNavigationRoute(to)}
+                onFocus={() => warmNavigationRoute(to)}
+                onPointerDown={() => warmNavigationRoute(to)}
                 className={({ isActive }) =>
                   `flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-medium transition ${
                     isActive
@@ -182,7 +180,7 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
           </nav>
           <div className="mt-auto hidden rounded-2xl border border-slate-800 bg-slate-950/80 p-4 lg:block">
             <p className="text-xs uppercase tracking-[0.25em] text-slate-400">Signed in</p>
-            <button type="button" onClick={() => { setIsMobileMenuOpen(false); onLogout(); }} className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-rose-400 hover:text-rose-300">
+            <button type="button" onClick={() => { setIsMobileMenuOpen(false); handleLogout(); }} className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-rose-400 hover:text-rose-300">
               <LogOut className="h-4 w-4" />
               Log out
             </button>

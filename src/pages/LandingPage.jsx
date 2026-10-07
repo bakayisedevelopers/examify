@@ -182,7 +182,7 @@ export const LandingPage = () => {
       </section>
 
       {/* ================= THE 70 - 20 - 10 METHOD EXPLAINED ================= */}
-      <section className="relative border-y border-lime-500/20 bg-slate-900/40 py-20">
+      <section id="method" className="relative scroll-mt-24 border-y border-lime-500/20 bg-slate-900/40 py-20">
         <div className="mx-auto max-w-7xl px-4 lg:px-6">
           <div className="mx-auto max-w-3xl text-center space-y-4">
             <div className="inline-flex items-center gap-2 rounded-full border border-lime-400/40 bg-lime-400/10 px-4 py-1.5 text-xs font-bold uppercase tracking-[0.2em] text-lime-300">
@@ -414,7 +414,7 @@ export const LandingPage = () => {
         </div>
       </section>
 
-      <section ref={pricingSectionRef} id="subscription-pricing" className="scroll-mt-6 border-y border-lime-500/20 bg-slate-900/40 py-20">
+      <section ref={pricingSectionRef} id="pricing" className="scroll-mt-24 border-y border-lime-500/20 bg-slate-900/40 py-20">
         <div className="mx-auto max-w-7xl px-4 lg:px-6">
           <SubscriptionPlanSelector
             onContinue={continueFromPricing}

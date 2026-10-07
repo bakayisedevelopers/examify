@@ -8,6 +8,8 @@ import { getQuestionPapersByIds, saveTutorMarkedExercise } from '../../services/
 import { MarkingCanvas as ImageEditor } from '../canvas/pictureEditorCanvas';
 import { ImagePageViewer } from '../common/ImagePageViewer';
 import { ExerciseTopicScoresTable } from './ExerciseTopicScoresTable';
+import { OperationStatusOverlay } from '../common/OperationStatusOverlay';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 
 const imagePages = (images, fallbackUrl, fallbackName) => Array.isArray(images) && images.length
   ? images
@@ -44,6 +46,7 @@ export const ExerciseCard = ({
   const [isTutorMarking, setIsTutorMarking] = useState(false);
   const [markStatus, setMarkStatus] = useState('');
   const [openViewer, setOpenViewer] = useState('');
+  const { operationStatus, runOperation, closeOperationStatus } = useOperationStatus();
 
   useEffect(() => {
     setMarkedImages(imagePages(exercise.tutorMarkedImages, exercise.tutorMarkedImageUrl, exercise.tutorMarkedFileName));
@@ -76,7 +79,11 @@ export const ExerciseCard = ({
     }
   };
 
-  const handleSaveTutorMark = async (files) => {
+  const handleSaveTutorMark = async (files) => runOperation({
+    operationName: 'Saving tutor-marked work',
+    successMessage: 'The marked pages were uploaded and saved successfully.',
+    failureMessage: 'Could not save marked work.',
+  }, async () => {
     const uploads = [];
     setMarkStatus('Saving marked work...');
     try {
@@ -89,20 +96,25 @@ export const ExerciseCard = ({
       setMarkedImages(newMarkedImages);
       setMarkStatus('Marked work saved and completed.');
       setIsTutorMarking(false);
+      return newMarkedImages;
     } catch (error) {
       await deleteExerciseSubmissionFiles(uploads.map((upload) => upload.url));
       setMarkStatus(error.message || 'Could not save marked work.');
       throw error;
     }
-  };
+  });
 
-  const handleStudentSubmit = async ({ files, exerciseId }) => {
+  const handleStudentSubmit = async ({ files, exerciseId }) => runOperation({
+    operationName: 'Submitting exercise work',
+    successMessage: 'Your work was uploaded and the submission was saved.',
+    failureMessage: 'Could not submit your exercise work.',
+  }, async () => {
     const result = await uploadSubmissionImages({ files, exerciseId, studentId, subjectInstanceId: exercise.subjectInstanceId });
     setStudentSubmissionUrl(result.submittedImageUrl);
     setStudentSubmissionFileName(result.submittedFileName);
     setStudentSubmissionImages(result.submittedImages ?? imagePages([], result.submittedImageUrl, result.submittedFileName));
     return result;
-  };
+  });
 
   const hasMarkingImages = peerMarkingImages.length || peerMarkedImages.length || markedImages.length;
   const hasSubmittedImages = studentSubmissionImages.length > 0;
@@ -234,6 +246,12 @@ export const ExerciseCard = ({
         canEditScores={canEditTopicScores}
         canEditMarkingScores={canTutorAct}
         onTopicScoreSaved={onTopicScoreSaved}
+      />
+      <OperationStatusOverlay
+        state={operationStatus?.state}
+        operationName={operationStatus?.operationName}
+        message={operationStatus?.message}
+        onDone={closeOperationStatus}
       />
     </div>
   );

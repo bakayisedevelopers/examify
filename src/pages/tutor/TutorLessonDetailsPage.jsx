@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
+import { LoadingState } from '../../components/common/LoadingState';
+import { OperationStatusOverlay } from '../../components/common/OperationStatusOverlay';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { useAuth } from '../../hooks/useAuth';
 import { DEFAULT_SUBJECT, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
@@ -22,6 +24,7 @@ import {
   updatePlannedLessonRoster,
 } from '../../services/firestoreService';
 import { useEffectiveRole } from '../../utils/effectiveRole';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { MessageCircle } from 'lucide-react';
 
 const today = () => {
@@ -65,8 +68,10 @@ export const TutorLessonDetailsPage = () => {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
   const { role, basePath } = useEffectiveRole();
+  const { operationStatus, runOperation, closeOperationStatus } = useOperationStatus();
   const [contexts, setContexts] = useState([]);
   const [contextsLoaded, setContextsLoaded] = useState(false);
+  const [existingLessonLoading, setExistingLessonLoading] = useState(!isNew);
   const [eligibleSubjectGrades, setEligibleSubjectGrades] = useState([]);
   const [eligibilityLoaded, setEligibilityLoaded] = useState(false);
   const [eligibilityError, setEligibilityError] = useState('');
@@ -88,6 +93,7 @@ export const TutorLessonDetailsPage = () => {
   const [status, setStatus] = useState('');
   const [statusTone, setStatusTone] = useState('info');
   const [plannedRequestId, setPlannedRequestId] = useState(createSessionId);
+  const [pendingOperationNavigation, setPendingOperationNavigation] = useState('');
 
   const plannedRequestFingerprint = JSON.stringify({
     subject, grade, lessonDate, lessonType, whatsappLessonLink, locationDetails, sessionMode,
@@ -163,6 +169,7 @@ export const TutorLessonDetailsPage = () => {
   useEffect(() => {
     if (isNew || !lessonId || !contextsLoaded || !profile?.uid) return;
     let cancelled = false;
+    setExistingLessonLoading(true);
     const load = async () => {
       const lesson = await getLessonById(lessonId, { tutorId: profile.uid });
       if (!lesson) throw new Error('Lesson not found.');
@@ -197,7 +204,8 @@ export const TutorLessonDetailsPage = () => {
         }];
       })));
     };
-    load().catch((error) => { if (!cancelled) setStatus(error.message || 'Could not load the lesson.'); });
+    load().catch((error) => { if (!cancelled) setStatus(error.message || 'Could not load the lesson.'); })
+      .finally(() => { if (!cancelled) setExistingLessonLoading(false); });
     return () => { cancelled = true; };
   }, [contexts, contextsLoaded, isNew, lessonId, profile?.uid]);
 
@@ -339,22 +347,29 @@ export const TutorLessonDetailsPage = () => {
     setStatus('');
     setStatusTone('info');
     try {
-      const groupSessionId = sessionMode === 'group' ? plannedRequestId : '';
-      const createdRows = await savePlannedLessonSession({
-        tutorId: profile.uid,
-        subject,
-        students: selectedStudents,
-        topics,
-        lessonDate,
-        lessonType,
-        whatsappLessonLink,
-        locationDetails,
-        sessionMode,
-        groupSessionId,
-        operationId: plannedRequestId,
+      const createdRows = await runOperation({
+        operationName: 'Scheduling lesson',
+        successMessage: 'The lesson schedule was saved successfully.',
+        failureMessage: 'Could not create the lesson.',
+      }, async () => {
+        const groupSessionId = sessionMode === 'group' ? plannedRequestId : '';
+        const rows = await savePlannedLessonSession({
+          tutorId: profile.uid,
+          subject,
+          students: selectedStudents,
+          topics,
+          lessonDate,
+          lessonType,
+          whatsappLessonLink,
+          locationDetails,
+          sessionMode,
+          groupSessionId,
+          operationId: plannedRequestId,
+        });
+        if (!rows.length) throw new Error('No lesson records were created.');
+        return rows;
       });
-      if (!createdRows.length) throw new Error('No lesson records were created.');
-      navigate(`${basePath}/lessons/${createdRows[0].id}`);
+      setPendingOperationNavigation(`${basePath}/lessons/${createdRows[0].id}`);
     } catch (error) {
       setStatus(getLessonErrorMessage(error, 'Could not create the lesson.'));
       setStatusTone('error');
@@ -367,6 +382,11 @@ export const TutorLessonDetailsPage = () => {
     setIsSaving(true);
     setStatus('');
     try {
+      await runOperation({
+        operationName: 'Saving lesson records',
+        successMessage: 'Attendance, reports, and topic scores were saved.',
+        failureMessage: 'Could not save the lesson records.',
+      }, async () => {
       const savedRows = await completeLessonSession({
         tutorId: profile.uid,
         lessonRows,
@@ -418,6 +438,7 @@ export const TutorLessonDetailsPage = () => {
         setStatus(`Lesson records saved for ${savedRows.length} student${savedRows.length === 1 ? '' : 's'}; no students attended.`);
         setStatusTone('info');
       }
+      });
     } catch (error) {
       setStatus(error.message || 'Could not save the lesson records.');
     } finally {
@@ -429,13 +450,17 @@ export const TutorLessonDetailsPage = () => {
     setIsSaving(true);
     setStatus('');
     try {
-      const updatedRows = await updatePlannedLessonDetails({
-        tutorId: profile.uid,
-        lessonRows,
-        lessonType,
-        whatsappLessonLink,
-        locationDetails,
-      });
+      const updatedRows = await runOperation({
+        operationName: 'Updating lesson details',
+        successMessage: 'The scheduled lesson details were saved.',
+        failureMessage: 'Could not update lesson details.',
+      }, () => updatePlannedLessonDetails({
+          tutorId: profile.uid,
+          lessonRows,
+          lessonType,
+          whatsappLessonLink,
+          locationDetails,
+        }));
       setLessonRows(updatedRows);
       setStatus('Scheduled lesson details updated.');
     } catch (error) {
@@ -450,12 +475,16 @@ export const TutorLessonDetailsPage = () => {
     setStatus('');
     try {
       const addStudents = addableStudents.filter((student) => studentsToAdd.includes(student.studentId));
-      const updatedRows = await updatePlannedLessonRoster({
-        tutorId: profile.uid,
-        lessonRows,
-        addStudents,
-        removeLessonIds,
-      });
+      const updatedRows = await runOperation({
+        operationName: 'Updating lesson roster',
+        successMessage: 'The lesson roster was updated successfully.',
+        failureMessage: 'Could not update the group roster.',
+      }, () => updatePlannedLessonRoster({
+          tutorId: profile.uid,
+          lessonRows,
+          addStudents,
+          removeLessonIds,
+        }));
       setLessonRows(updatedRows);
       setSelectedStudentIds(updatedRows.map((row) => row.studentId));
       setParticipants((current) => Object.fromEntries(updatedRows.map((row) => [row.id, current[row.id] || emptyParticipant()])));
@@ -472,8 +501,12 @@ export const TutorLessonDetailsPage = () => {
     if (!lessonRows.length || !window.confirm('Cancel this planned lesson session? The cancelled records will remain in lesson history.')) return;
     setIsSaving(true);
     try {
-      await deleteLessonSession({ tutorId: profile.uid, lessonRows });
-      navigate(`${basePath}/lessons`);
+      await runOperation({
+        operationName: 'Cancelling lesson session',
+        successMessage: 'The lesson session was cancelled and kept in history.',
+        failureMessage: 'Could not cancel the lesson session.',
+      }, () => deleteLessonSession({ tutorId: profile.uid, lessonRows }));
+      setPendingOperationNavigation(`${basePath}/lessons`);
     } catch (error) {
       setStatus(error.message || 'Could not delete the lesson session.');
     } finally {
@@ -488,6 +521,7 @@ export const TutorLessonDetailsPage = () => {
     <AppShell title={isNew ? 'Schedule lesson' : 'Lesson records'} subtitle="Plan lessons by student and log attendance, reports, and topic scores." role={role} user={profile} onLogout={logout}>
       <Link to={`${basePath}/lessons`} className="btn-secondary inline-flex w-fit">Back to lessons</Link>
       {status ? <div className={`panel p-4 text-sm ${statusTone === 'error' ? 'border border-rose-200 bg-rose-50 font-medium text-rose-800' : 'text-slate-700'}`} role={statusTone === 'error' ? 'alert' : 'status'}>{status}</div> : null}
+      {(!contextsLoaded || (isNew && !eligibilityLoaded) || (!isNew && existingLessonLoading)) ? <LoadingState label={isNew ? 'Loading assigned students and lesson topics…' : 'Loading lesson roster and records…'} /> : null}
 
       {isNew ? (
         <section className="panel space-y-5 p-5">
@@ -550,7 +584,7 @@ export const TutorLessonDetailsPage = () => {
                     {getStudentLessonBlocker(student) ? <span className="max-w-48 text-right text-xs text-amber-700">{getStudentLessonBlocker(student)}</span> : null}
                   </label>
                 ))}
-                {!availableStudents.length ? <p className="p-3 text-sm text-slate-500">No current co-owner students match this subject and grade.</p> : null}
+                {contextsLoaded && !availableStudents.length ? <p className="p-3 text-sm text-slate-500">No current co-owner students match this subject and grade.</p> : null}
               </div>
             )}
             {sessionMode === 'group' ? <p className="text-xs text-slate-500">Selected: {selectedStudentIds.length}. Group students must share the selected subject and grade.</p> : null}
@@ -616,7 +650,7 @@ export const TutorLessonDetailsPage = () => {
                     {isSaving ? 'Saving…' : `Add ${studentsToAdd.length || ''} student${studentsToAdd.length === 1 ? '' : 's'}`}
                   </button>
                 </div>
-              ) : <p className="text-sm text-slate-500">No other current co-owner students match this subject and grade.</p>}
+              ) : contextsLoaded ? <p className="text-sm text-slate-500">No other current co-owner students match this subject and grade.</p> : null}
             </section>
           ) : null}
           <TopicPicker topicOptions={topicOptions} selectedTopic={selectedTopic} setSelectedTopic={setSelectedTopic} addTopic={addTopic} topics={topics} removeTopic={removeTopic} disabled={!isEditable} />
@@ -673,6 +707,19 @@ export const TutorLessonDetailsPage = () => {
           </div>
         </section>
       )}
+      <OperationStatusOverlay
+        state={operationStatus?.state}
+        operationName={operationStatus?.operationName}
+        message={operationStatus?.message}
+        onDone={() => {
+          closeOperationStatus();
+          if (pendingOperationNavigation) {
+            const destination = pendingOperationNavigation;
+            setPendingOperationNavigation('');
+            navigate(destination);
+          }
+        }}
+      />
     </AppShell>
   );
 };

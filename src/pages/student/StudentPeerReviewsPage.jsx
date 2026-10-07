@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
 import { AppShell } from '../../components/common/AppShell';
+import { LoadingState } from '../../components/common/LoadingState';
+import { OperationStatusOverlay } from '../../components/common/OperationStatusOverlay';
 import { PeerReviewForm } from '../../components/dashboard/PeerReviewForm';
 import { useAuth } from '../../hooks/useAuth';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import {
   completePeerMarkingAssignment,
   getActiveSubjectEpisodesForStudent,
@@ -13,6 +16,7 @@ import { DEFAULT_SUBJECT } from '../../lib/constants';
 
 export const StudentPeerReviewsPage = () => {
   const { profile, logout } = useAuth();
+  const { operationStatus, runOperation, closeOperationStatus } = useOperationStatus();
   const [availableSubjects, setAvailableSubjects] = useState([]);
   const [availableSubjectEpisodes, setAvailableSubjectEpisodes] = useState([]);
   const [selectedSubject, setSelectedSubject] = useState(DEFAULT_SUBJECT);
@@ -54,7 +58,11 @@ export const StudentPeerReviewsPage = () => {
     return () => { active = false; };
   }, [profile, selectedSubject, availableSubjectEpisodes]);
 
-  const submitMarkedPages = async (files) => {
+  const submitMarkedPages = async (files) => runOperation({
+    operationName: 'Submitting peer marking',
+    successMessage: 'Your marked pages were uploaded and the marking submission was saved.',
+    failureMessage: 'Could not submit peer marking.',
+  }, async () => {
     if (!assignment || !profile?.uid) throw new Error('No peer marking assignment is available.');
     setIsSubmitting(true);
     setStatus('Uploading marked pages...');
@@ -79,7 +87,7 @@ export const StudentPeerReviewsPage = () => {
     } finally {
       setIsSubmitting(false);
     }
-  };
+  });
 
   const images = assignment?.submittedImages?.length
     ? assignment.submittedImages
@@ -97,7 +105,7 @@ export const StudentPeerReviewsPage = () => {
         </select>
       </div>
       {status ? <div role="status" className="panel p-4 text-sm text-slate-600">{status}</div> : null}
-      {isLoading ? <div className="panel p-5 text-sm text-slate-500">Loading peer marking...</div> : null}
+      {isLoading ? <LoadingState label="Loading peer-marking assignment…" /> : null}
       {!isLoading && paymentCompleted === false ? <div className="panel p-5 text-sm text-amber-700">An active paid subject is required before peer marking unlocks.</div> : null}
       {!isLoading && paymentCompleted && !assignment ? <div className="panel p-5 text-sm text-slate-500">No peer marking assignment is available for this subject yet.</div> : null}
       {!isLoading && assignment ? <PeerReviewForm
@@ -106,6 +114,12 @@ export const StudentPeerReviewsPage = () => {
         canReview={Boolean(paymentCompleted && assignment.status === 'assigned' && !isSubmitting)}
         onSubmit={submitMarkedPages}
       /> : null}
+      <OperationStatusOverlay
+        state={operationStatus?.state}
+        operationName={operationStatus?.operationName}
+        message={operationStatus?.message}
+        onDone={closeOperationStatus}
+      />
     </AppShell>
   );
 };

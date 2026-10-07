@@ -2,13 +2,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
+import { LoadingState } from '../../components/common/LoadingState';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
 import { useAuth } from '../../hooks/useAuth';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { deleteExerciseAssignmentForTutor, getTutorAssignedStudentContexts, getTutorExercisesForAssignedStudents } from '../../services/firestoreService';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
 import { isExerciseSubmitted } from '../../services/exerciseGenerationPlan';
 import { useEffectiveRole } from '../../utils/effectiveRole';
+import { warmNavigationRoute } from '../../routes/preloadNavigationRoute';
 
 const getLocalDate = () => {
   const now = new Date();
@@ -17,6 +20,7 @@ const getLocalDate = () => {
 
 export const TutorExercisesPage = () => {
   const { profile, logout } = useAuth();
+  const { runOperation } = useOperationStatus();
   const navigate = useNavigate();
   const { role, basePath } = useEffectiveRole();
   const [exercises, setExercises] = useState([]);
@@ -25,16 +29,26 @@ export const TutorExercisesPage = () => {
   const [subjectFilter, setSubjectFilter] = useState('all');
   const [status, setStatus] = useState('');
   const [deletingExerciseId, setDeletingExerciseId] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
   const today = getLocalDate();
 
   useEffect(() => {
-    if (!profile?.uid) return;
+    if (!profile?.uid) { setIsLoading(false); return undefined; }
+    let active = true;
+    setIsLoading(true);
+    setStatus('');
     getTutorAssignedStudentContexts(profile.uid).then((contextRows) =>
       getTutorExercisesForAssignedStudents(profile.uid, contextRows).then((exerciseRows) => [exerciseRows, contextRows]),
     ).then(([exerciseRows, contextRows]) => {
+      if (!active) return;
       setExercises(exerciseRows);
       setContexts(contextRows);
+    }).catch((error) => {
+      if (active) setStatus(error.message || 'Could not load exercises.');
+    }).finally(() => {
+      if (active) setIsLoading(false);
     });
+    return () => { active = false; };
   }, [profile?.uid]);
 
   const subjects = useMemo(() => [...new Set(contexts.map((item) => item.subject).filter(Boolean))], [contexts]);
@@ -53,9 +67,11 @@ export const TutorExercisesPage = () => {
     if (!window.confirm(`Delete “${exercise.title || 'this exercise'}” for ${exercise.studentName || 'this student'}? This cannot be undone.`)) return;
     setDeletingExerciseId(exercise.id);
     try {
-      const result = await deleteExerciseAssignmentForTutor({ tutorId: profile.uid, exerciseId: exercise.id });
-      await deleteExerciseSubmissionFiles(result.storageUrls);
-      setExercises((current) => current.filter((item) => item.id !== exercise.id));
+      await runOperation({ operationName: 'Deleting exercise and uploaded work', successMessage: 'The exercise and its submitted files were deleted.' }, async () => {
+        const result = await deleteExerciseAssignmentForTutor({ tutorId: profile.uid, exerciseId: exercise.id });
+        await deleteExerciseSubmissionFiles(result.storageUrls);
+        setExercises((current) => current.filter((item) => item.id !== exercise.id));
+      });
       setStatus('Exercise deleted.');
     } catch (error) {
       setStatus(error.message || 'Could not delete exercise.');
@@ -79,9 +95,10 @@ export const TutorExercisesPage = () => {
       {status ? <div role="status" className="panel p-4 text-sm text-slate-300">{status}</div> : null}
       <SectionHeader eyebrow="Assigned work" title="Student exercises" description="Filter by all, student, or subject. Only students assigned to you are shown." />
       <div className="grid gap-4">
+        {isLoading ? <LoadingState label="Loading assigned exercises…" /> : null}
         {filteredExercises.map((exercise) => (
           <div key={exercise.id} className="panel flex flex-wrap items-center justify-between gap-3 p-5">
-            <button type="button" onClick={() => openExercise(exercise)} className="min-w-0 flex-1 text-left transition">
+            <button type="button" onClick={() => openExercise(exercise)} onMouseEnter={() => warmNavigationRoute(`${basePath}/exercises/${exercise.id}`)} onFocus={() => warmNavigationRoute(`${basePath}/exercises/${exercise.id}`)} onPointerDown={() => warmNavigationRoute(`${basePath}/exercises/${exercise.id}`)} className="min-w-0 flex-1 text-left transition">
               <div>
                 <p className="font-semibold text-slate-100">{exercise.title}</p>
                 <p className="mt-1 text-sm text-slate-400">{exercise.studentName || exercise.studentId} • {exercise.subject} • {exercise.assignmentDate}</p>
@@ -96,7 +113,7 @@ export const TutorExercisesPage = () => {
             ) : null}
           </div>
         ))}
-        {!filteredExercises.length ? <div className="panel p-5 text-sm text-slate-500">No exercises match this filter.</div> : null}
+        {!isLoading && !status && !filteredExercises.length ? <div className="panel p-5 text-sm text-slate-500">No exercises match this filter.</div> : null}
       </div>
     </AppShell>
   );

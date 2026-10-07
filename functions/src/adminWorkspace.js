@@ -159,14 +159,22 @@ const getDashboard = async (db, users, userById, activeEpisodes, metrics) => {
   const paymentsQuery = db.collectionGroup('payments');
   const [paymentCountSnapshot, createdAtSnapshot, updatedAtSnapshot] = await Promise.all([
     recordRead(metrics, () => paymentsQuery.count().get()),
-    recordRead(metrics, () => paymentsQuery.orderBy('createdAt', 'desc').limit(8).get()),
-    recordRead(metrics, () => paymentsQuery.orderBy('updatedAt', 'desc').limit(8).get()),
+    recordRead(metrics, () => paymentsQuery.orderBy('createdAt', 'desc').limit(8).get()).catch((error) => {
+      if (error?.code !== 9 && error?.code !== 'failed-precondition') throw error;
+      logger.warn('Admin dashboard is using a full payment read while the createdAt collection-group index builds.');
+      return null;
+    }),
+    recordRead(metrics, () => paymentsQuery.orderBy('updatedAt', 'desc').limit(8).get()).catch((error) => {
+      if (error?.code !== 9 && error?.code !== 'failed-precondition') throw error;
+      logger.warn('Admin dashboard is using a full payment read while the updatedAt collection-group index builds.');
+      return null;
+    }),
   ]);
   const paymentCount = paymentCountSnapshot.data().count;
   const paymentDocuments = new Map();
-  [...createdAtSnapshot.docs, ...updatedAtSnapshot.docs].forEach((document) => paymentDocuments.set(document.ref.path, document));
+  [...(createdAtSnapshot?.docs ?? []), ...(updatedAtSnapshot?.docs ?? [])].forEach((document) => paymentDocuments.set(document.ref.path, document));
   let recentPaymentDocuments = [...paymentDocuments.values()];
-  if (recentPaymentDocuments.length < Math.min(8, paymentCount)) {
+  if (!createdAtSnapshot || !updatedAtSnapshot || recentPaymentDocuments.length < Math.min(8, paymentCount)) {
     const allPaymentsSnapshot = await recordRead(metrics, () => paymentsQuery.get());
     recentPaymentDocuments = allPaymentsSnapshot.docs;
   }

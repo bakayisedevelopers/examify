@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { REGIONS, ROLES, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
 import { useAuth } from '../../hooks/useAuth';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { Logo } from '../../components/common/Logo';
 import { normalizeWhatsAppNumber } from '../../utils/whatsapp';
 import { LEGAL_POLICY_VERSION } from '../../lib/legalPolicyVersion';
@@ -13,6 +14,7 @@ export const SignupPage = () => {
   const portal = getPortal();
   const portalConfig = getPortalConfig(portal);
   const { register, profile, loading } = useAuth();
+  const { runOperation } = useOperationStatus();
   const [creating, setCreating] = useState(false);
 
   const initialRole = portalConfig.signupRole || ROLES.STUDENT;
@@ -118,7 +120,7 @@ export const SignupPage = () => {
 
     try {
       const effectiveRole = form.role === 'teacher' ? ROLES.TUTOR : form.role;
-      const result = await register({
+      const result = await runOperation({ operationName: 'Creating your account', successMessage: 'Your account was created.', autoDismissMs: 650 }, () => register({
         fullName: form.fullName,
         email: form.email,
         password: form.password,
@@ -137,7 +139,7 @@ export const SignupPage = () => {
           isTeacher: form.role === 'teacher',
           marketingEmailOptIn: form.marketingEmailOptIn,
         },
-      });
+      }));
 
       const targetRoute = form.role === 'teacher' ? '/teacher' : `/${result.profile.role}`;
       const selection = new URLSearchParams(location.search);

@@ -50,6 +50,7 @@ import { calculateSubscriptionQuote, getEffectiveSubscriptionState, isSubscripti
 import { normalizeWhatsAppLessonLink } from '../utils/whatsapp';
 import { buildLessonTopicScores } from './lessonPersistence';
 import { trackDataRequest, trackFirestoreListener, trackFirestoreRead } from './performanceTelemetry';
+import { queryClient } from '../lib/queryClient';
 
 const getDoc = (...args) => trackFirestoreRead('getDoc', () => firebaseGetDoc(...args));
 const getDocs = (...args) => trackFirestoreRead('getDocs', () => firebaseGetDocs(...args));
@@ -2223,9 +2224,16 @@ export const getQuestionPapers = async ({ grade, region, subject = DEFAULT_SUBJE
   }
 
   ensureDb();
-  const snapshot = await getDocs(query(collection(db, collections.questionPapers), where('subject', '==', subject)));
+  const paperRows = await queryClient.fetchQuery({
+    queryKey: ['reference', 'question-papers', subject],
+    queryFn: async () => {
+      const snapshot = await getDocs(query(collection(db, collections.questionPapers), where('subject', '==', subject)));
+      return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+    },
+    staleTime: 10_000,
+  });
   return filterQuestionPapers(
-    snapshot.docs.map((item) => ({ id: item.id, ...item.data() })).filter(isAnalyzedQuestionPaper),
+    paperRows.filter(isAnalyzedQuestionPaper),
     { grade, region, subject, allowNational: true },
   );
 };
@@ -2259,7 +2267,7 @@ export const getQuestionPaperById = async (id) => {
   return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
 };
 
-export const subscribeQuestionPaperAnalysisActivity = (paperId, callback) => {
+export const subscribeQuestionPaperAnalysisActivity = (paperId, callback, onError = () => {}) => {
   if (!paperId || !isFirebaseConfigured) {
     callback([]);
     return () => {};
@@ -2298,12 +2306,12 @@ export const subscribeQuestionPaperAnalysisActivity = (paperId, callback) => {
           currentRun.batches = batchesSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
           runData.set(runId, currentRun);
           publish();
-        });
+        }, onError);
         runUnsubscribers.set(runId, unsubscribe);
       }
     });
     publish();
-  });
+  }, onError);
 
   return () => {
     stopped = true;
@@ -2313,7 +2321,7 @@ export const subscribeQuestionPaperAnalysisActivity = (paperId, callback) => {
   };
 };
 
-export const subscribeQuestionPapers = (callback) => {
+export const subscribeQuestionPapers = (callback, onError = () => {}) => {
   if (!isFirebaseConfigured) {
     callback(mockQuestionPapers);
     return () => {};
@@ -2321,7 +2329,7 @@ export const subscribeQuestionPapers = (callback) => {
   ensureDb();
   return onSnapshot(collection(db, collections.questionPapers), (snapshot) => {
     callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
-  });
+  }, onError);
 };
 
 const getQuestionPaperDuplicateFields = (paper = {}) => ({
@@ -2388,6 +2396,7 @@ export const saveQuestionPaper = async (paper) => {
   };
 
   const ref = await addDoc(collection(db, collections.questionPapers), payload);
+  await queryClient.invalidateQueries({ queryKey: ['reference', 'question-papers'] });
   return { id: ref.id, ...payload };
 };
 
@@ -2406,6 +2415,7 @@ export const updateQuestionPaper = async (paperId, patch) => {
     updatedAt: serverTimestamp(),
   };
   await updateDoc(paperRef, payload);
+  await queryClient.invalidateQueries({ queryKey: ['reference', 'question-papers'] });
   return { id: paperId, ...payload };
 };
 
@@ -2535,7 +2545,7 @@ export const saveTutorMarkedExercise = async ({ tutorId, exerciseId, markedImage
 export const getCompletedPeerMarkingWorkForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT }) => {
   if (!tutorId || !studentId || !isFirebaseConfigured) return [];
   const callable = httpsCallable(functions, 'getCompletedPeerMarkingWorkForTutor');
-  return (await callable({ studentId, subject })).data;
+  return trackDataRequest('Completed peer-marking work', async () => (await callable({ studentId, subject })).data);
 };
 
 export const getCompletedPeerMarkingAssignmentsForStudent = async (reviewerId, subject = DEFAULT_SUBJECT) => {
@@ -3266,17 +3276,17 @@ export const subscribeToSubjectUnderstandingSummary = (studentId, subject, callb
   };
 };
 
-export const subscribeToAssignedStudentsForTutor = (tutorId, callback, subject = DEFAULT_SUBJECT) => {
+export const subscribeToAssignedStudentsForTutor = (tutorId, callback, subject = DEFAULT_SUBJECT, onError = () => {}) => {
   if (!isFirebaseConfigured) {
-    getAssignedStudentsForTutor(tutorId, subject).then(callback);
+    getAssignedStudentsForTutor(tutorId, subject).then(callback).catch(onError);
     return () => {};
   }
-  const refresh = () => getAssignedStudentsForTutor(tutorId, subject).then(callback).catch((error) => console.error('[Examifying][Firestore] subscribeToAssignedStudents error', error));
+  const refresh = () => getAssignedStudentsForTutor(tutorId, subject).then(callback).catch(onError);
   const subjectsUnsubscribe = onSnapshot(query(
       collectionGroup(db, 'subjects'),
       where('activeStaffIds', 'array-contains', tutorId),
       where('status', '==', 'active'),
-    ), refresh);
+    ), refresh, onError);
   return () => {
     subjectsUnsubscribe();
   };
@@ -3466,6 +3476,29 @@ export const getTutorLessonsForAssignedStudents = async (tutorId, knownContexts 
     contexts[index].subjectInstanceId,
   )));
   return lessonsByContext.flat();
+};
+
+export const getTutorLessonRowsForAssignedStudents = async (tutorId, knownContexts = null) => {
+  const contexts = knownContexts ?? await getTutorAssignedStudentContexts(tutorId);
+  if (!isFirebaseConfigured) return contexts.flatMap((context) => mockCompletedLessons
+    .filter((lesson) => lesson.studentId === context.studentId && (lesson.subject ?? DEFAULT_SUBJECT) === context.subject)
+    .map((lesson) => ({
+      ...lesson,
+      subjectInstanceId: context.subjectInstanceId,
+      studentName: context.displayName || context.name || context.email || 'Student',
+    })));
+  const snapshots = await Promise.all(contexts.filter((context) => context.subjectInstanceId).map((context) => getDocs(
+    collection(db, 'users', context.studentId, 'subjects', context.subjectInstanceId, 'lessons'),
+  )));
+  const validContexts = contexts.filter((context) => context.subjectInstanceId);
+  return snapshots.flatMap((snapshot, index) => snapshot.docs.map((item) => ({
+    id: item.id,
+    ...item.data(),
+    studentId: validContexts[index].studentId,
+    subjectInstanceId: validContexts[index].subjectInstanceId,
+    studentName: validContexts[index].displayName || validContexts[index].name || validContexts[index].email || 'Student',
+    documentPath: item.ref.path,
+  })));
 };
 
 export const getTutorLessonPresenceForContexts = async (contexts = []) => {

@@ -5,11 +5,13 @@ import { SubscriptionLifecyclePanel } from '../../components/billing/Subscriptio
 import { useAuth } from '../../hooks/useAuth';
 import { updateUserProfileDetails } from '../../services/authService';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 
 export const StudentProfilePage = () => {
   const { profile, logout, isDemoMode } = useAuth();
   const navigate = useNavigate();
   const subscriptionState = useStudentSubscriptionState(profile);
+  const { runOperation } = useOperationStatus();
   
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
   const [whatsappNumber, setWhatsAppNumber] = useState(profile?.whatsappNumber || '');
@@ -22,12 +24,12 @@ export const StudentProfilePage = () => {
     setSaving(true);
     setMessage('');
     try {
-      await updateUserProfileDetails({
+      await runOperation({ operationName: 'Updating your profile', successMessage: 'Your profile was updated.' }, () => updateUserProfileDetails({
         uid: profile?.uid,
         displayName,
         whatsappNumber,
         newPassword: password || undefined,
-      });
+      }));
       setMessage('Profile updated successfully!');
       setPassword('');
       if (isDemoMode) {

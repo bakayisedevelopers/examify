@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
+import { LoaderCircle } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
+import { LoadingState } from '../../components/common/LoadingState';
 import { useAuth } from '../../hooks/useAuth';
+import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
 import { ROLES } from '../../lib/constants';
 import { getTutorBillingSummary } from '../../services/firestoreService';
@@ -12,9 +15,11 @@ import { refreshStudentSubscriptionState, setStudentSubscriptionState } from '..
 
 export const ProfileBillingPage = ({ role }) => {
   const { profile, logout, refreshProfile } = useAuth();
+  const { runOperation } = useOperationStatus();
   const navigate = useNavigate();
   const location = useLocation();
   const [summary, setSummary] = useState(null);
+  const [summaryLoading, setSummaryLoading] = useState(role === ROLES.TUTOR);
   const [subscriptionStatus, setSubscriptionStatus] = useState('');
   const [isStartingSubscription, setIsStartingSubscription] = useState(false);
   const subscriptionState = useStudentSubscriptionState(role === ROLES.STUDENT ? profile : null);
@@ -23,11 +28,11 @@ export const ProfileBillingPage = ({ role }) => {
     setSubscriptionStatus('');
     setIsStartingSubscription(true);
     try {
-      const result = await initializeSubscriptionPayment({
+      const result = await runOperation({ operationName: 'Starting subscription checkout', successMessage: 'The subscription request is ready.' }, () => initializeSubscriptionPayment({
         studentId: profile.uid,
         ...selection,
         callbackUrl: `${window.location.origin}/student/billing`,
-      });
+      }));
       if (result.freeCheckout) {
         const refreshedProfile = await refreshProfile(profile.uid);
         await refreshStudentSubscriptionState(refreshedProfile || profile);
@@ -71,10 +76,11 @@ export const ProfileBillingPage = ({ role }) => {
 
   useEffect(() => {
     if (role === ROLES.TUTOR && profile?.uid) {
+      setSummaryLoading(true);
       getTutorBillingSummary(profile.uid).then(setSummary).catch((error) => {
         console.error('[Examifying][TutorBilling] load:error', error);
         setSummary({ totalLessons: 0, studentsTutored: 0, subjectsTutored: [], recentLessons: [] });
-      });
+      }).finally(() => setSummaryLoading(false));
     }
   }, [profile?.uid, role]);
 
@@ -82,7 +88,7 @@ export const ProfileBillingPage = ({ role }) => {
     return (
       <AppShell title="Subscription" subtitle="Choose your plan and billing period." role={role} user={profile} onLogout={logout}>
         <div className="panel mb-5 p-4 text-sm">
-          {!subscriptionState ? <p role="status">Checking your current subscription…</p> : (
+          {!subscriptionState ? <p className="inline-flex items-center gap-2" role="status"><LoaderCircle className="h-4 w-4 animate-spin text-lime-400" aria-hidden="true" />Checking your current subscription…</p> : (
             <>
               <p>Current plan: <strong>{subscriptionState.subscriptionPlanName}</strong>{subscriptionState.paymentCompleted ? ` · ${subscriptionState.subscriptionSubjectCount} subjects` : ''}{subscriptionState.subscriptionRenewalDate ? ` · renews ${new Date(subscriptionState.subscriptionRenewalDate?.toDate?.() ?? subscriptionState.subscriptionRenewalDate).toLocaleDateString()}` : ''}</p>
               {subscriptionState.subscriptionPlanId === 'free' ? <p className="mt-2 text-amber-700">{subscriptionState.requiresSubscriptionSelection ? 'Your account is on Free until you choose a subscription and complete payment.' : 'Free includes Past Papers. Choose a paid subscription to unlock the Examifying Program.'} Question papers remain available.</p> : null}
@@ -134,13 +140,14 @@ export const ProfileBillingPage = ({ role }) => {
         <section className="panel p-5">
           <p className="text-sm font-semibold text-slate-950">Recent lessons</p>
           <div className="mt-4 space-y-3">
+            {summaryLoading ? <LoadingState label="Loading recent lessons…" /> : null}
             {(summary?.recentLessons ?? []).map((lesson) => (
               <div key={lesson.id ?? `${lesson.studentId}-${lesson.topic}-${lesson.completedOn}`} className="rounded-2xl bg-slate-50 p-4 text-sm">
                 <p className="font-semibold text-slate-900">{lesson.topic}</p>
                 <p className="mt-1 text-slate-500">{lesson.subject} • {lesson.studentName ?? 'Student'} • {lesson.completedOn ?? 'No date'}</p>
               </div>
             ))}
-            {summary && !summary.recentLessons?.length ? <p className="text-sm text-slate-500">No completed lessons have been recorded yet.</p> : null}
+            {!summaryLoading && summary && !summary.recentLessons?.length ? <p className="text-sm text-slate-500">No completed lessons have been recorded yet.</p> : null}
           </div>
         </section>
       </AppShell>

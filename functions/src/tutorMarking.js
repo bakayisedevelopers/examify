@@ -1,5 +1,6 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { admin, getDb } from './admin.js';
+import { getExerciseTopicNames } from './peerMarkingAllocation.js';
 
 const normalizeTopicKey = (value = '') => String(value)
   .normalize('NFKD')
@@ -184,8 +185,7 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
     throw new HttpsError('failed-precondition', 'The peer assignment does not match the student subject.');
   }
 
-  const assignmentTopics = [...new Set((Array.isArray(assignment.topics) && assignment.topics.length ? assignment.topics : [assignment.topic])
-    .map((topic) => String(topic || '').trim()).filter(Boolean))];
+  const assignmentTopics = getExerciseTopicNames(assignment);
   const scoreEntries = [...new Map(topicMarks.map((item) => {
     const topicName = String(item?.topic || '').trim();
     const canonicalTopicKey = normalizeTopicKey(topicName);
@@ -328,12 +328,7 @@ export const saveTutorExerciseScore = onCall({ cpu: 'gcf_gen1' }, async (request
       || exercise.submitted === 'Yes'
       || (Array.isArray(exercise.submittedImages) && exercise.submittedImages.length));
     if (!submitted) throw new HttpsError('failed-precondition', 'A tutor can score an exercise only after the student submits handwritten work.');
-    const exerciseTopics = [...new Set([
-      ...(Array.isArray(exercise.topics) ? exercise.topics : []),
-      ...(Array.isArray(exercise.topicBreakdown) ? exercise.topicBreakdown.map((entry) => entry?.topic) : []),
-      ...(Array.isArray(exercise.questionLinks) ? exercise.questionLinks.map((entry) => entry?.topic) : []),
-      ...String(exercise.topic || '').split('|'),
-    ].filter(Boolean).map(normalizeTopicKey))];
+    const exerciseTopics = getExerciseTopicNames(exercise).map(normalizeTopicKey);
     if (exerciseTopics.length && !exerciseTopics.includes(canonicalTopicKey)) {
       throw new HttpsError('failed-precondition', 'The selected topic is not part of this exercise.');
     }

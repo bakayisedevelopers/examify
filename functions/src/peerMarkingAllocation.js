@@ -1,10 +1,25 @@
-const normalise = (value) => String(value ?? '')
+export const normalizeExerciseTopicKey = (value) => String(value ?? '')
   .normalize('NFKD')
   .replace(/[\u0300-\u036f]/g, '')
   .toLowerCase()
   .replace(/[^a-z0-9|]+/g, ' ')
   .replace(/\s+/g, ' ')
   .trim();
+
+const normalise = normalizeExerciseTopicKey;
+const questionReference = (value) => normalizeExerciseTopicKey(value?.questionReference || value?.reference);
+const topicText = (value) => String(value?.topic ?? value ?? '').trim();
+const uniqueTopics = (values = []) => [...new Map(values.map(topicText).filter(Boolean)
+  .map((topic) => [normalizeExerciseTopicKey(topic), topic])).values()];
+
+const matchingBreakdownTopic = (link, breakdown = []) => {
+  const reference = questionReference(link);
+  if (!reference) return '';
+  const paperId = String(link?.paperId ?? '').trim();
+  const match = breakdown.find((item) => questionReference(item) === reference
+    && (!paperId || !item?.paperId || paperId === String(item.paperId).trim()));
+  return topicText(match);
+};
 
 const dateKey = (value) => {
   if (value?.toDate) return value.toDate().toISOString().slice(0, 10);
@@ -18,14 +33,46 @@ const ageInDays = (today, value) => {
   return Math.floor((current - past) / 86400000);
 };
 
+export const getExerciseQuestionLinks = (exercise = {}) => {
+  const links = Array.isArray(exercise.questionLinks) ? exercise.questionLinks : [];
+  const breakdown = Array.isArray(exercise.topicBreakdown) ? exercise.topicBreakdown : [];
+  if (links.length) {
+    return links.map((link) => {
+      const linkTopic = topicText(link);
+      const breakdownTopic = matchingBreakdownTopic(link, breakdown);
+      const topic = linkTopic.includes('|') ? linkTopic
+        : breakdownTopic.includes('|') ? breakdownTopic
+          : linkTopic || breakdownTopic;
+      return { ...link, topic };
+    });
+  }
+  return [];
+};
+
+export const getExerciseTopicNames = (exercise = {}) => {
+  const questionTopics = uniqueTopics(getExerciseQuestionLinks(exercise).map((item) => item.topic));
+  if (questionTopics.length) return questionTopics;
+
+  const breakdown = Array.isArray(exercise.topicBreakdown) ? exercise.topicBreakdown : [];
+  if (breakdown.length) return uniqueTopics(breakdown.map((item) => item?.topic));
+
+  const declaredTopics = uniqueTopics(exercise.topics);
+  if (declaredTopics.length) return declaredTopics;
+  // Canonical topic labels use `|` internally; retain the field as one topic.
+  return uniqueTopics([exercise.topic]);
+};
+
 export const getExerciseTopicKeys = (exercise = {}) => {
-  const values = [
-    ...(Array.isArray(exercise.topics) ? exercise.topics : []),
-    ...(Array.isArray(exercise.topicBreakdown) ? exercise.topicBreakdown.map((entry) => entry?.topic) : []),
-    ...(Array.isArray(exercise.questionLinks) ? exercise.questionLinks.map((entry) => entry?.topic) : []),
-    ...String(exercise.topic || '').split('|'),
-  ];
-  return new Set(values.map(normalise).filter(Boolean));
+  const hasStructuredTopics = [exercise.questionLinks, exercise.topicBreakdown, exercise.topics]
+    .some((value) => Array.isArray(value) && value.length > 0);
+  // Legacy peer-allocation records have only a combined topic string. Preserve
+  // its historical matching behavior for ranking, while structured records use
+  // the complete canonical topic labels used by the score table.
+  const legacyTopicParts = !hasStructuredTopics && String(exercise.topic ?? '').includes('|')
+    ? String(exercise.topic).split('|')
+    : [];
+  const names = legacyTopicParts.length ? legacyTopicParts : getExerciseTopicNames(exercise);
+  return new Set(names.map(normalise).filter(Boolean));
 };
 
 const candidateMatches = (candidate, reviewer, { grade, subject }) => {

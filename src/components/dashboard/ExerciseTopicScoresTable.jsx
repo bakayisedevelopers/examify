@@ -1,14 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TutorPeerMarkingScoreEditor } from '../tutor/TutorPeerMarkingScoreEditor';
 import { TutorTopicScoreEditor } from '../tutor/TutorTopicScoreEditor';
+import { getExerciseTopicNames, getPeerMarkingTopicNames, getTopicQuestionLinks } from '../../utils/exerciseTopicRows';
 
 const normalized = (value) => String(value ?? '').trim().toLocaleLowerCase();
 const questionMarks = (question) => Number(question?.marks ?? question?.totalMarks) || 0;
-
-const uniqueTopics = (values = []) => [...new Map(values
-  .map((value) => String(value ?? '').trim())
-  .filter(Boolean)
-  .map((topic) => [normalized(topic), topic])).values()];
 
 const latestScoreFor = (entries, row, question) => entries
   .filter((entry) => {
@@ -96,31 +92,24 @@ export const ExerciseTopicScoresTable = ({
   useEffect(() => setVisibleScoreEntries(scoreEntries), [scoreEntries]);
 
   const rows = useMemo(() => {
-    const questionLinks = Array.isArray(exercise?.questionLinks) ? exercise.questionLinks : [];
+    const rawQuestionLinks = Array.isArray(exercise?.questionLinks) ? exercise.questionLinks : [];
     const topicBreakdown = Array.isArray(exercise?.topicBreakdown) ? exercise.topicBreakdown : [];
-    const ownTopics = uniqueTopics([
-      ...questionLinks.map((item) => item.topic),
-      ...topicBreakdown.map((item) => item.topic),
-      ...String(exercise?.topic || '').split('|'),
-    ]);
+    const questionLinks = getTopicQuestionLinks(rawQuestionLinks, topicBreakdown);
+    const ownTopics = getExerciseTopicNames(exercise);
     const exerciseRows = ownTopics.map((topic) => ({
       key: `exercise:${normalized(topic)}`,
       topic,
       activity: 'Exercise',
       sourceId: exercise.id,
       assignmentTopics: [topic],
-      questions: scoreQuestionsForTopic(questionLinks, topic).length
-        ? scoreQuestionsForTopic(questionLinks, topic)
-        : scoreQuestionsForTopic(topicBreakdown, topic),
+      questions: scoreQuestionsForTopic(questionLinks, topic),
     }));
 
     const markingRows = (completedMarkingAssignments ?? []).flatMap((assignment) => {
       const links = Array.isArray(assignment.questionLinks) ? assignment.questionLinks : [];
-      const assignmentTopics = uniqueTopics([
-        ...(Array.isArray(assignment.topics) ? assignment.topics : []),
-        assignment.topic,
-        ...links.map((item) => item.topic),
-      ]);
+      const assignmentBreakdown = Array.isArray(assignment.topicBreakdown) ? assignment.topicBreakdown : [];
+      const topicLinks = getTopicQuestionLinks(links, assignmentBreakdown);
+      const assignmentTopics = getPeerMarkingTopicNames(assignment);
       return assignmentTopics.map((topic) => ({
         key: `marking:${assignment.id}:${normalized(topic)}`,
         topic,
@@ -128,7 +117,7 @@ export const ExerciseTopicScoresTable = ({
         sourceId: assignment.id,
         assignment,
         assignmentTopics,
-        questions: scoreQuestionsForTopic(links, topic),
+        questions: scoreQuestionsForTopic(topicLinks, topic),
       }));
     });
     return [...exerciseRows, ...markingRows];

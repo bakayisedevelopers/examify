@@ -2,7 +2,7 @@ import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
 import { admin, getDb } from './admin.js';
-import { buildAssignments, getExerciseTopicKeys } from './peerMarkingAllocation.js';
+import { buildAssignments, getExerciseQuestionLinks, getExerciseTopicKeys, getExerciseTopicNames, normalizeExerciseTopicKey } from './peerMarkingAllocation.js';
 import { sendNotificationToUsers } from './notifications.js';
 
 const hasSubmission = (exercise = {}) => exercise.submissionStatus === 'submitted'
@@ -10,19 +10,6 @@ const hasSubmission = (exercise = {}) => exercise.submissionStatus === 'submitte
 const cohortFor = (exercise = {}) => ({
   assignmentDate: exercise.assignmentDate ?? '', subject: exercise.subject ?? '', grade: exercise.grade ?? '',
 });
-const topicNames = (exercise = {}) => [...new Set([
-  ...(Array.isArray(exercise.topics) ? exercise.topics : []),
-  ...(Array.isArray(exercise.topicBreakdown) ? exercise.topicBreakdown.map((entry) => entry?.topic) : []),
-  ...(Array.isArray(exercise.questionLinks) ? exercise.questionLinks.map((entry) => entry?.topic) : []),
-  ...String(exercise.topic || '').split('|'),
-].filter(Boolean).map((topic) => String(topic).trim()))];
-const normalizeTopic = (value) => String(value ?? '')
-  .normalize('NFKD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .toLowerCase()
-  .replace(/[^a-z0-9]+/g, ' ')
-  .replace(/\s+/g, ' ')
-  .trim();
 const sameCohort = (left, right) => left.assignmentDate === right.assignmentDate
   && left.subject === right.subject && String(left.grade) === String(right.grade);
 const parseExercisePath = (document) => {
@@ -67,12 +54,13 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
       if (!sameCohort(cohortFor(reviewer), cohort)) continue;
       const assignmentRef = target.ref.collection('peerMarkingAssignments').doc(reviewer.studentId);
       const reviewerTopics = getExerciseTopicKeys(reviewer);
-      const matchedTopics = topicNames(target).filter((topic) => reviewerTopics.has(normalizeTopic(topic)));
-      const targetTopics = topicNames(target);
+      const matchedTopics = getExerciseTopicNames(target)
+        .filter((topic) => reviewerTopics.has(normalizeExerciseTopicKey(topic)));
+      const targetTopics = getExerciseTopicNames(target);
       const assignedTopics = matchedTopics.length ? matchedTopics : targetTopics;
-      const assignedTopicKeys = new Set(assignedTopics.map(normalizeTopic));
-      const assignedQuestionLinks = (Array.isArray(target.questionLinks) ? target.questionLinks : [])
-        .filter((link) => !matchedTopics.length || assignedTopicKeys.has(normalizeTopic(link.topic)));
+      const assignedTopicKeys = new Set(assignedTopics.map(normalizeExerciseTopicKey));
+      const assignedQuestionLinks = getExerciseQuestionLinks(target)
+        .filter((link) => !matchedTopics.length || assignedTopicKeys.has(normalizeExerciseTopicKey(link.topic)));
       await assignmentRef.set({
         assignmentId: assignmentRef.id,
         reviewerId: reviewer.studentId, reviewerSubjectInstanceId: reviewer.subjectInstanceId,
@@ -82,7 +70,7 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
         subject: cohort.subject, grade: cohort.grade, topic: assignedTopics[0] ?? '', topics: assignedTopics,
         matchedTopics, topicMatchType: matchedTopics.length ? 'shared' : 'unshared-fallback',
         topicBreakdown: (Array.isArray(target.topicBreakdown) ? target.topicBreakdown : [])
-          .filter((item) => !matchedTopics.length || assignedTopicKeys.has(normalizeTopic(item.topic))),
+          .filter((item) => !matchedTopics.length || assignedTopicKeys.has(normalizeExerciseTopicKey(item.topic))),
         questionLinks: assignedQuestionLinks,
         paperIds: Array.isArray(target.paperIds) ? target.paperIds : [],
         title: target.title ?? '', submittedImageUrl: target.submittedImageUrl ?? '', submittedImages: target.submittedImages ?? [],
