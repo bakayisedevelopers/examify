@@ -94,6 +94,7 @@ export const OperationStatusOverlay = ({
         {isSuccess && onDone ? <button type="button" className="btn-primary w-full" onClick={onDone}>{doneLabel}</button> : null}
         {isFailure && onRetry ? <button type="button" className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-rose-500 px-5 py-3 text-sm font-bold text-white transition hover:bg-rose-400" onClick={onRetry}><RefreshCw className="h-4 w-4" aria-hidden="true" />{retryLabel}</button> : null}
         {isFailure && !onRetry && onDone ? <button type="button" className="btn-secondary w-full" onClick={onDone}>Close</button> : null}
+        {isProcessing && onRetry ? <button type="button" className="btn-primary w-full" onClick={onRetry}><RefreshCw className="mr-2 inline h-4 w-4" aria-hidden="true" />{retryLabel}</button> : null}
         {isProcessing ? <span className="sr-only">Processing</span> : null}
       </section>
     </div>

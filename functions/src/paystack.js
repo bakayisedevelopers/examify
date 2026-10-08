@@ -38,6 +38,7 @@ const paystackRequest = async ({ path, method = 'POST', payload }) => {
   if (!response.ok || data.status === false) {
     const error = new HttpsError('internal', data.message ?? 'Paystack request failed.');
     error.paystackRejected = true;
+    error.paystackStatusCode = response.status;
     throw error;
   }
 
@@ -64,6 +65,119 @@ const AUTHORIZATION_REFUND_RETRY_DELAY_MS = 15 * 60 * 1000;
 const WEBHOOK_MAX_ATTEMPTS = 72;
 const WEBHOOK_LOCK_TIMEOUT_MS = 10 * 60 * 1000;
 const PAYMENT_RECONCILIATION_STATUSES = ['initializing', 'initialized', 'pending', 'processing', 'ongoing'];
+const PAYMENT_BLOCKING_CHECKOUT_STATUSES = [...PAYMENT_RECONCILIATION_STATUSES, 'amount_mismatch'];
+const CHECKOUT_LOCK_STALE_MS = 24 * 60 * 60 * 1000;
+
+const activeCheckoutRef = (db, studentId) => db.collection('users').doc(studentId)
+  .collection('private').doc('activePaystackCheckout');
+
+const releaseActiveCheckoutLock = async ({ db, studentId, reference }) => {
+  if (!reference) return false;
+  const lockRef = activeCheckoutRef(db, studentId);
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(lockRef);
+    if (!snapshot.exists || snapshot.data()?.reference !== reference) return false;
+    transaction.delete(lockRef);
+    return true;
+  });
+};
+
+const assertNoPendingPaystackCheckout = async ({ db, studentId }) => {
+  const lockRef = activeCheckoutRef(db, studentId);
+  const pendingPaymentsQuery = db.collection('users').doc(studentId).collection('payments')
+    .where('status', 'in', PAYMENT_BLOCKING_CHECKOUT_STATUSES).limit(1);
+  const [pendingPaymentsSnapshot, lockSnapshot] = await Promise.all([
+    pendingPaymentsQuery.get(), lockRef.get(),
+  ]);
+  if (!pendingPaymentsSnapshot.empty) {
+    const pending = pendingPaymentsSnapshot.docs[0];
+    throw new HttpsError(
+      'aborted',
+      'A previous Paystack payment is still being verified. Check its status before starting another checkout.',
+      { pendingReference: pending.id, pendingStatus: pending.data().status, studentId },
+    );
+  }
+  if (!lockSnapshot.exists) return;
+  const lock = lockSnapshot.data();
+  const pendingReference = lock.reference;
+  const paymentSnapshot = pendingReference
+    ? await studentPaymentRef(db, studentId, pendingReference).get()
+    : null;
+  const payment = paymentSnapshot?.exists ? paymentSnapshot.data() : null;
+  if (payment && PAYMENT_BLOCKING_CHECKOUT_STATUSES.includes(payment.status)) {
+    throw new HttpsError(
+      'aborted',
+      'A previous Paystack payment is still being verified. Check its status before starting another checkout.',
+      { pendingReference, pendingStatus: payment.status, studentId },
+    );
+  }
+  const startedAt = lock.startedAt?.toDate?.()?.getTime?.() ?? 0;
+  if (!payment && Date.now() - startedAt < CHECKOUT_LOCK_STALE_MS) {
+    throw new HttpsError(
+      'aborted',
+      'A previous checkout is still being confirmed. Please try again later.',
+      { pendingStatus: 'confirmation_pending', studentId },
+    );
+  }
+};
+
+const acquireActiveCheckoutLock = async ({ db, studentId, reference, payment }) => {
+  const lockRef = activeCheckoutRef(db, studentId);
+  const paymentRef = studentPaymentRef(db, studentId, reference);
+  const pendingPaymentsQuery = db.collection('users').doc(studentId).collection('payments')
+    .where('status', 'in', PAYMENT_BLOCKING_CHECKOUT_STATUSES).limit(1);
+
+  await db.runTransaction(async (transaction) => {
+    const [lockSnapshot, pendingPaymentsSnapshot] = await Promise.all([
+      transaction.get(lockRef), transaction.get(pendingPaymentsQuery),
+    ]);
+
+    if (!pendingPaymentsSnapshot.empty) {
+      const pending = pendingPaymentsSnapshot.docs[0];
+      const pendingPayment = pending.data();
+      throw new HttpsError(
+        'aborted',
+        'A previous Paystack payment is still being verified. Check its status before starting another checkout.',
+        { pendingReference: pending.id, pendingStatus: pendingPayment.status, studentId },
+      );
+    }
+
+    if (lockSnapshot.exists) {
+      const lock = lockSnapshot.data();
+      const lockedReference = lock.reference;
+      const lockedPaymentSnapshot = lockedReference
+        ? await transaction.get(studentPaymentRef(db, studentId, lockedReference))
+        : null;
+      const lockedPayment = lockedPaymentSnapshot?.exists ? lockedPaymentSnapshot.data() : null;
+      if (lockedPayment && PAYMENT_BLOCKING_CHECKOUT_STATUSES.includes(lockedPayment.status)) {
+        throw new HttpsError(
+          'aborted',
+          'A previous Paystack payment is still being verified. Check its status before starting another checkout.',
+          { pendingReference: lockedReference, pendingStatus: lockedPayment.status, studentId },
+        );
+      }
+
+      const startedAt = lock.startedAt?.toDate?.()?.getTime?.() ?? 0;
+      if (!lockedPayment && Date.now() - startedAt < CHECKOUT_LOCK_STALE_MS) {
+        throw new HttpsError(
+          'aborted',
+          'A previous checkout is still being confirmed. Please try again later.',
+          { pendingStatus: 'confirmation_pending', studentId },
+        );
+      }
+    }
+
+    transaction.create(paymentRef, payment);
+    transaction.set(lockRef, {
+      reference,
+      studentId,
+      payerId: payment.payerId,
+      status: 'initializing',
+      startedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+};
 
 const requestAuthorizationRefund = async ({ db, studentId, reference }) => {
   const paymentRef = studentPaymentRef(db, studentId, reference);
@@ -596,6 +710,10 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
       && currentSubscription.billingPeriod === quote.billingPeriod
       && Number(currentSubscription.subjectCount) === quote.subjectCount;
 
+    if (!subscriptionIsCurrent && planId !== 'free') {
+      await assertNoPendingPaystackCheckout({ db, studentId });
+    }
+
     const currentPendingPlan = currentSubscription?.pendingPlan ?? null;
 
     const normalizedRequestedCode = normalizeDiscountCode(discountCode);
@@ -892,15 +1010,17 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
     const subscriptionAmountDue = appliedDiscount?.finalAmount ?? quote.amount;
     const authorizationChargeAmount = requiresAuthorizationOnlyCharge ? 1 : null;
     const transactionAmount = authorizationChargeAmount ?? subscriptionAmountDue;
-    if (appliedDiscount) {
-      await studentPaymentRef(db, studentId, reference).set({
-        reference, studentId, payerId, parentId: isParent ? payerId : null, email,
-        status: 'initializing',
-        authorizationOnly: requiresAuthorizationOnlyCharge,
-        ...(requiresAuthorizationOnlyCharge ? { authorizationChargeAmount } : {}),
-        subscriptionAmountDue,
-        originalAmount: appliedDiscount.originalAmount, discountAmount: appliedDiscount.discountAmount,
-        discountPercent: appliedDiscount.percentOff, discountCode: appliedDiscount.code,
+    const paymentRecord = {
+      reference, studentId, payerId, parentId: isParent ? payerId : null, email,
+      status: 'initializing',
+      authorizationOnly: requiresAuthorizationOnlyCharge,
+      ...(requiresAuthorizationOnlyCharge ? { authorizationChargeAmount } : {}),
+      subscriptionAmountDue,
+      ...(appliedDiscount ? {
+        originalAmount: appliedDiscount.originalAmount,
+        discountAmount: appliedDiscount.discountAmount,
+        discountPercent: appliedDiscount.percentOff,
+        discountCode: appliedDiscount.code,
         discountBillingDuration: appliedDiscount.billingDuration,
         ...(appliedDiscount.discountRedemptionReference ? {
           discountRedemptionReference: appliedDiscount.discountRedemptionReference,
@@ -911,9 +1031,21 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
           discountEndsAt: appliedDiscount.discountEndsAt || null,
           discountStartedAt: appliedDiscount.discountStartedAt || null,
         } : {}),
-        currency: quote.currency, ...quote, amount: transactionAmount,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      } : {}),
+      currency: quote.currency, ...quote, amount: transactionAmount,
+      product: 'Examifying subscription',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    try {
+      await acquireActiveCheckoutLock({ db, studentId, reference, payment: paymentRecord });
+    } catch (error) {
+      if (reservedDiscount) {
+        await transitionDiscountRedemptionForPayment({
+          db, code: reservedDiscount.code, reference, status: 'cancelled',
+        }).catch(() => {});
+      }
+      throw error;
     }
 
     logger.info('Initializing Paystack transaction', {
@@ -954,44 +1086,44 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
         },
       });
     } catch (error) {
-      if (appliedDiscount && error instanceof HttpsError) {
-        const cleanup = [studentPaymentRef(db, studentId, reference).set({ status: 'failed', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true })];
-        if (reservedDiscount) cleanup.push(transitionDiscountRedemptionForPayment({ db, code: reservedDiscount.code, reference, status: 'failed' }));
-        await Promise.all(cleanup);
+      // A callable error from Paystack is a definitive initialization failure. Network
+      // errors are ambiguous, so retain the payment, lock, and discount reservation
+      // for the scheduled verifier to resolve safely.
+      const initializationDefinitelyFailed = error instanceof HttpsError
+        && (error.code === 'failed-precondition'
+          || (error.paystackRejected && Number(error.paystackStatusCode) < 500));
+      if (initializationDefinitelyFailed) {
+        const paymentRef = studentPaymentRef(db, studentId, reference);
+        const markedFailed = await db.runTransaction(async (transaction) => {
+          const snapshot = await transaction.get(paymentRef);
+          if (!snapshot.exists || snapshot.data()?.status !== 'initializing') return false;
+          transaction.set(paymentRef, {
+            status: 'failed',
+            initializationError: error.message,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          }, { merge: true });
+          return true;
+        }).catch(() => false);
+        if (markedFailed) {
+          if (reservedDiscount) {
+            await transitionDiscountRedemptionForPayment({
+              db, code: reservedDiscount.code, reference, status: 'failed',
+            }).catch(() => {});
+          }
+          await releaseActiveCheckoutLock({ db, studentId, reference }).catch(() => {});
+        }
       }
       throw error;
     }
 
-    await studentPaymentRef(db, studentId, reference).set({
-      reference,
-      studentId,
-      payerId,
-      parentId: isParent ? payerId : null,
-      email,
-      status: 'initialized',
-      ...(appliedDiscount ? {
-        authorizationOnly: requiresAuthorizationOnlyCharge,
-        ...(requiresAuthorizationOnlyCharge ? { authorizationChargeAmount } : {}),
-        subscriptionAmountDue,
-        originalAmount: appliedDiscount.originalAmount,
-        discountAmount: appliedDiscount.discountAmount,
-        discountPercent: appliedDiscount.percentOff,
-        discountCode: appliedDiscount.code,
-        discountBillingDuration: appliedDiscount.billingDuration,
-        ...(appliedDiscount.discountRedemptionReference ? {
-          discountRedemptionReference: appliedDiscount.discountRedemptionReference,
-          discountReservationStatus: appliedDiscount.reservationStatus,
-        } : {}),
-        ...(appliedDiscount.billingDuration === 'fixed_months' ? {
-          discountDurationMonths: appliedDiscount.discountDurationMonths,
-          discountEndsAt: appliedDiscount.discountEndsAt || null,
-          discountStartedAt: appliedDiscount.discountStartedAt || null,
-        } : {}),
-      } : {}),
-      currency: 'ZAR',
-      ...quote,
-      amount: transactionAmount,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    const paymentRef = studentPaymentRef(db, studentId, reference);
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(paymentRef);
+      if (!snapshot.exists || snapshot.data()?.status !== 'initializing') return;
+      transaction.set(paymentRef, {
+        status: 'initialized',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
     });
 
     const nextAuthorizationCharge = requiresAuthorizationOnlyCharge
@@ -1245,6 +1377,7 @@ const finalizePaystackPayment = async ({ reference, studentId, payerId }) => {
   const payment = paymentSnapshot.data();
   if (payment.payerId !== payerId) throw new HttpsError('permission-denied', 'This payment belongs to another account.');
   if (payment.status === 'success') {
+    await releaseActiveCheckoutLock({ db, studentId, reference }).catch(() => {});
     const existingAuthorization = await studentAuthorizationRef(db, studentId).get();
     const authorizationStored = isReusableAuthorization(existingAuthorization.data());
     if (payment.discountCode && payment.discountReservationStatus !== 'scheduled') {
@@ -1272,6 +1405,9 @@ const finalizePaystackPayment = async ({ reference, studentId, payerId }) => {
     };
   }
   if (['failed', 'abandoned', 'reversed', 'amount_mismatch', 'cancelled'].includes(payment.status)) {
+    if (payment.status !== 'amount_mismatch') {
+      await releaseActiveCheckoutLock({ db, studentId, reference }).catch(() => {});
+    }
     return { status: payment.status, reference, authorizationStored: false };
   }
   if (!['initializing', 'initialized', 'pending', 'processing', 'ongoing'].includes(payment.status) || !payment.planId || !payment.studentId) {
@@ -1519,6 +1655,14 @@ const finalizePaystackPayment = async ({ reference, studentId, payerId }) => {
     }).catch((error) => {
       logger.error('Could not finalize the discount redemption after subscription activation', {
         studentId, reference, code: payment.discountCode, error: error?.message ?? String(error),
+      });
+    });
+  }
+
+  if (succeeded || ['failed', 'abandoned', 'reversed', 'cancelled'].includes(transaction.status)) {
+    await releaseActiveCheckoutLock({ db, studentId: payment.studentId, reference }).catch((error) => {
+      logger.warn('Could not release the finalized Paystack checkout lock', {
+        studentId: payment.studentId, reference, error: error?.message ?? String(error),
       });
     });
   }
@@ -1935,6 +2079,57 @@ const enqueuePaymentReconciliationTask = (studentId, reference, generation, sche
   },
 );
 
+const reconcileRecurringPaystackPayment = async ({ studentId, reference, payment }) => {
+  const db = getDb();
+  const subscriptionSnapshot = await studentSubscriptionRef(db, studentId).get();
+  if (!subscriptionSnapshot.exists) return;
+  const subscription = subscriptionSnapshot.data();
+  const attempt = subscription.renewalAttempt ?? {};
+  if (attempt.reference !== reference || !['processing', 'unknown'].includes(attempt.status)) return;
+
+  const dueDate = attempt.renewalDate?.toDate?.();
+  if (!dueDate) return;
+  const selectedPlan = attempt.planId
+    ? attempt
+    : (subscription.pendingPlan?.planId ? subscription.pendingPlan : subscription);
+  const baseQuote = calculateSubscriptionQuote({
+    planId: selectedPlan.planId,
+    billingPeriod: selectedPlan.billingPeriod,
+    subjectCount: selectedPlan.subjectCount,
+  });
+  const discountBenefit = attempt.discountPercent ? {
+    code: attempt.discountCode,
+    percentOff: attempt.discountPercent,
+    planId: attempt.planId,
+    billingPeriod: attempt.billingPeriod,
+    subjectCount: attempt.subjectCount,
+    billingDuration: attempt.discountBillingDuration || 'recurring',
+    discountDurationMonths: attempt.discountDurationMonths,
+    discountEndsAt: attempt.discountEndsAt,
+    activatedAt: attempt.discountStartedAt,
+  } : subscription.discountBenefit;
+  let quote = applyRecurringDiscount(baseQuote, discountBenefit, selectedPlan, dueDate);
+  if (attempt.discountRedemptionReference) quote = applyScheduledDiscount(baseQuote, attempt);
+
+  const authorizationSnapshot = await studentAuthorizationRef(db, studentId).get();
+  const authorization = authorizationSnapshot.exists ? authorizationSnapshot.data() : null;
+  const result = await chargeAuthorizationForSubscription({
+    studentId,
+    payerId: attempt.payerId || payment.payerId || studentId,
+    email: attempt.email || authorization?.email || payment.email || '',
+    amount: quote.amount,
+    authorizationCode: authorization?.authorizationCode || '',
+    subscriptionQuote: quote,
+    renewalDate: attempt.renewalDate,
+    pendingPlanReference: attempt.pendingPlanReference ?? null,
+    attemptNumber: attempt.attemptNumber,
+    reference,
+  });
+  logger.info('Checked a recurring Paystack payment status', {
+    studentId, reference, status: result.succeeded ? 'success' : result.amountMismatch ? 'amount_mismatch' : result.processing ? 'processing' : 'failed',
+  });
+};
+
 export const queueUnfinalizedPaystackPayment = onDocumentWritten({
   document: 'users/{studentId}/payments/{reference}',
   retry: true,
@@ -1942,12 +2137,13 @@ export const queueUnfinalizedPaystackPayment = onDocumentWritten({
 }, async (event) => {
   const after = event.data?.after?.exists ? event.data.after.data() : null;
   const before = event.data?.before?.exists ? event.data.before.data() : null;
-  if (!after || !PAYMENT_RECONCILIATION_STATUSES.includes(after.status) || after.recurring === true) return;
+  if (!after || !PAYMENT_RECONCILIATION_STATUSES.includes(after.status)) return;
   if (PAYMENT_RECONCILIATION_STATUSES.includes(before?.status)) return;
+  const intervals = after.recurring === true ? [5, 20, 30] : [5, 20, 60];
   const eventAt = new Date(event.time || after.createdAt?.toDate?.() || Date.now()).getTime();
   const now = Date.now();
   let overdueCheckQueued = false;
-  const checks = [5, 20, 60].flatMap((minutes) => {
+  const checks = intervals.flatMap((minutes) => {
     const dueAt = eventAt + minutes * 60 * 1000;
     if (dueAt <= now) {
       if (overdueCheckQueued) return [];
@@ -1978,7 +2174,11 @@ export const reconcileUnfinalizedPaystackPaymentTask = onTaskDispatched({
   const snapshot = await paymentRef.get();
   if (!snapshot.exists) return;
   const payment = snapshot.data();
-  if (payment.recurring === true || !PAYMENT_RECONCILIATION_STATUSES.includes(payment.status)) return;
+  if (!PAYMENT_RECONCILIATION_STATUSES.includes(payment.status)) return;
+  if (payment.recurring === true) {
+    await reconcileRecurringPaystackPayment({ studentId, reference, payment });
+    return;
+  }
   if (!payment.payerId || !payment.planId || !payment.billingPeriod) return;
   await paymentRef.set({
     reconciliationAttempts: admin.firestore.FieldValue.increment(1),

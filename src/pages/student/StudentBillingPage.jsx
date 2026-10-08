@@ -24,6 +24,7 @@ export const StudentBillingPage = () => {
   const [isVerifyingPayment, setIsVerifyingPayment] = useState(false);
   const [paymentVerificationState, setPaymentVerificationState] = useState('idle');
   const [paymentVerificationMessage, setPaymentVerificationMessage] = useState('');
+  const [pendingCheckoutReference, setPendingCheckoutReference] = useState('');
   const [isStartingSubscription, setIsStartingSubscription] = useState(false);
   const [pendingAuthorizationCheckout, setPendingAuthorizationCheckout] = useState(null);
   const [isCancellingAuthorizationCheckout, setIsCancellingAuthorizationCheckout] = useState(false);
@@ -101,6 +102,7 @@ export const StudentBillingPage = () => {
 
   const verifyPaymentReference = useCallback(async (reference) => {
     if (!reference || !profile?.uid) return 'failed';
+    setPendingCheckoutReference(reference);
     setPaymentVerificationState('verifying');
     setPaymentVerificationMessage('');
     setIsVerifyingPayment(true);
@@ -114,15 +116,24 @@ export const StudentBillingPage = () => {
         await completeStudentAccessFlow(reference, verification);
         setPaymentVerificationState('success');
         setPaymentVerificationMessage('Your subscription is active. Exercise generation may continue while any remaining requirements are completed.');
+        setPendingCheckoutReference('');
         setPendingAuthorizationCheckout(null);
         navigate(location.pathname, { replace: true });
         return 'success';
       }
 
       const paymentStatus = String(verification?.status || 'unknown').toLowerCase();
-      if (['failed', 'abandoned', 'reversed', 'amount_mismatch', 'cancelled'].includes(paymentStatus)) {
+      if (paymentStatus === 'amount_mismatch') {
+        setPaymentVerificationState('processing');
+        setPaymentVerificationMessage('Paystack reported an amount mismatch. This checkout is locked for review; do not start another payment.');
+        setStatus('The payment needs manual review before another checkout can start.');
+        return 'processing';
+      }
+
+      if (['failed', 'abandoned', 'reversed', 'cancelled'].includes(paymentStatus)) {
         setPaymentVerificationState('failed');
         setPaymentVerificationMessage(`Paystack returned “${paymentStatus}”. If you completed the payment, retry verification before starting another checkout.`);
+        setPendingCheckoutReference('');
         setStatus(`Payment verification returned status: ${paymentStatus}`);
         return 'failed';
       }
@@ -133,6 +144,13 @@ export const StudentBillingPage = () => {
     } catch (error) {
       console.error('[Examifying][Billing] payment:verify:error', error);
       const message = error?.message || 'Payment verification failed.';
+      if (error?.details?.pendingReference) {
+        setPendingCheckoutReference(error.details.pendingReference);
+        setPaymentVerificationState('processing');
+        setPaymentVerificationMessage('Another checkout is still active. Verify that payment before starting a new one.');
+        setStatus(message);
+        return 'processing';
+      }
       if (message.includes('subscription activation is still being finalized')) {
         setPaymentVerificationState('processing');
         setStatus(message);
@@ -186,6 +204,13 @@ export const StudentBillingPage = () => {
         throw new Error('Could not start subscription checkout.');
       }
     } catch (error) {
+      const pendingReference = error?.details?.pendingReference;
+      if (pendingReference) {
+        closeOperationStatus();
+        setPendingCheckoutReference(pendingReference);
+        setPaymentVerificationState('processing');
+        setPaymentVerificationMessage('A previous Paystack payment has not reached a final status. Check its status before trying another checkout.');
+      }
       setStatus(error?.message || 'Could not start subscription checkout.');
     } finally {
       setIsStartingSubscription(false);
@@ -278,13 +303,15 @@ export const StudentBillingPage = () => {
         onDone={() => {
           setPaymentVerificationState('idle');
           setPaymentVerificationMessage('');
+          setPendingCheckoutReference('');
           setStatus('');
           navigate(location.pathname, { replace: true });
         }}
         onRetry={() => {
-          const reference = params.get('reference') || params.get('trxref') || pendingAuthorizationCheckout?.reference;
+          const reference = pendingCheckoutReference || params.get('reference') || params.get('trxref') || pendingAuthorizationCheckout?.reference;
           if (reference) void verifyPaymentReference(reference);
         }}
+        retryLabel={paymentVerificationState === 'processing' ? 'Check payment status' : 'Retry verification'}
       />
     </AppShell>
   );

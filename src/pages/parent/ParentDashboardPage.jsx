@@ -64,7 +64,7 @@ const EditDetailsForm = ({ student, onSave, onCancel }) => {
 
 export const ParentDashboardPage = () => {
   const { profile, logout } = useAuth();
-  const { runOperation } = useOperationStatus();
+  const { runOperation, closeOperationStatus } = useOperationStatus();
   const location = useLocation();
   const navigate = useNavigate();
   const [students, setStudents] = useState([]);
@@ -75,6 +75,7 @@ export const ParentDashboardPage = () => {
   const [editingStudentId, setEditingStudentId] = useState(null);
   const [subscriptionStudent, setSubscriptionStudent] = useState(null);
   const [pendingAuthorizationCheckout, setPendingAuthorizationCheckout] = useState(null);
+  const [pendingCheckout, setPendingCheckout] = useState(null);
   const [isCancellingAuthorizationCheckout, setIsCancellingAuthorizationCheckout] = useState(false);
   
   const lastVerifiedReferenceRef = useRef(null);
@@ -268,7 +269,44 @@ export const ParentDashboardPage = () => {
         window.location.href = result.authorizationUrl;
       }
     } catch (error) {
+      const pendingReference = error?.details?.pendingReference;
+      if (pendingReference) {
+        closeOperationStatus();
+        setPendingCheckout({ reference: pendingReference, studentId: error.details.studentId || student.uid });
+      }
       setStatus(error?.message || 'Unable to start subscription checkout.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const checkPendingCheckout = async () => {
+    if (!pendingCheckout?.reference || !pendingCheckout?.studentId) return;
+    setLoading(true);
+    try {
+      const verification = await runOperation({
+        operationName: 'Checking existing payment status',
+        successMessage: 'Payment status check finished.',
+        autoDismissMs: 1200,
+      }, () => verifySubscriptionPayment(pendingCheckout.reference, pendingCheckout.studentId));
+      const paymentStatus = String(verification?.status || 'unknown').toLowerCase();
+      if (paymentStatus === 'success') {
+        const updatedStudents = await loadStudents();
+        if (!updatedStudents.some((student) => student.uid === pendingCheckout.studentId && student.paymentCompleted)) {
+          setStatus('Payment is confirmed and subscription activation is still finishing. Check the status again shortly; do not start another payment.');
+          return;
+        }
+        setPendingCheckout(null);
+        setStatus('Payment confirmed and subscription activated.');
+      } else if (['failed', 'abandoned', 'reversed', 'cancelled'].includes(paymentStatus)) {
+        setPendingCheckout(null);
+        setStatus(`The previous payment is confirmed as ${paymentStatus}. You can now start another checkout.`);
+        await loadStudents();
+      } else {
+        setStatus('The previous payment is still processing. Its discount reservation will remain held until Paystack confirms the final status.');
+      }
+    } catch (error) {
+      setStatus(error?.message || 'Could not check the previous payment status.');
     } finally {
       setLoading(false);
     }
@@ -341,9 +379,14 @@ export const ParentDashboardPage = () => {
       </div>
       
       {status && (
-        <div className="mb-6 p-4 rounded-xl border border-lime-400/30 bg-lime-400/10 text-lime-300 flex items-center gap-2 text-sm font-medium">
+        <div className="mb-6 p-4 rounded-xl border border-lime-400/30 bg-lime-400/10 text-lime-300 flex flex-wrap items-center gap-2 text-sm font-medium">
           <AlertCircle className="w-4 h-4" />
           {status}
+          {pendingCheckout?.reference ? (
+            <button type="button" className="btn-primary ml-auto shrink-0 px-4 py-2" onClick={checkPendingCheckout} disabled={loading}>
+              {loading ? 'Checking…' : 'Check payment status'}
+            </button>
+          ) : null}
         </div>
       )}
 
