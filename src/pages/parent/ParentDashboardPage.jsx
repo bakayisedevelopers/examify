@@ -115,6 +115,7 @@ export const ParentDashboardPage = () => {
             renewalAttemptCount: accessState.renewalAttemptCount,
             nextRenewalAttemptAt: accessState.nextRenewalAttemptAt,
             manualPaymentRequired: accessState.manualPaymentRequired,
+            lastChargeStatus: accessState.lastChargeStatus,
           };
         })
       );

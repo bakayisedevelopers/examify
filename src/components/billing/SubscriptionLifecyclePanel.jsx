@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Ban, CalendarClock, RotateCcw, Undo2 } from 'lucide-react';
-import { manageStudentSubscription, retryStudentSubscriptionPayment } from '../../services/paymentsService';
+import { Ban, CalendarClock, CreditCard, RotateCcw, Undo2 } from 'lucide-react';
+import { getStudentSavedPaymentMethods, manageStudentSubscription, retryStudentSubscriptionPayment } from '../../services/paymentsService';
 import { refreshStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
 
@@ -27,13 +27,43 @@ export const SubscriptionLifecyclePanel = ({
   const [busyAction, setBusyAction] = useState('');
   const [message, setMessage] = useState('');
   const [currentState, setCurrentState] = useState(subscriptionState);
+  const [paymentMethods, setPaymentMethods] = useState([]);
+  const [paymentMethodsLoading, setPaymentMethodsLoading] = useState(true);
+  const [paymentMethodsError, setPaymentMethodsError] = useState('');
 
   useEffect(() => setCurrentState(subscriptionState), [subscriptionState]);
+
+  useEffect(() => {
+    let active = true;
+    setPaymentMethodsLoading(true);
+    setPaymentMethodsError('');
+    getStudentSavedPaymentMethods(studentId)
+      .then((result) => {
+        if (active) setPaymentMethods(Array.isArray(result?.paymentMethods) ? result.paymentMethods : []);
+      })
+      .catch((error) => {
+        if (active) {
+          setPaymentMethods([]);
+          setPaymentMethodsError(error?.message || 'Saved payment methods could not be loaded.');
+        }
+      })
+      .finally(() => {
+        if (active) setPaymentMethodsLoading(false);
+      });
+    return () => { active = false; };
+  }, [studentId]);
 
   const refreshState = async () => {
     const nextState = await refreshStudentSubscriptionState({ uid: studentId });
     setCurrentState(nextState);
     onStateChange?.(nextState);
+    try {
+      const methodsResult = await getStudentSavedPaymentMethods(studentId);
+      setPaymentMethods(Array.isArray(methodsResult?.paymentMethods) ? methodsResult.paymentMethods : []);
+      setPaymentMethodsError('');
+    } catch (error) {
+      setPaymentMethodsError(error?.message || 'Saved payment methods could not be loaded.');
+    }
   };
 
   const runAction = async (action) => {
@@ -92,6 +122,7 @@ export const SubscriptionLifecyclePanel = ({
   const pendingEffectiveAt = pendingPlan?.effectiveAt || currentUntil;
   const isPastDue = currentState.subscriptionStatus === 'past_due';
   const verificationPending = currentState.renewalVerificationPending;
+  const paymentNeedsReview = currentState.lastChargeStatus === 'amount_mismatch';
   const canCancel = paidPlan && !currentState.cancelAtPeriodEnd && !verificationPending;
   const canResume = paidPlan && currentState.cancelAtPeriodEnd && !isPastDue;
 
@@ -149,13 +180,43 @@ export const SubscriptionLifecyclePanel = ({
               {busyAction === 'retry' ? 'Checking payment...' : verificationPending ? 'Check payment' : 'Retry payment'}
             </button>
           ) : null}
-          {isPastDue && currentState.manualPaymentRequired && onContinuePayment ? (
-            <button type="button" className="btn-primary inline-flex items-center gap-2" onClick={onContinuePayment}>
+          {isPastDue && !verificationPending && !paymentNeedsReview && onContinuePayment ? (
+            <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={onContinuePayment} disabled={Boolean(busyAction)}>
               <CalendarClock className="h-4 w-4" aria-hidden="true" />
-              Continue payment
+              Pay with another method
             </button>
           ) : null}
         </div>
+      </div>
+
+      <div className="mt-4 border-t border-slate-200 pt-4">
+        <div className="flex items-center gap-2">
+          <CreditCard className="h-4 w-4 text-lime-700" aria-hidden="true" />
+          <h3 className="text-sm font-semibold text-slate-900">Saved payment methods</h3>
+        </div>
+        <p className="mt-1 text-xs text-slate-500">Only the card type, bank label, expiry, and last four digits are shown.</p>
+        {paymentMethodsLoading ? <p className="mt-3 text-sm text-slate-500">Loading saved cards…</p> : null}
+        {!paymentMethodsLoading && paymentMethodsError ? <p className="mt-3 text-sm text-amber-700" role="status">{paymentMethodsError}</p> : null}
+        {!paymentMethodsLoading && !paymentMethodsError && paymentMethods.length ? (
+          <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+            {paymentMethods.map((method) => (
+              <li key={method.id} className="flex items-center gap-3 rounded-xl border border-lime-200 bg-lime-50/70 p-3">
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white text-lime-800 shadow-sm">
+                  <CreditCard className="h-4 w-4" aria-hidden="true" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold text-slate-900">{method.cardType || 'Card'} ···· {method.last4}</span>
+                  <span className="block text-xs text-slate-600">
+                    {[method.bank, method.expMonth && method.expYear ? `Expires ${String(method.expMonth).padStart(2, '0')}/${method.expYear}` : ''].filter(Boolean).join(' · ') || 'Saved for subscription renewal'}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {!paymentMethodsLoading && !paymentMethodsError && !paymentMethods.length ? (
+          <p className="mt-3 text-sm text-slate-600">No reusable card is saved. You can pay with a card to save it for future renewals.</p>
+        ) : null}
       </div>
 
       {pendingPlan ? (
@@ -165,7 +226,7 @@ export const SubscriptionLifecyclePanel = ({
         </p>
       ) : null}
       {currentState.renewalAttemptCount > 0 && isPastDue ? (
-        <p className="mt-2 text-sm text-amber-700">Renewal attempt {currentState.renewalAttemptCount} of 3.</p>
+        <p className="mt-2 text-sm text-amber-700">Renewal attempt {currentState.renewalAttemptCount} of 3. Your current grace period ends {formatDate(currentState.graceEndsAt)}.</p>
       ) : null}
       {message ? <p className="mt-3 text-sm text-slate-700" role="status">{message}</p> : null}
     </section>

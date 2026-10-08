@@ -13,6 +13,7 @@ export {
   reconcileUnfinalizedPaystackPaymentTask,
   reconcileUnfinalizedPaystackPayments,
   getAdminAuthorizationRefundIssues,
+  getStudentSavedPaymentMethods,
   chargeStoredAuthorization,
   manageStudentSubscription,
 } from './paystack.js';

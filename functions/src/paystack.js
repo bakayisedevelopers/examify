@@ -2637,6 +2637,35 @@ export const chargeAuthorizationForSubscription = async ({
   }
 };
 
+export const getStudentSavedPaymentMethods = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const payerId = request.auth?.uid;
+  const { studentId } = request.data ?? {};
+  if (!payerId) throw new HttpsError('unauthenticated', 'Sign in to view saved payment methods.');
+  if (!studentId) throw new HttpsError('invalid-argument', 'studentId is required.');
+
+  const db = getDb();
+  await assertCanManageStudentSubscription({ db, payerId, studentId });
+  const snapshot = await studentAuthorizationRef(db, studentId).get();
+  if (!snapshot.exists) return { paymentMethods: [] };
+
+  const authorization = snapshot.data();
+  const last4 = String(authorization.last4 ?? '').replace(/\D/g, '').slice(-4);
+  if (authorization.reusable !== true || !/^\d{4}$/.test(last4)) return { paymentMethods: [] };
+
+  const expMonth = Number(authorization.expMonth);
+  const expYear = Number(authorization.expYear);
+  return {
+    paymentMethods: [{
+      id: 'current',
+      cardType: String(authorization.cardType || 'Card').slice(0, 40),
+      bank: String(authorization.bank || '').slice(0, 60),
+      last4,
+      ...(Number.isInteger(expMonth) && expMonth >= 1 && expMonth <= 12 ? { expMonth } : {}),
+      ...(Number.isInteger(expYear) && expYear >= 2020 && expYear <= 9999 ? { expYear } : {}),
+    }],
+  };
+});
+
 export const chargeStoredAuthorization = onCall(async (request) => {
   const payerId = request.auth?.uid;
   const { studentId } = request.data ?? {};

@@ -52,6 +52,15 @@ export const retryStudentSubscriptionPayment = async (studentId) => {
   return response.data;
 };
 
+export const getStudentSavedPaymentMethods = async (studentId) => {
+  if (!isFirebaseConfigured) return { paymentMethods: [] };
+  return trackDataRequest('Saved subscription payment methods', async () => {
+    const callable = httpsCallable(functions, 'getStudentSavedPaymentMethods');
+    const response = await callable({ studentId });
+    return response.data;
+  });
+};
+
 export const getAdminAuthorizationRefundIssues = async () => {
   if (!isFirebaseConfigured) return { issues: [] };
   return trackDataRequest('Admin authorization refunds', async () => {

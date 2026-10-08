@@ -960,6 +960,7 @@ const getSubscriptionLifecycleFields = (subscription) => ({
   renewalVerificationPending: ['processing', 'unknown'].includes(subscription?.renewalAttempt?.status),
   nextRenewalAttemptAt: subscription?.nextRenewalAttemptAt ?? null,
   manualPaymentRequired: subscription?.manualPaymentRequired === true,
+  lastChargeStatus: subscription?.lastChargeStatus ?? null,
   discountPercent: Number(subscription?.discountPercent) || 0,
   discountCode: subscription?.discountCode ?? null,
   discountBillingDuration: subscription?.discountBillingDuration ?? null,
