@@ -1,15 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   BadgeCheck,
   BookOpen,
   CalendarDays,
   CircleAlert,
+  ExternalLink,
+  FileText,
   GraduationCap,
   Mail,
   MapPin,
   Phone,
   Plus,
+  RefreshCw,
   School,
   ShieldCheck,
   UserRound,
@@ -23,7 +26,7 @@ import { useAuth } from '../../hooks/useAuth';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
 import { SUBJECTS } from '../../lib/constants';
-import { addAdminTutorSubject, getAdminUserDetails, getStudentSubscriptionState } from '../../services/firestoreService';
+import { addAdminTutorSubject, getAdminUserDetails, getStudentSubscriptionState, getTutorMarksDocuments } from '../../services/firestoreService';
 
 const roleLabel = (role = 'unknown') => String(role).replace(/[-_]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 const dateValue = (value) => {
@@ -49,16 +52,16 @@ const ProfileField = ({ icon: Icon, label, value }) => value ? (
   </div>
 ) : null;
 
-const StatusBadge = ({ status }) => {
+const StatusBadge = ({ status, label }) => {
   const normalized = String(status || '').toLowerCase();
-  const style = normalized === 'active' || normalized === 'approved'
+  const style = ['active', 'approved', 'done', 'completed', 'success'].includes(normalized)
     ? 'border-lime-300/60 bg-lime-100 text-lime-950'
     : ['past_due', 'pending', 'processing'].includes(normalized)
       ? 'border-amber-300/50 bg-amber-100 text-amber-950'
       : ['cancelled', 'canceled', 'failed', 'disabled'].includes(normalized)
         ? 'border-rose-300/50 bg-rose-100 text-rose-950'
         : 'border-slate-600 bg-slate-800 text-slate-100';
-  return <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${style}`}>{statusLabel(status || 'Not available')}</span>;
+  return <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${style}`}>{label || statusLabel(status || 'Not available')}</span>;
 };
 
 const SectionCard = ({ eyebrow, title, description, icon: Icon, children, action }) => (
@@ -81,6 +84,9 @@ export const AdminUserDetailsPage = () => {
   const [details, setDetails] = useState(null);
   const [subscription, setSubscription] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [tutorDocuments, setTutorDocuments] = useState([]);
+  const [tutorDocumentsLoading, setTutorDocumentsLoading] = useState(false);
+  const [tutorDocumentsError, setTutorDocumentsError] = useState('');
   const [error, setError] = useState('');
   const [subscriptionError, setSubscriptionError] = useState('');
   const [selectedSubject, setSelectedSubject] = useState('');
@@ -90,6 +96,19 @@ export const AdminUserDetailsPage = () => {
   const [savingSubject, setSavingSubject] = useState(false);
   const user = details?.profile;
   const isTutor = user?.role === 'tutor' || user?.role === 'teacher';
+  const loadTutorDocuments = useCallback(async (tutorId = user?.uid) => {
+    if (!tutorId) return;
+    setTutorDocumentsLoading(true);
+    setTutorDocumentsError('');
+    try {
+      setTutorDocuments(await getTutorMarksDocuments(tutorId));
+    } catch (documentsLoadError) {
+      setTutorDocuments([]);
+      setTutorDocumentsError(documentsLoadError.message || 'Uploaded results could not be loaded.');
+    } finally {
+      setTutorDocumentsLoading(false);
+    }
+  }, [user?.uid]);
   const markedSubjects = useMemo(() => new Set((details?.tutor?.subjects ?? [])
     .filter((item) => item.mark !== null && item.mark !== undefined)
     .map((item) => item.subject)), [details?.tutor?.subjects]);
@@ -130,6 +149,16 @@ export const AdminUserDetailsPage = () => {
     // Loading is intentionally keyed to the selected route ID.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
+
+  useEffect(() => {
+    if (!isTutor || !user?.uid || user.uid !== userId) {
+      setTutorDocuments([]);
+      setTutorDocumentsError('');
+      setTutorDocumentsLoading(false);
+      return;
+    }
+    loadTutorDocuments(user.uid);
+  }, [isTutor, loadTutorDocuments, user?.uid, userId]);
 
   useEffect(() => {
     if (!availableSubjects.length) {
@@ -263,6 +292,61 @@ export const AdminUserDetailsPage = () => {
               </form>
               <p className="text-xs text-slate-400">Marks must be 60–100 because the existing approval logic requires at least 60. The saved mark is added to this tutor or teacher’s existing subject marks.</p>
               {message ? <p className={`text-sm ${messageType === 'error' ? 'text-rose-200' : 'text-lime-200'}`} role="status">{message}</p> : null}
+            </SectionCard>
+
+            <SectionCard eyebrow="Results review" title="Uploaded results documents" description="Open the tutor’s uploaded proof to review marks and see the extraction result." icon={FileText}>
+              {tutorDocumentsError ? (
+                <div className="flex flex-col gap-3 rounded-xl border border-rose-300/30 bg-rose-300/10 p-4 sm:flex-row sm:items-center sm:justify-between" role="alert">
+                  <p className="text-sm text-rose-100">{tutorDocumentsError}</p>
+                  <button type="button" className="btn-secondary shrink-0" onClick={() => loadTutorDocuments()} disabled={tutorDocumentsLoading}>
+                    <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />Try again
+                  </button>
+                </div>
+              ) : null}
+              {tutorDocumentsLoading ? <LoadingState label="Loading uploaded results…" /> : null}
+              {!tutorDocumentsLoading && !tutorDocumentsError && !tutorDocuments.length ? (
+                <p className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 text-sm text-slate-400">This tutor or teacher has not uploaded any results documents.</p>
+              ) : null}
+              {!tutorDocumentsLoading && tutorDocuments.length ? (
+                <div className="space-y-3">
+                  {tutorDocuments.map((documentRecord) => {
+                    const status = String(documentRecord.status || 'processing').toLowerCase();
+                    const statusText = status === 'done' ? 'Extraction passed' : status === 'failed' ? 'Extraction failed' : status === 'processing' ? 'Processing' : statusLabel(status);
+                    return (
+                      <article key={documentRecord.id} className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="flex min-w-0 items-start gap-3">
+                            <FileText className="mt-0.5 h-5 w-5 shrink-0 text-lime-300" aria-hidden="true" />
+                            <div className="min-w-0">
+                              <h3 className="break-words font-semibold text-white">{documentRecord.fileName || 'Results document'}</h3>
+                              <p className="mt-1 text-xs text-slate-400">Uploaded {formatDate(documentRecord.createdAt) || 'date unavailable'}</p>
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 flex-wrap items-center gap-2">
+                            <StatusBadge status={status} label={statusText} />
+                            {documentRecord.fileUrl ? (
+                              <a href={documentRecord.fileUrl} target="_blank" rel="noopener noreferrer" className="btn-secondary inline-flex items-center px-3 py-2 text-sm">
+                                <ExternalLink className="mr-2 h-4 w-4" aria-hidden="true" />Open document
+                              </a>
+                            ) : <span className="text-xs text-slate-500">File link unavailable</span>}
+                          </div>
+                        </div>
+                        {documentRecord.progressMessage ? <p className="mt-3 text-sm text-slate-300">{documentRecord.progressMessage}</p> : null}
+                        {documentRecord.errorMessage ? <p className="mt-3 rounded-lg border border-rose-300/20 bg-rose-300/10 p-3 text-sm text-rose-100">{documentRecord.errorMessage}</p> : null}
+                        {documentRecord.extractedMarks?.length ? (
+                          <div className="mt-3 flex flex-wrap gap-2" aria-label="Extracted marks">
+                            {documentRecord.extractedMarks.map((item, index) => (
+                              <span key={`${documentRecord.id}-${item.subject}-${item.mark}-${index}`} className="rounded-full border border-lime-300/20 bg-lime-300/10 px-3 py-1 text-xs font-medium text-lime-100">
+                                {item.subject}: {item.mark}%
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : null}
             </SectionCard>
 
             <SectionCard eyebrow="Access" title="Student assignments" description="Primary tutor assignments and existing shared or historical episode access." icon={Users}>
