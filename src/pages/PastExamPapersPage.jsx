@@ -7,9 +7,9 @@ import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { useOperationStatus } from '../hooks/useOperationStatus';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
-import { cancelQuestionPaperAnalysis, cleanupGlobalTopicCatalog, getActiveSubjectsForStudent, getGlobalTopicList, getGoogleDrivePastPaperFolderContents, getGoogleDrivePastPaperImportStatuses, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, startGoogleDrivePastPaperImport, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
+import { cancelQuestionPaperAnalysis, cleanupGlobalTopicCatalog, getGlobalTopicList, getGoogleDrivePastPaperFolderContents, getGoogleDrivePastPaperImportStatuses, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, startGoogleDrivePastPaperImport, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
-import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../utils/tutorSubjects';
+import { getApprovedTutorSubjects, getUserSubjects } from '../utils/tutorSubjects';
 import { buildTopicResolverRows } from '../services/topicResolver';
 import { detectUploaderPaperMonth } from '../utils/paperMonth';
 
@@ -239,6 +239,8 @@ const getPaperTitle = (paper) => paper.title || paper.paperName || paper.paperFi
   paper.paperTitle || paper.paperMetadata?.paperTitle || paper.displayName || `${paper.subject || 'Question paper'} • ${paper.grade || ''}`;
 const getPaperDateValue = (value) => value?.toMillis?.() ?? new Date(value?.toDate?.() ?? value ?? 0).getTime();
 const getPaperField = (paper, field) => paper?.[field] ?? paper?.paperMetadata?.[field] ?? '';
+const getPaperSubject = (paper) => String(getPaperField(paper, 'subject') ?? '').trim().replace(/\s+/g, ' ');
+const normalizePaperSubject = (subject) => String(subject ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
 const getPaperSearchText = (paper) => [
   paper.displayName,
   paper.title,
@@ -310,33 +312,14 @@ export const PastExamPapersPage = () => {
   }, [topicResolverOpen]);
 
   const role = useMemo(() => profile?.role ?? ROLES.STUDENT, [profile]);
-  const [studentSubjects, setStudentSubjects] = useState([]);
-  useEffect(() => {
-    if (role !== ROLES.STUDENT || !profile?.uid) { setStudentSubjects([]); return undefined; }
-    let active = true;
-    getActiveSubjectsForStudent(profile.uid)
-      .then((subjects) => { if (active) setStudentSubjects(subjects); })
-      .catch((error) => console.error('[Examifying][PastPapers] active-subjects:error', error));
-    return () => { active = false; };
-  }, [profile?.uid, role]);
   const allowedSubjects = useMemo(() => {
     if (role === ROLES.ADMIN) return SUBJECTS;
     if (role === ROLES.TUTOR) return getApprovedTutorSubjects(profile);
     return getUserSubjects(profile);
   }, [profile, role]);
   const visibleSubjects = allowedSubjects.length ? allowedSubjects : SUBJECTS;
-  const studentGrade = SOUTH_AFRICAN_GRADES.includes(profile?.grade) && profile.grade !== 'Select Grade' ? profile.grade : '';
   const isStudentExploring = Boolean(searchTerm.trim()) || Object.keys(studentFilterOverrides).length > 0;
-  const studentFilterValues = isStudentExploring
-    ? { subject: 'all', grade: 'all', year: 'all', region: 'all', month: 'all', paperNumber: 'all', ...studentFilterOverrides }
-    : {
-      subject: studentSubjects.length ? 'my-subjects' : 'all',
-      grade: studentGrade || 'all',
-      year: 'all',
-      region: 'all',
-      month: 'all',
-      paperNumber: 'all',
-    };
+  const studentFilterValues = { subject: 'all', grade: 'all', year: 'all', region: 'all', month: 'all', paperNumber: 'all', ...studentFilterOverrides };
 
   useEffect(() => {
     let active = true;
@@ -352,6 +335,15 @@ export const PastExamPapersPage = () => {
     });
     return () => { active = false; unsubscribe(); };
   }, []);
+  const paperSubjects = useMemo(() => {
+    const subjectsByKey = new Map();
+    papers.forEach((paper) => {
+      const subject = getPaperSubject(paper);
+      const key = normalizePaperSubject(subject);
+      if (key && !subjectsByKey.has(key)) subjectsByKey.set(key, subject);
+    });
+    return [...subjectsByKey.values()].sort((left, right) => left.localeCompare(right));
+  }, [papers]);
 
   const visiblePapers = useMemo(() => {
     const orderedPapers = [...papers].sort((left, right) =>
@@ -361,17 +353,8 @@ export const PastExamPapersPage = () => {
     if (role === ROLES.STUDENT) {
       const matchingPapers = orderedPapers
         .filter((paper) => {
-          if (!isStudentExploring) {
-            const matchesSubjects = !studentSubjects.length || studentSubjects.includes(normalizeEligibleSubject(getPaperField(paper, 'subject')) ?? getPaperField(paper, 'subject'));
-            const matchesGrade = !studentGrade || getPaperField(paper, 'grade') === studentGrade;
-            return matchesSubjects && matchesGrade;
-          }
-
           const selectedSubject = studentFilterOverrides.subject ?? 'all';
-          const matchesSubject = selectedSubject === 'all' ||
-            (selectedSubject === 'my-subjects'
-              ? !studentSubjects.length || studentSubjects.includes(normalizeEligibleSubject(getPaperField(paper, 'subject')) ?? getPaperField(paper, 'subject'))
-              : (normalizeEligibleSubject(getPaperField(paper, 'subject')) ?? getPaperField(paper, 'subject')) === selectedSubject);
+          const matchesSubject = selectedSubject === 'all' || normalizePaperSubject(getPaperSubject(paper)) === normalizePaperSubject(selectedSubject);
           const matchesGrade = (studentFilterOverrides.grade ?? 'all') === 'all' || getPaperField(paper, 'grade') === studentFilterOverrides.grade;
           const matchesYear = (studentFilterOverrides.year ?? 'all') === 'all' || String(getPaperField(paper, 'year')) === String(studentFilterOverrides.year);
           const matchesRegion = (studentFilterOverrides.region ?? 'all') === 'all' || getPaperField(paper, 'region') === studentFilterOverrides.region;
@@ -383,14 +366,14 @@ export const PastExamPapersPage = () => {
           return matchesSubject && matchesGrade && matchesYear && matchesRegion && matchesMonth && matchesPaperNumber && matchesSearch;
         });
 
-      return isStudentExploring ? matchingPapers : matchingPapers.slice(0, 20);
+      return isStudentExploring ? matchingPapers : orderedPapers.slice(0, 20);
     }
 
     return orderedPapers
-      .filter((paper) => role === ROLES.ADMIN || !visibleSubjects.length || visibleSubjects.includes(paper.subject))
-      .filter((paper) => filters.subject === 'all' || paper.subject === filters.subject)
+      .filter((paper) => role !== ROLES.PARENT || !visibleSubjects.length || visibleSubjects.includes(getPaperSubject(paper)))
+      .filter((paper) => filters.subject === 'all' || normalizePaperSubject(getPaperSubject(paper)) === normalizePaperSubject(filters.subject))
       .filter((paper) => filters.year === 'all' || String(paper.year) === String(filters.year));
-  }, [papers, role, visibleSubjects, filters, isStudentExploring, studentSubjects, studentGrade, studentFilterOverrides, searchTerm]);
+  }, [papers, role, visibleSubjects, filters, isStudentExploring, studentFilterOverrides, searchTerm]);
   const adminPaperGroups = useMemo(() => {
     const groups = { analyzing: [], analyzed: [], failed: [] };
     const orderedPapers = [...papers].sort((left, right) =>
@@ -1086,10 +1069,10 @@ export const PastExamPapersPage = () => {
         description={role === ROLES.STUDENT
           ? isStudentExploring
             ? 'Search and filter all Examifying question papers.'
-            : 'Showing recent papers for your grade and subjects. Search or filter to explore the full Examifying collection.'
+            : 'Showing recent papers across all subjects. Search or filter to explore the full Examifying collection.'
           : role === ROLES.ADMIN
             ? 'Review papers grouped by analysis status. Each section has separate filters.'
-            : 'The list is scoped to your subjects. Use filters to narrow by subject or year.'}
+            : 'Browse papers across all subjects. Use filters to narrow by subject or year.'}
       />
       {role === ROLES.ADMIN ? (
         <div className="panel !bg-transparent space-y-4 p-4">
@@ -1250,8 +1233,7 @@ export const PastExamPapersPage = () => {
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
             <select aria-label="Filter by subject" className="input" value={studentFilterValues.subject} onChange={(event) => updateStudentFilter('subject', event.target.value)}>
               <option value="all">All subjects</option>
-              <option value="my-subjects">My subjects</option>
-              {SUBJECTS.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+              {paperSubjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
             </select>
             <select aria-label="Filter by grade" className="input" value={studentFilterValues.grade} onChange={(event) => updateStudentFilter('grade', event.target.value)}>
               <option value="all">All grades</option>
@@ -1288,7 +1270,7 @@ export const PastExamPapersPage = () => {
         <div className="panel grid gap-3 p-4 md:grid-cols-2">
           <select className="input" value={filters.subject} onChange={(event) => setFilters((current) => ({ ...current, subject: event.target.value }))}>
             <option value="all">All subjects</option>
-            {visibleSubjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+            {paperSubjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
           </select>
           <select className="input" value={filters.year} onChange={(event) => setFilters((current) => ({ ...current, year: event.target.value }))}>
             <option value="all">All years</option>
@@ -1296,7 +1278,7 @@ export const PastExamPapersPage = () => {
           </select>
         </div>
       ) : null}
-      {role === ROLES.STUDENT && !isStudentExploring ? <p className="text-xs text-slate-500">Showing up to 20 recent papers. Search or select a filter to browse all matching results.</p> : null}
+      {role === ROLES.STUDENT && !isStudentExploring ? <p className="text-xs text-slate-500">Showing up to 20 recent papers across all subjects. Search or select a filter to browse all matching results.</p> : null}
 
       {role === ROLES.ADMIN ? (
         <div className="space-y-4">
@@ -1307,15 +1289,12 @@ export const PastExamPapersPage = () => {
           ].map(({ key, title, emptyMessage }) => {
             const sectionPapers = adminPaperGroups[key];
             const sectionFilter = adminPaperFilters[key];
-            const sectionSubjects = [...new Set([
-              ...visibleSubjects,
-              ...sectionPapers.map((paper) => getPaperField(paper, 'subject')).filter(Boolean),
-            ])].sort((left, right) => left.localeCompare(right));
+            const sectionSubjects = paperSubjects;
             const sectionYears = [...new Set(sectionPapers.map((paper) => getPaperField(paper, 'year')).filter(Boolean))]
               .sort((left, right) => Number(right) - Number(left));
             const searchTokens = sectionFilter.search.trim().toLowerCase().split(/\s+/).filter(Boolean);
             const filteredSectionPapers = sectionPapers.filter((paper) => {
-              const matchesSubject = sectionFilter.subject === 'all' || getPaperField(paper, 'subject') === sectionFilter.subject;
+              const matchesSubject = sectionFilter.subject === 'all' || normalizePaperSubject(getPaperSubject(paper)) === normalizePaperSubject(sectionFilter.subject);
               const matchesYear = sectionFilter.year === 'all' || String(getPaperField(paper, 'year')) === String(sectionFilter.year);
               const searchText = getPaperSearchText(paper);
               return matchesSubject && matchesYear && searchTokens.every((token) => searchText.includes(token));
