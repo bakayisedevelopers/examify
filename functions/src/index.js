@@ -97,6 +97,12 @@ export {
 export { processResendEmailOutbox } from './resendEmail.js';
 
 export {
+  getGoogleDrivePastPaperFolderContents,
+  importGoogleDrivePastPapers,
+  startGoogleDrivePastPaperImport,
+} from './googleDrivePaperImport.js';
+
+export {
   queueExerciseGenerationAfterLesson,
   queueInitialExerciseGenerationAfterSubscription,
   queuePendingInitialGenerationAfterPaperAnalysis,

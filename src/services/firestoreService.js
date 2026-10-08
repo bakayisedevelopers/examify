@@ -2542,6 +2542,22 @@ export const updateQuestionPaper = async (paperId, patch) => {
   return { id: paperId, ...payload };
 };
 
+export const getGoogleDrivePastPaperFolderContents = async (folderId = '') => {
+  ensureDb();
+  if (!functions) throw new Error('Firebase Functions are not configured.');
+  const callable = httpsCallable(functions, 'getGoogleDrivePastPaperFolderContents', { timeout: 180_000 });
+  const response = await callable({ folderId });
+  return response.data;
+};
+
+export const startGoogleDrivePastPaperImport = async ({ folderId, fileIds } = {}) => {
+  ensureDb();
+  if (!functions) throw new Error('Firebase Functions are not configured.');
+  const callable = httpsCallable(functions, 'startGoogleDrivePastPaperImport', { timeout: 540_000 });
+  const response = await callable({ folderId, fileIds });
+  return response.data;
+};
+
 export const cancelQuestionPaperAnalysis = async (paperId) => {
   if (!paperId) throw new Error('Question paper id is required.');
   if (!isFirebaseConfigured) return { paperId, status: 'Cancelled' };

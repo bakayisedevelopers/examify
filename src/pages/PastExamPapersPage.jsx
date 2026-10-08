@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ListChecks, LoaderCircle, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileText, Folder, HardDriveDownload, ListChecks, LoaderCircle, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { AppShell } from '../components/common/AppShell';
 import { LoadingState } from '../components/common/LoadingState';
@@ -7,10 +7,11 @@ import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { useOperationStatus } from '../hooks/useOperationStatus';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
-import { cancelQuestionPaperAnalysis, cleanupGlobalTopicCatalog, getActiveSubjectsForStudent, getGlobalTopicList, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
+import { cancelQuestionPaperAnalysis, cleanupGlobalTopicCatalog, getActiveSubjectsForStudent, getGlobalTopicList, getGoogleDrivePastPaperFolderContents, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, startGoogleDrivePastPaperImport, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
 import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../utils/tutorSubjects';
 import { buildTopicResolverRows } from '../services/topicResolver';
+import { detectUploaderPaperMonth } from '../utils/paperMonth';
 
 const paperStatusStyles = {
   Analyzing: 'bg-amber-400/15 text-amber-300 border border-amber-400/30',
@@ -53,7 +54,7 @@ const inferMetadataFromName = (file, profile) => {
   const lower = name.toLowerCase();
   const filenameWords = lower.replace(/[^a-z0-9]+/g, ' ');
   const year = Number(lower.match(/\b(20\d{2}|19\d{2})\b/)?.[1]) || new Date().getFullYear();
-  const month = PAPER_MONTHS.find((item) => lower.includes(item.toLowerCase())) ?? PAPER_MONTHS[0];
+  const month = detectUploaderPaperMonth(name);
   const examplarDetected = /\b(?:examplar|exemplar)(?=\b|[0-9])/i.test(filenameWords);
   const detectedPaperNumber = PAPER_NUMBERS.find((item) => {
     const number = item.match(/\d/)?.[0];
@@ -190,6 +191,12 @@ export const PastExamPapersPage = () => {
   const [papers, setPapers] = useState([]);
   const [isLoadingPapers, setIsLoadingPapers] = useState(true);
   const [status, setStatus] = useState('');
+  const [driveImportRunning, setDriveImportRunning] = useState(false);
+  const [driveImportMessage, setDriveImportMessage] = useState('');
+  const [driveExplorerOpen, setDriveExplorerOpen] = useState(false);
+  const [driveFolderContents, setDriveFolderContents] = useState(null);
+  const [driveFolderTrail, setDriveFolderTrail] = useState([]);
+  const [driveFolderLoading, setDriveFolderLoading] = useState(false);
   const [uploadTab, setUploadTab] = useState('single');
   const [singleForm, setSingleForm] = useState(defaultPaperForm(profile));
   const [bulkRows, setBulkRows] = useState([]);
@@ -720,6 +727,56 @@ export const PastExamPapersPage = () => {
     }
   };
 
+  const loadDriveFolderContents = async (folderId = '', nextTrail = null) => {
+    setDriveFolderLoading(true);
+    setDriveImportMessage('');
+    try {
+      const contents = await getGoogleDrivePastPaperFolderContents(folderId);
+      setDriveFolderContents(contents);
+      setDriveFolderTrail(nextTrail ?? [{ id: contents.folder.id, name: contents.folder.name }]);
+      return contents;
+    } catch (error) {
+      setDriveImportMessage(error.message || 'Could not load this Drive folder.');
+      return null;
+    } finally {
+      setDriveFolderLoading(false);
+    }
+  };
+
+  const handleToggleDriveExplorer = () => {
+    if (driveExplorerOpen) {
+      setDriveExplorerOpen(false);
+      return;
+    }
+    setDriveExplorerOpen(true);
+    if (!driveFolderContents) loadDriveFolderContents();
+  };
+
+  const handleDriveImport = async (paperGroup) => {
+    const fileIds = paperGroup?.importFileIds ?? [];
+    if (!driveFolderContents?.folder?.id || !fileIds.length) return;
+    setDriveImportRunning(true);
+    setDriveImportMessage('');
+    try {
+      const result = await runOperation({
+        operationName: 'Importing selected paper from Google Drive',
+        successMessage: 'The selected Drive paper files finished importing.',
+      }, () => startGoogleDrivePastPaperImport({ folderId: driveFolderContents.folder.id, fileIds }));
+      if (result?.skipped && result.reason === 'already_running') {
+        setDriveImportMessage('A Google Drive import is already running.');
+      } else {
+        const refreshed = await loadDriveFolderContents(driveFolderContents.folder.id, driveFolderTrail);
+        setDriveImportMessage(
+          `Selected-folder import finished: ${result?.importedFiles ?? 0} file(s) added, ${result?.duplicateFiles ?? 0} duplicate(s), ${result?.waitingFiles ?? 0} waiting for a matching paper, ${result?.reviewFiles ?? 0} sent for review, ${result?.failedFiles ?? 0} failed.${refreshed ? '' : ' Folder status could not be refreshed.'}`,
+        );
+      }
+    } catch (error) {
+      setDriveImportMessage(error.message || 'Could not start the Google Drive import.');
+    } finally {
+      setDriveImportRunning(false);
+    }
+  };
+
   const handleBulkFiles = (event) => {
     const files = Array.from(event.target.files ?? []);
     const result = buildBulkRows({ files, profile });
@@ -937,6 +994,133 @@ export const PastExamPapersPage = () => {
             ? 'Review papers grouped by analysis status. Each section has separate filters.'
             : 'The list is scoped to your subjects. Use filters to narrow by subject or year.'}
       />
+      {role === ROLES.ADMIN ? (
+        <div className="panel space-y-4 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="font-semibold text-slate-900">Google Drive past-paper folders</h2>
+              <p className="mt-1 text-sm text-slate-600">Browse one folder at a time, check paper and memo storage status, then import only the selected paper files.</p>
+              {driveImportMessage ? <p className="mt-2 text-sm text-slate-700" role="status">{driveImportMessage}</p> : null}
+            </div>
+            <button
+              type="button"
+              className="btn-primary inline-flex shrink-0 items-center justify-center gap-2"
+              disabled={driveFolderLoading || driveImportRunning}
+              onClick={handleToggleDriveExplorer}
+            >
+              {driveFolderLoading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <HardDriveDownload className="h-4 w-4" aria-hidden="true" />}
+              {driveExplorerOpen ? 'Close Drive browser' : 'Browse Drive folders'}
+            </button>
+          </div>
+          {driveExplorerOpen ? (
+            <div className="w-full space-y-4 border-t border-slate-200 pt-4">
+              {driveFolderTrail.length ? (
+                <nav aria-label="Google Drive folder path" className="flex flex-wrap items-center gap-1 text-sm">
+                  {driveFolderTrail.map((folder, index) => (
+                    <span key={folder.id} className="inline-flex items-center gap-1">
+                      {index ? <ChevronRight className="h-4 w-4 text-slate-400" aria-hidden="true" /> : null}
+                      <button
+                        type="button"
+                        className={`rounded px-1 py-0.5 ${index === driveFolderTrail.length - 1 ? 'font-semibold text-slate-900' : 'text-lime-800 hover:bg-lime-50'}`}
+                        onClick={() => loadDriveFolderContents(folder.id, driveFolderTrail.slice(0, index + 1))}
+                      >
+                        {folder.name}
+                      </button>
+                    </span>
+                  ))}
+                </nav>
+              ) : null}
+              {driveFolderLoading ? (
+                <div className="flex items-center gap-2 py-5 text-sm text-slate-600"><LoaderCircle className="h-4 w-4 animate-spin text-lime-700" aria-hidden="true" />Loading folder contents…</div>
+              ) : driveFolderContents ? (
+                <>
+                  {driveFolderContents.folders.length ? (
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {driveFolderContents.folders.map((folder) => (
+                        <button
+                          key={folder.id}
+                          type="button"
+                          className="flex items-center gap-2 rounded-xl border border-lime-200 bg-lime-50 px-3 py-2.5 text-left text-sm font-medium text-slate-800 hover:bg-lime-100"
+                          onClick={() => loadDriveFolderContents(folder.id, [...driveFolderTrail, folder])}
+                        >
+                          <Folder className="h-4 w-4 shrink-0 text-lime-700" aria-hidden="true" />
+                          <span className="min-w-0 flex-1 truncate">{folder.name}</span>
+                          <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {driveFolderContents.papers.length ? (
+                    <div className="overflow-x-auto rounded-xl border border-slate-200">
+                      <table className="min-w-[860px] w-full divide-y divide-slate-200 text-left text-sm">
+                        <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-600">
+                          <tr>
+                            <th className="px-4 py-3 font-semibold">Paper / Drive files</th>
+                            <th className="px-4 py-3 font-semibold">Question paper</th>
+                            <th className="px-4 py-3 font-semibold">Memo</th>
+                            <th className="px-4 py-3 text-right font-semibold">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 bg-white">
+                          {driveFolderContents.papers.map((group) => {
+                            const title = group.metadata
+                              ? [group.metadata.subject, group.metadata.grade, group.metadata.region, group.metadata.year, group.metadata.paperNumber].filter(Boolean).join(' • ')
+                              : group.files.map((file) => file.name).join(', ');
+                            const questionName = group.questionFiles.map((file) => file.name).join(', ') || 'No question-paper PDF in this folder';
+                            const memoName = group.memoFiles.map((file) => file.name).join(', ') || 'No memo PDF in this folder';
+                            const statusBadge = (value) => {
+                              const styles = {
+                                uploaded: 'bg-lime-100 text-lime-900',
+                                missing: 'bg-amber-100 text-amber-900',
+                                waiting: 'bg-slate-100 text-slate-700',
+                                review: 'bg-rose-100 text-rose-800',
+                                'no-file': 'bg-slate-50 text-slate-500',
+                              };
+                              const labels = { uploaded: 'Uploaded', missing: 'Missing', waiting: 'Waiting for paper', review: 'Review required', 'no-file': 'No memo here' };
+                              return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${styles[value] ?? styles.review}`}>{labels[value] ?? 'Review required'}</span>;
+                            };
+                            return (
+                              <tr key={group.identityKey} className="align-top">
+                                <td className="max-w-[22rem] px-4 py-3">
+                                  <p className="font-semibold text-slate-900">{title}</p>
+                                  {group.reviewReason ? <p className="mt-1 text-xs text-rose-700">{group.reviewReason}</p> : null}
+                                </td>
+                                <td className="max-w-[20rem] px-4 py-3">
+                                  <div className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" /><span className="break-words text-slate-700">{questionName}</span></div>
+                                  <div className="mt-2">{statusBadge(group.paperStatus)}</div>
+                                </td>
+                                <td className="max-w-[20rem] px-4 py-3">
+                                  <div className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" /><span className="break-words text-slate-700">{memoName}</span></div>
+                                  <div className="mt-2">{statusBadge(group.memoStatus)}</div>
+                                </td>
+                                <td className="px-4 py-3 text-right">
+                                  {group.importFileIds.length ? (
+                                    <button type="button" className="btn-primary whitespace-nowrap" disabled={driveImportRunning} onClick={() => handleDriveImport(group)}>
+                                      {driveImportRunning ? 'Importing…' : 'Import missing files'}
+                                    </button>
+                                  ) : group.reviewReason ? (
+                                    <span className="text-xs font-medium text-rose-700">Review first</span>
+                                  ) : group.paperStatus === 'uploaded' && ['uploaded', 'no-file'].includes(group.memoStatus) ? (
+                                    <span className="text-xs font-medium text-lime-800">Up to date</span>
+                                  ) : (
+                                    <span className="text-xs text-slate-500">No import available</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : !driveFolderContents.folders.length ? (
+                    <p className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-600">This folder has no PDF papers, memos, or subfolders.</p>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {role === ROLES.STUDENT ? (
         <div className="panel grid gap-3 p-4">
           <label className="relative block">
@@ -1331,7 +1515,10 @@ const UploadFields = ({ value, onChange, subjects, compact = false }) => (
     <label><span className="label">Grade</span><select className="input" value={value.grade} onChange={(event) => onChange({ grade: event.target.value })}>{SOUTH_AFRICAN_GRADES.map((grade) => <option key={grade}>{grade}</option>)}</select></label>
     <label><span className="label">Region</span><select className="input" value={value.region} onChange={(event) => onChange({ region: event.target.value })}>{REGIONS.map((region) => <option key={region}>{region}</option>)}</select></label>
     <label><span className="label">Year</span><input type="number" min="2000" max="2100" className="input" value={value.year} onChange={(event) => onChange({ year: event.target.value })} /></label>
-    <label><span className="label">Month</span><select className="input" value={value.month} onChange={(event) => onChange({ month: event.target.value })}>{PAPER_MONTHS.map((month) => <option key={month}>{month}</option>)}</select></label>
+    <label><span className="label">Month</span><select className="input" value={value.month} onChange={(event) => onChange({ month: event.target.value })}>
+      {value.month && !PAPER_MONTHS.includes(value.month) ? <option value={value.month}>{value.month} (existing record)</option> : null}
+      {PAPER_MONTHS.map((month) => <option key={month}>{month}</option>)}
+    </select></label>
     <label><span className="label">Paper number</span><select className="input" value={value.paperNumber} onChange={(event) => onChange({ paperNumber: event.target.value })}>
       {value.paperNumber && !PAPER_NUMBERS.includes(value.paperNumber) ? <option value={value.paperNumber}>{value.paperNumber} (existing record)</option> : null}
       {PAPER_NUMBERS.map((paperNumber) => <option key={paperNumber}>{paperNumber}</option>)}
