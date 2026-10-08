@@ -7,10 +7,13 @@ import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { getDb, storage } from './admin.js';
 import {
   createDrivePaperImportRunner,
+  destroyPdfLoadingTaskSafely,
   DRIVE_PAPER_IMPORT_SCHEDULE,
+  listDrivePdfsRecursively,
   safeErrorSummary,
   summarizeDriveFolderPapers,
 } from './googleDrivePaperImportCore.js';
+import { DRIVE_PAPER_SUBJECT_QUERY_VALUES } from './drivePaperSubjects.js';
 
 const GOOGLE_DRIVE_ROOT_ENV = 'GOOGLE_DRIVE_PAPERS_ROOT_ID';
 const DRIVE_READ_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
@@ -19,11 +22,6 @@ const TRACKING_COLLECTION = 'googleDrivePaperImports';
 const LOCK_DOCUMENT = 'googleDrivePaperImportLocks/active';
 const LOCK_DURATION_MS = 12 * 60 * 1000;
 const MAX_PDF_BYTES = 50 * 1024 * 1024;
-const SUBJECT_ALIASES = [
-  'Mathematics', 'Maths', 'Math',
-  'Mathematical Literacy', 'Maths Literacy', 'Math Literacy', 'Maths Lit', 'Math Lit',
-];
-
 let driveTokenCache = { token: '', expiresAt: 0 };
 
 const getRuntimeDriveToken = async () => {
@@ -162,25 +160,7 @@ const listConfiguredDriveTree = async (rootFolderId) => {
     throw new Error('GOOGLE_DRIVE_PAPERS_ROOT_ID must refer to an existing, non-trashed Google Drive folder.');
   }
 
-  const results = [];
-  const folders = [{ id: root.id, path: [root.name] }];
-  for (let index = 0; index < folders.length; index += 1) {
-    const folder = folders[index];
-    let pageToken;
-    do {
-      const page = await listDriveFolderPage(folder.id, pageToken);
-      for (const file of page.files ?? []) {
-        if (file.trashed) continue;
-        if (file.mimeType === 'application/vnd.google-apps.folder') {
-          folders.push({ id: file.id, path: [...folder.path, file.name] });
-        } else if (file.mimeType === 'application/pdf' || String(file.name ?? '').toLowerCase().endsWith('.pdf')) {
-          results.push({ ...file, folderPath: folder.path });
-        }
-      }
-      pageToken = page.nextPageToken;
-    } while (pageToken);
-  }
-  return results;
+  return listDrivePdfsRecursively({ root, listFolderPage: listDriveFolderPage });
 };
 
 const listSelectedFolderPdfs = async (folderId) => {
@@ -226,8 +206,7 @@ const extractPdfTextSignals = async (buffer) => {
       reason: 'The PDF could not be inspected to confirm it contains only one document type; manual review is required.',
     };
   } finally {
-    if (pdf) await pdf.destroy().catch(() => {});
-    else await loadingTask.destroy().catch(() => {});
+    await destroyPdfLoadingTaskSafely(loadingTask);
   }
 };
 
@@ -300,16 +279,17 @@ const downloadExistingFirebaseFile = async (url) => {
 
 const loadExistingQuestionPapers = async () => {
   const db = getDb();
-  const snapshots = await Promise.all([
-    db.collection('questionPapers').where('subject', 'in', SUBJECT_ALIASES.slice(0, 3)).select(
+  const subjectChunks = [];
+  for (let index = 0; index < DRIVE_PAPER_SUBJECT_QUERY_VALUES.length; index += 30) {
+    subjectChunks.push(DRIVE_PAPER_SUBJECT_QUERY_VALUES.slice(index, index + 30));
+  }
+  const snapshots = await Promise.all(subjectChunks.map((subjectValues) => (
+    db.collection('questionPapers').where('subject', 'in', subjectValues).select(
       'subject', 'grade', 'region', 'province', 'year', 'month', 'paperNumber', 'language', 'examSession', 'session',
       'paperUrl', 'memoUrl', 'paperFileName', 'memoFileName', 'paperSha256', 'memoSha256', 'source', 'driveFileId', 'driveImport',
-    ).get(),
-    db.collection('questionPapers').where('subject', 'in', SUBJECT_ALIASES.slice(3)).select(
-      'subject', 'grade', 'region', 'province', 'year', 'month', 'paperNumber', 'language', 'examSession', 'session',
-      'paperUrl', 'memoUrl', 'paperFileName', 'memoFileName', 'paperSha256', 'memoSha256', 'source', 'driveFileId', 'driveImport',
-    ).get(),
-  ]);
+      'analysisStatus',
+    ).get()
+  )));
   const uniquePapers = new Map();
   snapshots.forEach((snapshot) => snapshot.docs.forEach((doc) => uniquePapers.set(doc.id, { id: doc.id, ...doc.data() })));
   return [...uniquePapers.values()];
@@ -346,6 +326,45 @@ const getFolderPaperPreview = async (folderId) => {
       importFileIds: group.importFileIds,
     })),
   };
+};
+
+const getDrivePaperImportStatuses = async (fileIds) => {
+  if (!Array.isArray(fileIds) || fileIds.length < 1 || fileIds.length > 100) {
+    throw new HttpsError('invalid-argument', 'Request import statuses for between 1 and 100 Drive files.');
+  }
+  const uniqueFileIds = [...new Set(fileIds.map((id) => String(id ?? '').trim()))];
+  if (uniqueFileIds.length !== fileIds.length || uniqueFileIds.some((id) => !id || id.length > 200)) {
+    throw new HttpsError('invalid-argument', 'The Drive file ID list is invalid.');
+  }
+  const trackingRows = await Promise.all(uniqueFileIds.map(async (fileId) => ({
+    fileId,
+    tracking: await readTracking(fileId),
+  })));
+  const targetPaperIds = [...new Set(trackingRows
+    .map(({ tracking }) => tracking?.targetPaperId || tracking?.duplicateTargetPaperId)
+    .filter(Boolean)
+    .map(String))];
+  const paperSnapshots = await Promise.all(targetPaperIds.map((paperId) => (
+    getDb().collection('questionPapers').doc(paperId).get()
+  )));
+  const analysisStatusByPaperId = new Map(paperSnapshots.map((snapshot) => [
+    snapshot.id,
+    snapshot.exists ? String(snapshot.get('analysisStatus') ?? '') : '',
+  ]));
+  const statuses = trackingRows.map(({ fileId, tracking }) => {
+    const targetPaperId = String(tracking?.targetPaperId || tracking?.duplicateTargetPaperId || '');
+    return {
+      fileId,
+      importStatus: String(tracking?.importStatus ?? ''),
+      importStage: String(tracking?.importStage ?? ''),
+      paperType: String(tracking?.parsedMetadata?.paperType ?? ''),
+      targetPaperId,
+      analysisStatus: analysisStatusByPaperId.get(targetPaperId) ?? '',
+      errorSummary: safeErrorSummary(tracking?.errorSummary ?? ''),
+      reviewReason: safeErrorSummary(tracking?.reviewReason ?? ''),
+    };
+  });
+  return { statuses };
 };
 
 const requireAdminCaller = async (request) => {
@@ -487,6 +506,9 @@ export const startGoogleDrivePastPaperImport = onCall({
 
 export const getGoogleDrivePastPaperFolderContents = onCall({ timeoutSeconds: 180 }, async (request) => {
   await requireAdminCaller(request);
+  if (Array.isArray(request.data?.statusFileIds)) {
+    return getDrivePaperImportStatuses(request.data.statusFileIds);
+  }
   const folderId = String(request.data?.folderId ?? '').trim();
   try {
     return await getFolderPaperPreview(folderId);

@@ -4,13 +4,21 @@ import test from 'node:test';
 import {
   comparePaperMetadata,
   createDrivePaperImportRunner,
+  destroyPdfLoadingTaskSafely,
   DRIVE_PAPER_IMPORT_SCHEDULE,
+  getDriveFileFingerprint,
+  isDrivePaperImportActive,
+  listDrivePdfsRecursively,
   parseGoogleDrivePaperMetadata,
   paperFileIdentityKey,
   paperIdentityKey,
   sha256Buffer,
   summarizeDriveFolderPapers,
 } from './googleDrivePaperImportCore.js';
+import {
+  DRIVE_PAPER_SUBJECT_QUERY_VALUES,
+  DRIVE_PAPER_SUBJECTS,
+} from './drivePaperSubjects.js';
 import { PAPER_MONTHS } from '../../src/lib/constants.js';
 import { detectUploaderPaperMonth } from '../../src/utils/paperMonth.js';
 
@@ -29,12 +37,14 @@ const paperFile = (id = 'drive-paper-1', name = 'Mathematics - Grade 12 - Nation
 const createHarness = ({
   files = [paperFile()],
   existingPapers = [],
+  priorTrackingByFileId = {},
   inspectPdf = async () => ({}),
   downloadFile = async () => pdfBuffer,
+  onDownload = async () => {},
   downloadExisting = async () => pdfBuffer,
   inspectExistingStorage = async () => null,
 } = {}) => {
-  const tracking = new Map();
+  const tracking = new Map(Object.entries(priorTrackingByFileId));
   const calls = { upload: [], create: [], attachMemo: [], logs: [] };
   const runner = createDrivePaperImportRunner({
     rootFolderId: 'configured-past-papers-folder',
@@ -44,7 +54,10 @@ const createHarness = ({
     readTracking: async (id) => tracking.get(id) ?? null,
     writeTracking: async (id, fields) => tracking.set(id, { ...(tracking.get(id) ?? {}), ...fields }),
     loadExistingPapers: async () => existingPapers,
-    downloadFile,
+    downloadFile: async (file, maxBytes) => {
+      await onDownload({ file, tracking, calls });
+      return downloadFile(file, maxBytes);
+    },
     downloadExisting,
     inspectExistingStorage,
     inspectPdf,
@@ -92,6 +105,49 @@ test('parses question-paper and memo names with the exam month in the filename',
     ...question.metadata,
     paperType: 'memo',
   });
+});
+
+test('parses Accounting question papers and memos using the established metadata fields', () => {
+  const question = parseGoogleDrivePaperMetadata({
+    fileName: 'Accounting - Grade 10 - Gauteng - June - 2022 - Paper 1.pdf',
+  });
+  const memo = parseGoogleDrivePaperMetadata({
+    fileName: 'Accounting - Grade 10 - KwaZulu-Natal - March - 2022 - Paper 1 - Memo.pdf',
+  });
+
+  assert.equal(question.ok, true);
+  assert.equal(question.metadata.subject, 'Accounting');
+  assert.equal(question.metadata.paperType, 'question');
+  assert.equal(memo.ok, true);
+  assert.equal(memo.metadata.subject, 'Accounting');
+  assert.equal(memo.metadata.paperType, 'memo');
+});
+
+test('recognizes the importer subject catalogue, including South African language levels', () => {
+  for (const subject of DRIVE_PAPER_SUBJECTS) {
+    const parsed = parseGoogleDrivePaperMetadata({
+      fileName: `${subject} - Grade 10 - National - November - 2024 - Paper 1.pdf`,
+    });
+    assert.equal(parsed.ok, true, `${subject} should be recognized`);
+    assert.equal(parsed.metadata.subject, subject);
+  }
+
+  assert.equal(parseGoogleDrivePaperMetadata({
+    fileName: 'isiNdebele FAL - Grade 10 - National - November - 2024 - Paper 1.pdf',
+  }).metadata.subject, 'isiNdebele First Additional Language');
+  assert.equal(parseGoogleDrivePaperMetadata({
+    fileName: 'Tshivenda Home Language - Grade 12 - Limpopo - November - 2024 - Paper 1.pdf',
+  }).metadata.subject, 'Tshivenda Home Language');
+  assert.ok(DRIVE_PAPER_SUBJECT_QUERY_VALUES.includes('Accounting'));
+  assert.ok(DRIVE_PAPER_SUBJECT_QUERY_VALUES.includes('isiNdebele FAL'));
+});
+
+test('a language filename without its language level is held for review as ambiguous', () => {
+  const parsed = parseGoogleDrivePaperMetadata({
+    fileName: 'English - Grade 10 - National - November - 2024 - Paper 1.pdf',
+  });
+  assert.equal(parsed.ok, false);
+  assert.match(parsed.reason, /subject is ambiguous/i);
 });
 
 test('accepts and normalizes all valid calendar months, including November', () => {
@@ -153,6 +209,50 @@ test('a missing filename month is logged and skipped for review without uploadin
   assert.ok(calls.logs.some(([message, details]) => (
     message.includes('filename could not be parsed') && /exam month/i.test(details?.error ?? '')
   )));
+});
+
+test('the importer records a visible importing stage before the Drive download begins', async () => {
+  const file = paperFile();
+  const { runner, tracking } = createHarness({
+    files: [file],
+    onDownload: async ({ file: downloadingFile }) => {
+      const current = tracking.get(downloadingFile.id);
+      assert.equal(current.importStatus, 'importing');
+      assert.equal(current.importStage, 'downloading');
+    },
+  });
+
+  const result = await runner();
+  assert.equal(result.importedFiles, 1);
+  assert.equal(tracking.get(file.id).importStatus, 'imported');
+  assert.equal(tracking.get(file.id).importStage, '');
+});
+
+test('a recent importing status prevents another attempt while stale progress can retry', () => {
+  const now = new Date('2026-10-08T12:00:00.000Z');
+  assert.equal(isDrivePaperImportActive({ importStatus: 'importing', updatedAt: new Date('2026-10-08T11:59:00.000Z') }, now), true);
+  assert.equal(isDrivePaperImportActive({ importStatus: 'importing', updatedAt: new Date('2026-10-08T11:40:00.000Z') }, now), false);
+  assert.equal(isDrivePaperImportActive({ importStatus: 'failed', updatedAt: now }, now), false);
+});
+
+test('a runner skips a Drive file whose progress says an import is already active', async () => {
+  const file = paperFile('drive-already-importing');
+  const { runner, calls } = createHarness({
+    files: [file],
+    priorTrackingByFileId: {
+      [file.id]: {
+        importStatus: 'importing',
+        importStage: 'uploading_question_paper',
+        driveFingerprint: getDriveFileFingerprint(file),
+        updatedAt: new Date(),
+      },
+    },
+  });
+  const result = await runner();
+
+  assert.equal(result.skippedFiles, 1);
+  assert.equal(calls.upload.length, 0);
+  assert.equal(calls.create.length, 0);
 });
 
 test('a new PDF is stored and creates one paper record that activates the existing analysis trigger', async () => {
@@ -475,11 +575,79 @@ test('folder preview groups paper and memo and reports their Firebase storage st
   assert.equal(group.targetPaperId, 'frontend-paper-preview');
 });
 
+test('folder preview exposes importing and analysis states from tracking and Firestore', () => {
+  const question = paperFile('drive-in-progress');
+  const [importing] = summarizeDriveFolderPapers({
+    files: [question],
+    trackingByFileId: { [question.id]: { importStatus: 'importing', importStage: 'downloading', updatedAt: new Date() } },
+  });
+  assert.equal(importing.paperStatus, 'importing');
+  assert.deepEqual(importing.importFileIds, []);
+
+  const [stalled] = summarizeDriveFolderPapers({
+    files: [question],
+    trackingByFileId: { [question.id]: { importStatus: 'importing', updatedAt: new Date(Date.now() - 11 * 60 * 1000) } },
+  });
+  assert.equal(stalled.paperStatus, 'stalled');
+  assert.deepEqual(stalled.importFileIds, [question.id]);
+
+  const [analyzing] = summarizeDriveFolderPapers({
+    files: [question],
+    existingPapers: [{
+      id: 'paper-created', subject: 'Mathematics', grade: 'Grade 12', region: 'National', year: 2024,
+      month: 'November', paperNumber: 'Paper 1', paperUrl: 'https://storage.example/paper', analysisStatus: 'Analyzing',
+    }],
+  });
+  assert.equal(analyzing.paperStatus, 'analyzing');
+});
+
 test('schedule is daily at midnight in South African time', () => {
   assert.deepEqual(DRIVE_PAPER_IMPORT_SCHEDULE, {
     schedule: '0 0 * * *',
     timeZone: 'Africa/Johannesburg',
   });
+});
+
+test('the scheduled root scan includes PDFs in every nested subject folder and paginates without subject filters', async () => {
+  const pages = {
+    root: {
+      first: {
+        files: [
+          { id: 'math-folder', name: 'Mathematics', mimeType: 'application/vnd.google-apps.folder' },
+          { id: 'accounting-folder', name: 'Accounting', mimeType: 'application/vnd.google-apps.folder' },
+          { id: 'root-pdf', name: 'General Paper.pdf', mimeType: 'application/pdf' },
+          { id: 'trashed-pdf', name: 'old.pdf', mimeType: 'application/pdf', trashed: true },
+          { id: 'not-pdf', name: 'notes.txt', mimeType: 'text/plain' },
+        ],
+        nextPageToken: 'root-next',
+      },
+      rootNext: { files: [{ id: 'root-second-pdf', name: 'Language Paper.pdf', mimeType: 'application/pdf' }] },
+    },
+    'math-folder': { first: { files: [{ id: 'math-pdf', name: 'Mathematics - Grade 10 - National - November - 2024 - Paper 1.pdf', mimeType: 'application/pdf' }] } },
+    'accounting-folder': { first: { files: [{ id: 'accounting-pdf', name: 'Accounting - Grade 10 - Gauteng - June - 2022 - Paper 1.pdf', mimeType: 'application/pdf' }] } },
+  };
+  const requests = [];
+  const files = await listDrivePdfsRecursively({
+    root: { id: 'root', name: 'Past Papers' },
+    listFolderPage: async (folderId, pageToken = '') => {
+      requests.push([folderId, pageToken]);
+      return pages[folderId][pageToken === 'root-next' ? 'rootNext' : 'first'];
+    },
+  });
+
+  assert.deepEqual(files.map(({ id }) => id).sort(), [
+    'accounting-pdf', 'math-pdf', 'root-pdf', 'root-second-pdf',
+  ]);
+  assert.ok(requests.some(([folderId]) => folderId === 'accounting-folder'));
+  assert.ok(files.find(({ id }) => id === 'accounting-pdf').folderPath.includes('Accounting'));
+});
+
+test('PDF loading-task cleanup is safe when supported cleanup is missing or fails', async () => {
+  let destroyed = false;
+  await destroyPdfLoadingTaskSafely({ destroy: async () => { destroyed = true; } });
+  assert.equal(destroyed, true);
+  await destroyPdfLoadingTaskSafely({});
+  await destroyPdfLoadingTaskSafely({ destroy: async () => { throw new Error('cleanup failed'); } });
 });
 
 test('the existing front-end upload and save path remains in place', async () => {

@@ -37,7 +37,7 @@ const normalizeComparable = (value) => String(value ?? '')
   .trim()
   .replace(/\s+/g, ' ');
 
-const SUBJECT_ALIASES = {
+export const SUBJECT_ALIASES = {
   Mathematics: ['maths', 'math'],
   'Mathematical Literacy': ['maths literacy', 'math lit', 'mathematics literacy', 'math literacy'],
   'Physical Sciences': ['physical science', 'physics', 'chemistry'],

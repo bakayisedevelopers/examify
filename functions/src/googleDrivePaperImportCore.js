@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { canonicalDrivePaperSubject, getDrivePaperSubjectCandidates } from './drivePaperSubjects.js';
 
 export const DRIVE_PAPER_IMPORT_SCHEDULE = Object.freeze({
   schedule: '0 0 * * *',
@@ -86,14 +87,7 @@ const parseFilenameField = ({ segments, index, parser, label, errors }) => {
   return '';
 };
 
-const parseSubject = (segment) => {
-  const normalized = normalizeWords(segment);
-  if (/\b(?:mathematical literacy|mathematics literacy|maths literacy|math literacy|maths lit|math lit)\b/.test(normalized)) {
-    return ['Mathematical Literacy'];
-  }
-  if (/^(?:mathematics|maths|math)$/.test(normalized)) return ['Mathematics'];
-  return [];
-};
+const parseSubject = (segment) => getDrivePaperSubjectCandidates(segment);
 
 const parseYear = (segment) => {
   const normalized = normalizeWords(segment);
@@ -205,9 +199,7 @@ export const getDriveFileFingerprint = (file = {}) => JSON.stringify({
   md5Checksum: String(file.md5Checksum ?? ''),
 });
 
-const canonicalSubject = (value) => {
-  return parseSubject(value)[0] ?? normalizeWords(value);
-};
+const canonicalSubject = (value) => canonicalDrivePaperSubject(value);
 
 const canonicalRegion = (value) => {
   const normalized = normalizeWords(value);
@@ -249,7 +241,16 @@ export const comparePaperMetadata = (incoming = {}, existingPaper = {}) => {
 
   for (const field of ['subject', 'grade', 'region', 'month', 'year', 'paperNumber']) {
     if (!incoming[field] || !existing[field]) uncertainFields.push(field);
-    else if (canonicalizers[field](incoming[field]) !== canonicalizers[field](existing[field])) return { status: 'different', field };
+    else if (field === 'subject') {
+      const incomingSubjects = getDrivePaperSubjectCandidates(incoming.subject);
+      const existingSubjects = getDrivePaperSubjectCandidates(existing.subject);
+      if (incomingSubjects.length > 1 || existingSubjects.length > 1) uncertainFields.push(field);
+      else if (canonicalizers.subject(incoming.subject) !== canonicalizers.subject(existing.subject)) {
+        return { status: 'different', field };
+      }
+    } else if (canonicalizers[field](incoming[field]) !== canonicalizers[field](existing[field])) {
+      return { status: 'different', field };
+    }
   }
 
   for (const field of ['language', 'examSession']) {
@@ -319,6 +320,8 @@ export const summarizeDriveFolderPapers = ({ files = [], trackingByFileId = {}, 
       id: file.id,
       name: file.name,
       importStatus: tracking.importStatus ?? '',
+      importStage: tracking.importStage ?? '',
+      updatedAt: tracking.updatedAt ?? null,
       errorSummary: tracking.errorSummary ?? '',
     };
     group.files.push(driveFile);
@@ -340,13 +343,38 @@ export const summarizeDriveFolderPapers = ({ files = [], trackingByFileId = {}, 
     if (existingPaper && !existingPaper.paperUrl) group.reviewReason ||= 'The matching Firestore paper record has no question-paper file URL.';
 
     group.targetPaperId = existingPaper?.id ?? '';
+    const questionImporting = group.questionFiles.some((file) => isDrivePaperImportActive(file));
+    const memoImporting = group.memoFiles.some((file) => isDrivePaperImportActive(file));
+    const questionImportStalled = group.questionFiles.some((file) => activeImportStatuses.has(file.importStatus) && !isDrivePaperImportActive(file));
+    const memoImportStalled = group.memoFiles.some((file) => activeImportStatuses.has(file.importStatus) && !isDrivePaperImportActive(file));
+    const questionImportFailed = group.questionFiles.some((file) => file.importStatus === 'failed');
+    const memoImportFailed = group.memoFiles.some((file) => file.importStatus === 'failed');
+    const analysisState = existingPaper?.analysisStatus === 'Analyzing'
+      ? 'analyzing'
+      : existingPaper?.analysisStatus === 'Analyzed'
+        ? 'analyzed'
+        : ['Failed', 'Cancelled'].includes(existingPaper?.analysisStatus)
+          ? 'analysis-failed'
+          : '';
     group.paperStatus = group.reviewReason
       ? 'review'
+      : questionImporting
+        ? 'importing'
+      : questionImportStalled
+        ? 'stalled'
+      : questionImportFailed
+        ? 'import-failed'
       : existingPaper
-        ? (existingPaper.paperUrl ? 'uploaded' : 'review')
+        ? (existingPaper.paperUrl ? (analysisState || 'uploaded') : 'review')
         : (group.questionFiles.length ? 'missing' : 'missing');
     group.memoStatus = group.reviewReason
       ? 'review'
+      : memoImporting
+        ? 'importing'
+      : memoImportStalled
+        ? 'stalled'
+      : memoImportFailed
+        ? 'import-failed'
       : existingPaper?.memoUrl
         ? 'uploaded'
         : group.memoFiles.length
@@ -362,11 +390,13 @@ export const summarizeDriveFolderPapers = ({ files = [], trackingByFileId = {}, 
     }
 
     const importableQuestion = group.questionFiles.length === 1
+      && !isDrivePaperImportActive(group.questionFiles[0])
       && group.questionFiles[0].importStatus !== 'review'
-      && group.paperStatus === 'missing';
+      && ['missing', 'stalled', 'import-failed'].includes(group.paperStatus);
     const importableMemo = group.memoFiles.length === 1
+      && !isDrivePaperImportActive(group.memoFiles[0])
       && group.memoFiles[0].importStatus !== 'review'
-      && group.memoStatus === 'missing';
+      && ['missing', 'stalled', 'import-failed'].includes(group.memoStatus);
     group.importFileIds = !group.reviewReason && (existingPaper || importableQuestion)
       ? [
         ...(importableQuestion ? [group.questionFiles[0].id] : []),
@@ -386,6 +416,43 @@ export const safeErrorSummary = (error) => String(error?.message ?? error ?? 'Un
   .slice(0, 500);
 
 export const sha256Buffer = (buffer) => createHash('sha256').update(buffer).digest('hex');
+
+export const destroyPdfLoadingTaskSafely = async (loadingTask) => {
+  if (typeof loadingTask?.destroy !== 'function') return;
+  try {
+    await loadingTask.destroy();
+  } catch {
+    // Cleanup failures should not turn a successfully inspected PDF into an import failure.
+  }
+};
+
+export const listDrivePdfsRecursively = async ({ root, listFolderPage } = {}) => {
+  const results = [];
+  const folders = [{ id: root.id, path: [root.name] }];
+  const visitedFolderIds = new Set([root.id]);
+
+  for (let index = 0; index < folders.length; index += 1) {
+    const folder = folders[index];
+    let pageToken;
+    do {
+      const page = await listFolderPage(folder.id, pageToken);
+      for (const file of page.files ?? []) {
+        if (file.trashed) continue;
+        if (file.mimeType === 'application/vnd.google-apps.folder') {
+          if (file.id && !visitedFolderIds.has(file.id)) {
+            visitedFolderIds.add(file.id);
+            folders.push({ id: file.id, path: [...folder.path, file.name] });
+          }
+        } else if (file.mimeType === 'application/pdf' || String(file.name ?? '').toLowerCase().endsWith('.pdf')) {
+          results.push({ ...file, folderPath: folder.path });
+        }
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+  }
+
+  return results;
+};
 export const isPdfBuffer = (buffer) => Buffer.isBuffer(buffer)
   && buffer.length >= 5
   && buffer.subarray(0, 5).toString('ascii') === '%PDF-';
@@ -393,8 +460,23 @@ export const isPdfBuffer = (buffer) => Buffer.isBuffer(buffer)
 const isPdfDriveFile = (file = {}) => String(file.mimeType ?? '').toLowerCase() === 'application/pdf'
   || String(file.name ?? '').toLowerCase().endsWith('.pdf');
 const terminalStatuses = new Set(['imported', 'duplicate', 'review']);
+const activeImportStatuses = new Set(['importing', 'processing']);
+const importingStatusStaleAfterMs = 10 * 60 * 1000;
 const getDrivePaperId = (driveFileId) => `google-drive-${createHash('sha256').update(String(driveFileId)).digest('hex').slice(0, 32)}`;
 const fileHash = (item) => item.contentSha256 ?? '';
+
+const timestampMillis = (value) => value?.toMillis?.()
+  ?? value?.toDate?.()?.getTime?.()
+  ?? (value instanceof Date ? value.getTime() : Number.isFinite(Number(value)) ? Number(value) : Date.parse(String(value ?? '')));
+
+export const isDrivePaperImportActive = (tracking, now = new Date()) => {
+  if (!activeImportStatuses.has(String(tracking?.importStatus ?? ''))) return false;
+  const updatedAt = timestampMillis(tracking?.updatedAt ?? tracking?.importStartedAt);
+  const nowMillis = timestampMillis(now);
+  if (!Number.isFinite(updatedAt) || !Number.isFinite(nowMillis)) return false;
+  const age = nowMillis - updatedAt;
+  return age >= 0 && age < importingStatusStaleAfterMs;
+};
 
 const trackingFieldsFor = (item, now) => ({
   driveFileId: item.file.id,
@@ -465,6 +547,7 @@ const createStatusWriter = ({ writeTracking, now }) => async (item, importStatus
   const fields = {
     ...trackingFieldsFor(item, now),
     importStatus,
+    ...(importStatus === 'importing' ? {} : { importStage: '' }),
     ...patch,
     updatedAt: now(),
   };
@@ -576,6 +659,14 @@ export const createDrivePaperImportRunner = (dependencies) => {
           summary.skippedFiles += 1;
           continue;
         }
+        if (isDrivePaperImportActive(tracking, now())) {
+          summary.skippedFiles += 1;
+          logger.info('Drive file already has an active import status; skipping this attempt', {
+            driveFileId: file.id,
+            importStage: tracking?.importStage ?? '',
+          });
+          continue;
+        }
 
         const parsed = parseGoogleDrivePaperMetadata({ fileName: file.name, folderPath: file.folderPath });
         if (!parsed.ok) {
@@ -602,12 +693,15 @@ export const createDrivePaperImportRunner = (dependencies) => {
             continue;
           }
 
-          await writeStatus(item, 'processing', {
+          await writeStatus(item, 'importing', {
+            importStage: 'downloading',
+            importStartedAt: now(),
             retryCount: item.attemptCount,
             errorSummary: '',
             reviewReason: '',
           });
           item.buffer = await downloadFile(file, maxFileBytes);
+          await writeStatus(item, 'importing', { importStage: 'validating' });
           if (!isPdfBuffer(item.buffer)) {
             await markReview(item, 'The downloaded file does not have a valid PDF signature.');
             continue;
@@ -628,9 +722,9 @@ export const createDrivePaperImportRunner = (dependencies) => {
             summary.reviewFiles += 1;
             continue;
           }
-          await writeTracking(file.id, {
+          await writeStatus(item, 'importing', {
+            importStage: 'checking_existing_records',
             contentSha256: item.contentSha256,
-            updatedAt: now(),
           });
           candidates.push(item);
         } catch (error) {
@@ -688,7 +782,9 @@ export const createDrivePaperImportRunner = (dependencies) => {
               continue;
             }
 
+            await writeStatus(item, 'importing', { importStage: 'uploading_memo' });
             const uploaded = await uploadPdf({ file: item.file, buffer: item.buffer, fileType: 'memo', contentSha256: item.contentSha256 });
+            await writeStatus(item, 'importing', { importStage: 'saving_memo_reference' });
             const attached = await attachMemoIfMissing({ paperId: existingPaper.id, memo: item, uploaded });
             if (attached?.attached) {
               existingPaper.memoUrl = uploaded.url;
@@ -738,7 +834,9 @@ export const createDrivePaperImportRunner = (dependencies) => {
             continue;
           }
 
+          await writeStatus(item, 'importing', { importStage: 'uploading_question_paper' });
           const uploaded = await uploadPdf({ file: item.file, buffer: item.buffer, fileType: 'question', contentSha256: item.contentSha256 });
+          await writeStatus(item, 'importing', { importStage: 'saving_paper_record' });
           const metadata = item.metadata;
           const displayName = displayNameFor(metadata);
           const paperId = getDrivePaperId(item.file.id);

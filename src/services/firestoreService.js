@@ -2550,6 +2550,15 @@ export const getGoogleDrivePastPaperFolderContents = async (folderId = '') => {
   return response.data;
 };
 
+export const getGoogleDrivePastPaperImportStatuses = async (fileIds = []) => {
+  if (!Array.isArray(fileIds) || !fileIds.length) return [];
+  ensureDb();
+  if (!functions) throw new Error('Firebase Functions are not configured.');
+  const callable = httpsCallable(functions, 'getGoogleDrivePastPaperFolderContents', { timeout: 60_000 });
+  const response = await callable({ statusFileIds: fileIds });
+  return response.data?.statuses ?? [];
+};
+
 export const startGoogleDrivePastPaperImport = async ({ folderId, fileIds } = {}) => {
   ensureDb();
   if (!functions) throw new Error('Firebase Functions are not configured.');

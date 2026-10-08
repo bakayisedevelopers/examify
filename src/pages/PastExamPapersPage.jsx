@@ -7,7 +7,7 @@ import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { useOperationStatus } from '../hooks/useOperationStatus';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
-import { cancelQuestionPaperAnalysis, cleanupGlobalTopicCatalog, getActiveSubjectsForStudent, getGlobalTopicList, getGoogleDrivePastPaperFolderContents, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, startGoogleDrivePastPaperImport, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
+import { cancelQuestionPaperAnalysis, cleanupGlobalTopicCatalog, getActiveSubjectsForStudent, getGlobalTopicList, getGoogleDrivePastPaperFolderContents, getGoogleDrivePastPaperImportStatuses, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, startGoogleDrivePastPaperImport, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
 import { getApprovedTutorSubjects, getUserSubjects, normalizeEligibleSubject } from '../utils/tutorSubjects';
 import { buildTopicResolverRows } from '../services/topicResolver';
@@ -35,6 +35,80 @@ const defaultPaperForm = (profile) => ({
 const normalizeFileName = (name = '') => String(name).toLowerCase().replace(/\.[^.]+$/, '').replace(/memo|memorandum|marking|guideline|answers|answer|question|paper|qp/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
 const isMemoFile = (file) => /memo|memorandum|marking|guideline|answers|answer/i.test(file?.name ?? '');
 const fileTokens = (file) => new Set(normalizeFileName(file?.name).split(' ').filter((token) => token.length > 1));
+
+const analysisDriveStatus = (value) => value === 'Analyzing'
+  ? 'analyzing'
+  : value === 'Analyzed'
+    ? 'analyzed'
+    : ['Failed', 'Cancelled'].includes(value)
+      ? 'analysis-failed'
+      : '';
+
+const mergeDriveImportStatuses = (contents, statuses = []) => {
+  if (!contents) return contents;
+  const statusByFileId = new Map(statuses.map((item) => [item.fileId, item]));
+  const importingStatuses = new Set(['importing', 'processing']);
+  const completedStatuses = new Set(['imported', 'duplicate', 'review']);
+  return {
+    ...contents,
+    papers: contents.papers.map((group) => {
+      const mergeFile = (file) => {
+        const nextStatus = statusByFileId.get(file.id);
+        return nextStatus ? { ...file, ...nextStatus } : file;
+      };
+      const files = group.files.map(mergeFile);
+      const questionFiles = group.questionFiles.map(mergeFile);
+      const memoFiles = group.memoFiles.map(mergeFile);
+      const importingQuestion = questionFiles.some((file) => importingStatuses.has(file.importStatus));
+      const importingMemo = memoFiles.some((file) => importingStatuses.has(file.importStatus));
+      const questionStatus = questionFiles[0];
+      const memoStatus = memoFiles[0];
+      const targetAnalysisStatus = analysisDriveStatus(questionStatus?.analysisStatus);
+      const importing = importingQuestion || importingMemo;
+      const importFileIds = importing
+        ? []
+        : group.importFileIds.filter((fileId) => {
+          const status = statusByFileId.get(fileId)?.importStatus;
+          return !completedStatuses.has(status);
+        });
+      return {
+        ...group,
+        files,
+        questionFiles,
+        memoFiles,
+        paperStatus: group.reviewReason
+          ? 'review'
+          : importingQuestion
+            ? 'importing'
+            : ['imported', 'duplicate'].includes(questionStatus?.importStatus)
+              ? (targetAnalysisStatus || 'uploaded')
+              : questionStatus?.importStatus === 'failed'
+                ? 'import-failed'
+                : group.paperStatus,
+        memoStatus: group.reviewReason
+          ? 'review'
+          : importingMemo
+            ? 'importing'
+            : memoStatus?.importStatus === 'imported' || memoStatus?.importStatus === 'duplicate'
+              ? 'uploaded'
+              : memoStatus?.importStatus === 'failed'
+                ? 'import-failed'
+                : group.memoStatus,
+        importFileIds,
+      };
+    }),
+  };
+};
+
+const driveImportStageLabels = {
+  downloading: 'Downloading from Drive',
+  validating: 'Checking PDF',
+  checking_existing_records: 'Checking for duplicates',
+  uploading_memo: 'Uploading memo to Storage',
+  saving_memo_reference: 'Saving memo reference',
+  uploading_question_paper: 'Uploading paper to Storage',
+  saving_paper_record: 'Saving paper and starting analysis',
+};
 
 const openLocalFilePreview = (file) => {
   if (!file) return;
@@ -755,24 +829,47 @@ export const PastExamPapersPage = () => {
   const handleDriveImport = async (paperGroup) => {
     const fileIds = paperGroup?.importFileIds ?? [];
     if (!driveFolderContents?.folder?.id || !fileIds.length) return;
+    const selectedFolderId = driveFolderContents.folder.id;
     setDriveImportRunning(true);
     setDriveImportMessage('');
+    let statusPollInFlight = false;
+    let statusPollingStopped = false;
+    const refreshImportStatuses = async () => {
+      if (statusPollingStopped || statusPollInFlight) return;
+      statusPollInFlight = true;
+      try {
+        const statuses = await getGoogleDrivePastPaperImportStatuses(fileIds);
+        if (!statusPollingStopped) setDriveFolderContents((current) => mergeDriveImportStatuses(current, statuses));
+      } catch {
+        // The import itself remains authoritative; a later folder refresh will show its final status.
+      } finally {
+        statusPollInFlight = false;
+      }
+    };
+    const statusPoll = window.setInterval(refreshImportStatuses, 2500);
+    const stopStatusPolling = () => {
+      statusPollingStopped = true;
+      window.clearInterval(statusPoll);
+    };
+    void refreshImportStatuses();
     try {
       const result = await runOperation({
         operationName: 'Importing selected paper from Google Drive',
-        successMessage: 'The selected Drive paper files finished importing.',
-      }, () => startGoogleDrivePastPaperImport({ folderId: driveFolderContents.folder.id, fileIds }));
+        successMessage: 'The Google Drive import run completed. Check the per-file statuses for the result.',
+      }, () => startGoogleDrivePastPaperImport({ folderId: selectedFolderId, fileIds }));
+      stopStatusPolling();
       if (result?.skipped && result.reason === 'already_running') {
         setDriveImportMessage('A Google Drive import is already running.');
       } else {
-        const refreshed = await loadDriveFolderContents(driveFolderContents.folder.id, driveFolderTrail);
+        const refreshed = await loadDriveFolderContents(selectedFolderId, driveFolderTrail);
         setDriveImportMessage(
-          `Selected-folder import finished: ${result?.importedFiles ?? 0} file(s) added, ${result?.duplicateFiles ?? 0} duplicate(s), ${result?.waitingFiles ?? 0} waiting for a matching paper, ${result?.reviewFiles ?? 0} sent for review, ${result?.failedFiles ?? 0} failed.${refreshed ? '' : ' Folder status could not be refreshed.'}`,
+          `Selected-folder import finished: ${result?.importedFiles ?? 0} file(s) added, ${result?.duplicateFiles ?? 0} duplicate(s), ${result?.waitingFiles ?? 0} waiting for a matching paper, ${result?.skippedFiles ?? 0} skipped because an import was already active or complete, ${result?.reviewFiles ?? 0} sent for review, ${result?.failedFiles ?? 0} failed.${refreshed ? '' : ' Folder status could not be refreshed.'}`,
         );
       }
     } catch (error) {
       setDriveImportMessage(error.message || 'Could not start the Google Drive import.');
     } finally {
+      stopStatusPolling();
       setDriveImportRunning(false);
     }
   };
@@ -1068,17 +1165,31 @@ export const PastExamPapersPage = () => {
                               : group.files.map((file) => file.name).join(', ');
                             const questionName = group.questionFiles.map((file) => file.name).join(', ') || 'No question-paper PDF in this folder';
                             const memoName = group.memoFiles.map((file) => file.name).join(', ') || 'No memo PDF in this folder';
-                            const statusBadge = (value) => {
+                            const statusBadge = (value, stage = '') => {
                               const styles = {
                                 uploaded: 'bg-lime-100 text-lime-900',
+                                analyzed: 'bg-lime-100 text-lime-900',
+                                analyzing: 'bg-amber-100 text-amber-900',
+                                importing: 'bg-lime-200 text-lime-950',
+                                stalled: 'bg-amber-100 text-amber-900',
+                                'import-failed': 'bg-rose-100 text-rose-800',
+                                'analysis-failed': 'bg-rose-100 text-rose-800',
                                 missing: 'bg-amber-100 text-amber-900',
                                 waiting: 'bg-slate-100 text-slate-700',
                                 review: 'bg-rose-100 text-rose-800',
                                 'no-file': 'bg-slate-50 text-slate-500',
                               };
-                              const labels = { uploaded: 'Uploaded', missing: 'Missing', waiting: 'Waiting for paper', review: 'Review required', 'no-file': 'No memo here' };
-                              return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${styles[value] ?? styles.review}`}>{labels[value] ?? 'Review required'}</span>;
+                              const labels = {
+                                uploaded: 'Uploaded', analyzed: 'Analyzed', analyzing: 'Analyzing', importing: 'Importing', stalled: 'Import stalled',
+                                'import-failed': 'Import failed', 'analysis-failed': 'Analysis failed', missing: 'Missing',
+                                waiting: 'Waiting for paper', review: 'Review required', 'no-file': 'No memo here',
+                              };
+                              const detail = driveImportStageLabels[stage];
+                              return <span title={detail} className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${styles[value] ?? styles.review}`}>{labels[value] ?? 'Review required'}</span>;
                             };
+                            const questionImportStage = group.questionFiles.find((file) => ['importing', 'processing'].includes(file.importStatus))?.importStage;
+                            const memoImportStage = group.memoFiles.find((file) => ['importing', 'processing'].includes(file.importStatus))?.importStage;
+                            const groupIsImporting = group.paperStatus === 'importing' || group.memoStatus === 'importing';
                             return (
                               <tr key={group.identityKey} className="align-top transition-colors hover:bg-lime-300/5">
                                 <td className="max-w-[22rem] px-4 py-3">
@@ -1087,20 +1198,22 @@ export const PastExamPapersPage = () => {
                                 </td>
                                 <td className="max-w-[20rem] px-4 py-3">
                                   <div className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" /><span className="break-words text-slate-700">{questionName}</span></div>
-                                  <div className="mt-2">{statusBadge(group.paperStatus)}</div>
+                                  <div className="mt-2">{statusBadge(group.paperStatus, questionImportStage)}</div>
                                 </td>
                                 <td className="max-w-[20rem] px-4 py-3">
                                   <div className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" /><span className="break-words text-slate-700">{memoName}</span></div>
-                                  <div className="mt-2">{statusBadge(group.memoStatus)}</div>
+                                  <div className="mt-2">{statusBadge(group.memoStatus, memoImportStage)}</div>
                                 </td>
                                 <td className="px-4 py-3 text-right">
-                                  {group.importFileIds.length ? (
+                                  {groupIsImporting ? (
+                                    <span className="inline-flex items-center gap-2 text-xs font-semibold text-lime-800"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Importing…</span>
+                                  ) : group.importFileIds.length ? (
                                     <button type="button" className="btn-primary whitespace-nowrap" disabled={driveImportRunning} onClick={() => handleDriveImport(group)}>
                                       {driveImportRunning ? 'Importing…' : 'Import missing files'}
                                     </button>
                                   ) : group.reviewReason ? (
                                     <span className="text-xs font-medium text-rose-300">Review first</span>
-                                  ) : group.paperStatus === 'uploaded' && ['uploaded', 'no-file'].includes(group.memoStatus) ? (
+                                  ) : ['uploaded', 'analyzing', 'analyzed'].includes(group.paperStatus) && ['uploaded', 'analyzing', 'analyzed', 'no-file'].includes(group.memoStatus) ? (
                                     <span className="text-xs font-medium text-lime-300">Up to date</span>
                                   ) : (
                                     <span className="text-xs text-slate-500">No import available</span>
