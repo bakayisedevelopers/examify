@@ -25,7 +25,7 @@ If Drive is in a Shared Drive, the runtime identity still needs Viewer membershi
 
 ## Import behavior
 
-- The daily schedule runs at midnight in `Africa/Johannesburg`.
+- The scheduled scan runs every two hours at minute 0 in `Africa/Johannesburg`.
 - `googleDrivePaperImports/{driveFileId}` stores per-file progress, checksums, status, and target record IDs.
 - A Firestore lease prevents scheduled and manual runs from importing concurrently.
 - Question paper records are created with `source: "google_drive"` and `analysisStatus: "Analyzing"`. The existing `questionPapers/{paperId}` write trigger starts analysis.

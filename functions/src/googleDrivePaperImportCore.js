@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { canonicalDrivePaperSubject, getDrivePaperSubjectCandidates } from './drivePaperSubjects.js';
 
 export const DRIVE_PAPER_IMPORT_SCHEDULE = Object.freeze({
-  schedule: '0 0 * * *',
+  schedule: '0 */2 * * *',
   timeZone: 'Africa/Johannesburg',
 });
 

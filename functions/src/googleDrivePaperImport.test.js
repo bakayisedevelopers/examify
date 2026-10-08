@@ -601,9 +601,9 @@ test('folder preview exposes importing and analysis states from tracking and Fir
   assert.equal(analyzing.paperStatus, 'analyzing');
 });
 
-test('schedule is daily at midnight in South African time', () => {
+test('schedule runs every two hours in South African time', () => {
   assert.deepEqual(DRIVE_PAPER_IMPORT_SCHEDULE, {
-    schedule: '0 0 * * *',
+    schedule: '0 */2 * * *',
     timeZone: 'Africa/Johannesburg',
   });
 });
