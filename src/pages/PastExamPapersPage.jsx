@@ -995,7 +995,7 @@ export const PastExamPapersPage = () => {
             : 'The list is scoped to your subjects. Use filters to narrow by subject or year.'}
       />
       {role === ROLES.ADMIN ? (
-        <div className="panel space-y-4 p-4">
+        <div className="panel !bg-transparent space-y-4 p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="font-semibold text-slate-900">Google Drive past-paper folders</h2>
@@ -1021,7 +1021,7 @@ export const PastExamPapersPage = () => {
                       {index ? <ChevronRight className="h-4 w-4 text-slate-400" aria-hidden="true" /> : null}
                       <button
                         type="button"
-                        className={`rounded px-1 py-0.5 ${index === driveFolderTrail.length - 1 ? 'font-semibold text-slate-900' : 'text-lime-800 hover:bg-lime-50'}`}
+                        className={`rounded px-1 py-0.5 ${index === driveFolderTrail.length - 1 ? 'font-semibold text-white' : 'text-lime-300 hover:bg-lime-300/10 hover:text-lime-100'}`}
                         onClick={() => loadDriveFolderContents(folder.id, driveFolderTrail.slice(0, index + 1))}
                       >
                         {folder.name}
@@ -1040,20 +1040,20 @@ export const PastExamPapersPage = () => {
                         <button
                           key={folder.id}
                           type="button"
-                          className="flex items-center gap-2 rounded-xl border border-lime-200 bg-lime-50 px-3 py-2.5 text-left text-sm font-medium text-slate-800 hover:bg-lime-100"
+                          className="flex items-center gap-2 rounded-xl border border-lime-300/30 bg-transparent px-3 py-2.5 text-left text-sm font-medium text-slate-100 transition-colors hover:bg-lime-300/10 hover:text-white"
                           onClick={() => loadDriveFolderContents(folder.id, [...driveFolderTrail, folder])}
                         >
-                          <Folder className="h-4 w-4 shrink-0 text-lime-700" aria-hidden="true" />
+                          <Folder className="h-4 w-4 shrink-0 text-lime-300" aria-hidden="true" />
                           <span className="min-w-0 flex-1 truncate">{folder.name}</span>
-                          <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+                          <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" aria-hidden="true" />
                         </button>
                       ))}
                     </div>
                   ) : null}
                   {driveFolderContents.papers.length ? (
-                    <div className="overflow-x-auto rounded-xl border border-slate-200">
-                      <table className="min-w-[860px] w-full divide-y divide-slate-200 text-left text-sm">
-                        <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-600">
+                    <div className="overflow-x-auto rounded-xl border border-slate-700/80 bg-transparent">
+                      <table className="min-w-[860px] w-full divide-y divide-slate-700 text-left text-sm">
+                        <thead className="bg-transparent text-xs uppercase tracking-wide text-slate-300">
                           <tr>
                             <th className="px-4 py-3 font-semibold">Paper / Drive files</th>
                             <th className="px-4 py-3 font-semibold">Question paper</th>
@@ -1061,7 +1061,7 @@ export const PastExamPapersPage = () => {
                             <th className="px-4 py-3 text-right font-semibold">Action</th>
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-100 bg-white">
+                        <tbody className="divide-y divide-slate-800 bg-transparent">
                           {driveFolderContents.papers.map((group) => {
                             const title = group.metadata
                               ? [group.metadata.subject, group.metadata.grade, group.metadata.region, group.metadata.year, group.metadata.paperNumber].filter(Boolean).join(' • ')
@@ -1080,10 +1080,10 @@ export const PastExamPapersPage = () => {
                               return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${styles[value] ?? styles.review}`}>{labels[value] ?? 'Review required'}</span>;
                             };
                             return (
-                              <tr key={group.identityKey} className="align-top">
+                              <tr key={group.identityKey} className="align-top transition-colors hover:bg-lime-300/5">
                                 <td className="max-w-[22rem] px-4 py-3">
                                   <p className="font-semibold text-slate-900">{title}</p>
-                                  {group.reviewReason ? <p className="mt-1 text-xs text-rose-700">{group.reviewReason}</p> : null}
+                                  {group.reviewReason ? <p className="mt-1 text-xs text-rose-300">{group.reviewReason}</p> : null}
                                 </td>
                                 <td className="max-w-[20rem] px-4 py-3">
                                   <div className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" /><span className="break-words text-slate-700">{questionName}</span></div>
@@ -1099,9 +1099,9 @@ export const PastExamPapersPage = () => {
                                       {driveImportRunning ? 'Importing…' : 'Import missing files'}
                                     </button>
                                   ) : group.reviewReason ? (
-                                    <span className="text-xs font-medium text-rose-700">Review first</span>
+                                    <span className="text-xs font-medium text-rose-300">Review first</span>
                                   ) : group.paperStatus === 'uploaded' && ['uploaded', 'no-file'].includes(group.memoStatus) ? (
-                                    <span className="text-xs font-medium text-lime-800">Up to date</span>
+                                    <span className="text-xs font-medium text-lime-300">Up to date</span>
                                   ) : (
                                     <span className="text-xs text-slate-500">No import available</span>
                                   )}
