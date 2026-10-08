@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { logger } from 'firebase-functions';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
+import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -14,6 +15,7 @@ import {
   summarizeDriveFolderPapers,
 } from './googleDrivePaperImportCore.js';
 import { DRIVE_PAPER_SUBJECT_QUERY_VALUES } from './drivePaperSubjects.js';
+import { enqueueTaskOnce, stableTaskId } from './taskQueueUtils.js';
 
 const GOOGLE_DRIVE_ROOT_ENV = 'GOOGLE_DRIVE_PAPERS_ROOT_ID';
 const DRIVE_READ_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
@@ -22,6 +24,8 @@ const TRACKING_COLLECTION = 'googleDrivePaperImports';
 const LOCK_DOCUMENT = 'googleDrivePaperImportLocks/active';
 const LOCK_DURATION_MS = 12 * 60 * 1000;
 const MAX_PDF_BYTES = 50 * 1024 * 1024;
+const FOLDER_IMPORT_TASK = 'importGoogleDrivePastPaperFolderTask';
+const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 let driveTokenCache = { token: '', expiresAt: 0 };
 
 const getRuntimeDriveToken = async () => {
@@ -478,11 +482,95 @@ const runDrivePaperImport = createDrivePaperImportRunner({
   maxFileBytes: MAX_PDF_BYTES,
 });
 
+const enqueueScheduledFolderImports = async () => {
+  const rootFolderId = requireConfiguredDriveRoot();
+  const files = await listConfiguredDriveTree(rootFolderId);
+  const folders = new Map();
+  for (const file of files) {
+    const folderId = String(file.parents?.[0] ?? '').trim();
+    if (!folderId) {
+      logger.warn('Drive PDF has no parent folder ID and was not queued', {
+        driveFileId: file.id,
+        filename: file.name,
+      });
+      continue;
+    }
+    const folder = folders.get(folderId) ?? { folderId, folderPath: file.folderPath ?? [], pdfCount: 0 };
+    folder.pdfCount += 1;
+    folders.set(folderId, folder);
+  }
+
+  const scheduleSlot = Math.floor(Date.now() / TWO_HOURS_MS);
+  let queuedFolders = 0;
+  let alreadyQueuedFolders = 0;
+  for (const folder of folders.values()) {
+    const queued = await enqueueTaskOnce(FOLDER_IMPORT_TASK, {
+      folderId: folder.folderId,
+      requestedBy: 'scheduled_import',
+    }, {
+      id: stableTaskId('drive-paper-folder', `${folder.folderId}:${scheduleSlot}`),
+    });
+    if (queued) queuedFolders += 1;
+    else alreadyQueuedFolders += 1;
+  }
+
+  const result = {
+    discoveredPdfFiles: files.length,
+    discoveredFolders: folders.size,
+    queuedFolders,
+    alreadyQueuedFolders,
+  };
+  logger.info('Google Drive past-paper folder jobs queued', result);
+  return result;
+};
+
 export const importGoogleDrivePastPapers = onSchedule({
   ...DRIVE_PAPER_IMPORT_SCHEDULE,
+  timeoutSeconds: 300,
+  memory: '512MiB',
+}, enqueueScheduledFolderImports);
+
+export const importGoogleDrivePastPaperFolderTask = onTaskDispatched({
+  retryConfig: {
+    maxAttempts: 8,
+    minBackoffSeconds: 60,
+    maxBackoffSeconds: 300,
+    maxDoublings: 3,
+    maxRetrySeconds: 3600,
+  },
+  rateLimits: { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 },
   timeoutSeconds: 540,
   memory: '1GiB',
-}, async () => runDrivePaperImport({ requestedBy: 'schedule' }));
+}, async (request) => {
+  const folderId = String(request.data?.folderId ?? '').trim();
+  if (!folderId) throw new Error('The scheduled Google Drive import task has no folder ID.');
+  try {
+    const folder = await getFolderWithinConfiguredRoot(folderId);
+    const result = await runDrivePaperImport({
+      requestedBy: `scheduled_folder:${folderId}`,
+      folderId,
+      importAllFolderFiles: true,
+    });
+    if (result.skipped && result.reason === 'already_running') {
+      throw new Error('Another Google Drive paper import currently holds the import lease; retrying this folder task.');
+    }
+    if (result.failedFiles > 0) {
+      throw new Error(`Google Drive folder import had ${result.failedFiles} failed file(s); retrying the folder task.`);
+    }
+    logger.info('Google Drive past-paper folder import completed', {
+      folderId,
+      folderPath: folder.path,
+      ...result,
+    });
+    return result;
+  } catch (error) {
+    logger.error('Google Drive past-paper folder import task failed', {
+      folderId,
+      error: safeErrorSummary(error),
+    });
+    throw error;
+  }
+});
 
 export const startGoogleDrivePastPaperImport = onCall({
   timeoutSeconds: 540,

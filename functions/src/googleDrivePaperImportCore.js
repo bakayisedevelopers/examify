@@ -583,7 +583,7 @@ export const createDrivePaperImportRunner = (dependencies) => {
     maxFileBytes = 50 * 1024 * 1024,
   } = dependencies ?? {};
 
-  const run = async ({ requestedBy = 'schedule', folderId = '', fileIds = [] } = {}) => {
+  const run = async ({ requestedBy = 'schedule', folderId = '', fileIds = [], importAllFolderFiles = false } = {}) => {
     if (!String(rootFolderId ?? '').trim()) {
       throw new Error('Google Drive past-paper import is not configured: set GOOGLE_DRIVE_PAPERS_ROOT_ID to one specific folder ID.');
     }
@@ -610,7 +610,12 @@ export const createDrivePaperImportRunner = (dependencies) => {
 
     try {
       let files;
-      if (folderId || fileIds.length) {
+      if (importAllFolderFiles) {
+        if (!folderId || fileIds.length) {
+          throw new Error('A scheduled Drive import must specify exactly one folder and import its direct PDF files.');
+        }
+        files = await listFolderFiles(folderId);
+      } else if (folderId || fileIds.length) {
         if (!folderId || !Array.isArray(fileIds) || fileIds.length < 1 || fileIds.length > 2) {
           throw new Error('A manual Drive import must specify one folder and one question paper or paper/memo pair.');
         }
@@ -625,9 +630,17 @@ export const createDrivePaperImportRunner = (dependencies) => {
       } else {
         files = await listFiles(rootFolderId);
       }
-      const candidates = [];
+      files.sort((left, right) => {
+        const leftMetadata = parseGoogleDrivePaperMetadata({ fileName: left.name, folderPath: left.folderPath });
+        const rightMetadata = parseGoogleDrivePaperMetadata({ fileName: right.name, folderPath: right.folderPath });
+        const leftIsMemo = leftMetadata.ok && leftMetadata.metadata.paperType === 'memo';
+        const rightIsMemo = rightMetadata.ok && rightMetadata.metadata.paperType === 'memo';
+        return Number(leftIsMemo) - Number(rightIsMemo);
+      });
 
-      for (const file of files) {
+      let existingPapers = null;
+      const candidates = async function* iterateCandidates() {
+        for (const file of files) {
         if (!isPdfDriveFile(file)) continue;
         summary.discoveredPdfFiles += 1;
 
@@ -726,21 +739,19 @@ export const createDrivePaperImportRunner = (dependencies) => {
             importStage: 'checking_existing_records',
             contentSha256: item.contentSha256,
           });
-          candidates.push(item);
+          yield item;
         } catch (error) {
           const reason = safeErrorSummary(error);
           await writeStatus(item, 'failed', { retryCount: item.attemptCount, errorSummary: reason });
           summary.failedFiles += 1;
           logger.warn('Drive paper could not be downloaded or inspected', { driveFileId: file.id, error: reason });
         }
-      }
+        }
+      };
 
-      if (!candidates.length) return summary;
-      const existingPapers = await loadExistingPapers();
-      candidates.sort((left, right) => (left.metadata.paperType === 'memo' ? 1 : 0) - (right.metadata.paperType === 'memo' ? 1 : 0));
-
-      for (const item of candidates) {
+      for await (const item of candidates()) {
         try {
+          if (!existingPapers) existingPapers = await loadExistingPapers();
           const possibleMatches = matchingRecordsFor(item.metadata, existingPapers);
           const exactMatches = possibleMatches.filter(({ comparison }) => comparison.status === 'match');
           const uncertainMatches = possibleMatches.filter(({ comparison }) => comparison.status === 'uncertain');
