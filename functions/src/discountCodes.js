@@ -1,7 +1,10 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
+import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 import { logger } from 'firebase-functions';
 import { admin, getDb } from './admin.js';
+import { enqueueTaskOnce, stableTaskId } from './taskQueueUtils.js';
 import { getPaystackConfig } from './config.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
 import { queueBrandedEmail } from './resendEmail.js';
@@ -409,66 +412,132 @@ export const transitionDiscountRedemptionForPayment = async ({ db, code: rawCode
   });
 };
 
+const enqueueDiscountReservationTask = (code, reference, generation, scheduleTime) => enqueueTaskOnce(
+  'reconcileDiscountCodeReservationTask',
+  { code, reference, generation },
+  {
+    id: stableTaskId('discount-reservation', `${code}|${reference}|${generation}`),
+    ...(scheduleTime ? { scheduleTime } : {}),
+  },
+);
+
+export const queueDiscountReservationReconciliation = onDocumentCreated({
+  document: 'discountCodes/{code}/redemptions/{reference}',
+  retry: true,
+  cpu: 'gcf_gen1',
+}, async (event) => {
+  const redemption = event.data?.data();
+  if (!redemption || redemption.status !== 'reserved') return;
+  const reservedAt = redemption.reservedAt?.toDate?.() ?? new Date();
+  const now = Date.now();
+  let overdueCheckQueued = false;
+  const checks = [5, 20, 60].flatMap((minutes) => {
+    const dueAt = reservedAt.getTime() + minutes * 60 * 1000;
+    if (dueAt <= now) {
+      if (overdueCheckQueued) return [];
+      overdueCheckQueued = true;
+    }
+    return [{
+      generation: `stage-${minutes}m`,
+      scheduleTime: new Date(dueAt <= now ? now + 60 * 1000 : dueAt),
+    }];
+  });
+  await Promise.all(checks.map(({ generation, scheduleTime }) => enqueueDiscountReservationTask(
+    event.params.code,
+    event.params.reference,
+    generation,
+    scheduleTime,
+  )));
+});
+
+const reconcileDiscountReservation = async ({ db, code, reference }) => {
+  const { paystackSecretKey, paystackBaseUrl } = getPaystackConfig();
+  if (!paystackSecretKey) throw new Error('Paystack is not configured for discount reservation reconciliation.');
+  const useRef = redemptionRef(db, code, reference);
+  const useSnapshot = await useRef.get();
+  if (!useSnapshot.exists || useSnapshot.data()?.status !== 'reserved') return { retry: false };
+  const redemption = useSnapshot.data();
+  if (!redemption.studentId) {
+    logger.warn('Discount reservation cannot be reconciled without a student ID', { code, reference });
+    return { retry: false };
+  }
+  const response = await fetch(`${paystackBaseUrl}/transaction/verify/${encodeURIComponent(reference)}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${paystackSecretKey}`, 'Content-Type': 'application/json' },
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.status !== true) {
+    throw new Error('Paystack could not verify the reserved discount payment.');
+  }
+  const transaction = payload.data;
+  const definitiveFailure = ['failed', 'abandoned', 'reversed'].includes(transaction.status);
+  const paymentRef = db.collection('users').doc(redemption.studentId).collection('payments').doc(reference);
+  const paymentSnapshot = await paymentRef.get();
+  const payment = paymentSnapshot.data();
+  if (transaction.status === 'success' && payment?.status === 'success') {
+    const amountMatches = Number(transaction.amount) === Math.round(Number(payment.amount) * 100)
+      && transaction.currency === payment.currency;
+    if (amountMatches) {
+      await transitionDiscountRedemptionForPayment({ db, code, reference, status: 'success' });
+      return { retry: false };
+    }
+    logger.error('Finalized discounted payment no longer matches the verified Paystack amount', {
+      code,
+      reference,
+      expectedAmount: payment.amount,
+      actualAmount: transaction.amount,
+      authorizationOnly: payment.authorizationOnly === true,
+    });
+    return { retry: false };
+  }
+  if (definitiveFailure && payment?.status !== 'success') {
+    await transitionDiscountRedemptionForPayment({ db, code, reference, status: transaction.status });
+    await paymentRef.set({
+      status: transaction.status,
+      gatewayResponse: transaction.gateway_response ?? null,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return { retry: false };
+  }
+  return { retry: true };
+};
+
+export const reconcileDiscountCodeReservationTask = onTaskDispatched({
+  retryConfig: { maxAttempts: 5, minBackoffSeconds: 60, maxBackoffSeconds: 900, maxDoublings: 4, maxRetrySeconds: 3600 },
+  rateLimits: { maxConcurrentDispatches: 10, maxDispatchesPerSecond: 5 },
+  timeoutSeconds: 180,
+  cpu: 'gcf_gen1',
+}, async (request) => {
+  const { code, reference } = request.data ?? {};
+  if (!code || !reference) throw new Error('code and reference are required to reconcile a discount reservation.');
+  const db = getDb();
+  const useSnapshot = await redemptionRef(db, code, reference).get();
+  if (!useSnapshot.exists || useSnapshot.data()?.status !== 'reserved') return;
+  const result = await reconcileDiscountReservation({ db, code, reference });
+  if (result.retry) logger.info('Discount reservation remains pending for its next scheduled check', {
+    code,
+    reference,
+    check: request.data?.generation ?? 'repair',
+  });
+});
+
 export const reconcileDiscountCodeReservations = onSchedule(
-  { schedule: 'every 60 minutes', timeZone: 'Africa/Johannesburg', cpu: 'gcf_gen1' },
+  { schedule: '15 3 * * *', timeZone: 'Africa/Johannesburg', cpu: 'gcf_gen1' },
   async () => {
     const db = getDb();
-    const { paystackSecretKey, paystackBaseUrl } = getPaystackConfig();
-    if (!paystackSecretKey) {
-      logger.error('Discount reservation reconciliation skipped because Paystack is not configured.');
-      return;
-    }
     const cutoff = Date.now() - 60 * 60 * 1000;
     const pending = await db.collectionGroup('redemptions')
       .where('status', '==', 'reserved')
       .orderBy('reservedAt', 'asc')
       .limit(100)
       .get();
+    const repairKey = new Date().toISOString().slice(0, 10);
     for (const redemptionSnapshot of pending.docs) {
       const redemption = redemptionSnapshot.data();
       if ((redemption.reservedAt?.toMillis?.() ?? Date.now()) > cutoff) continue;
-      const codeRef = redemptionSnapshot.ref.parent.parent;
-      const code = redemption.code || codeRef?.id;
+      const code = redemption.code || redemptionSnapshot.ref.parent.parent?.id;
       if (!code || !redemption.reference || !redemption.studentId) continue;
-      try {
-        const response = await fetch(`${paystackBaseUrl}/transaction/verify/${encodeURIComponent(redemption.reference)}`, {
-          method: 'GET',
-          headers: { Authorization: `Bearer ${paystackSecretKey}`, 'Content-Type': 'application/json' },
-        });
-        const payload = await response.json();
-        if (!response.ok || payload.status !== true) continue;
-        const transaction = payload.data;
-        const definitiveFailure = ['failed', 'abandoned', 'reversed'].includes(transaction.status);
-        const paymentRef = db.collection('users').doc(redemption.studentId).collection('payments').doc(redemption.reference);
-        const paymentSnapshot = await paymentRef.get();
-        const payment = paymentSnapshot.data();
-        if (transaction.status === 'success' && payment?.status === 'success') {
-          // The finalizer validates gateway amount (including the temporary R1
-          // authorization charge) and persists the subscription atomically. This
-          // task only repairs a redemption counter after that finalization.
-          const amountMatches = Number(transaction.amount) === Math.round(Number(payment.amount) * 100)
-            && transaction.currency === payment.currency;
-          if (amountMatches) {
-            await transitionDiscountRedemptionForPayment({ db, code, reference: redemption.reference, status: 'success' });
-          } else {
-            logger.error('Finalized discounted payment no longer matches the verified Paystack amount', {
-              code, reference: redemption.reference, expectedAmount: payment.amount,
-              actualAmount: transaction.amount, authorizationOnly: payment.authorizationOnly === true,
-            });
-          }
-        } else if (definitiveFailure && payment?.status !== 'success') {
-          await transitionDiscountRedemptionForPayment({ db, code, reference: redemption.reference, status: transaction.status });
-          await paymentRef.set({
-            status: transaction.status,
-            gatewayResponse: transaction.gateway_response ?? null,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          }, { merge: true });
-        }
-      } catch (error) {
-        logger.warn('Could not reconcile a pending discount reservation', {
-          code, reference: redemption.reference, error: error?.message ?? String(error),
-        });
-      }
+      await enqueueDiscountReservationTask(code, redemption.reference, `repair-${repairKey}`);
     }
   },
 );

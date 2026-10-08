@@ -3,8 +3,14 @@ export {
   verifyPaystackTransaction,
   cancelPaystackCheckout,
   paystackWebhook,
+  queuePaystackWebhookEvent,
+  processPaystackWebhookEventTask,
   processPaystackWebhookEvents,
+  queueAuthorizationRefundRetry,
+  retryAuthorizationRefundTask,
   retryAuthorizationRefunds,
+  queueUnfinalizedPaystackPayment,
+  reconcileUnfinalizedPaystackPaymentTask,
   reconcileUnfinalizedPaystackPayments,
   getAdminAuthorizationRefundIssues,
   chargeStoredAuthorization,
@@ -21,6 +27,8 @@ export {
   updateDiscountCodeTitle,
   validateDiscountCode,
   previewDiscountCode,
+  queueDiscountReservationReconciliation,
+  reconcileDiscountCodeReservationTask,
   reconcileDiscountCodeReservations,
 } from './discountCodes.js';
 
@@ -94,7 +102,11 @@ export {
   notifyCompletedLesson,
 } from './notifications.js';
 
-export { processResendEmailOutbox } from './resendEmail.js';
+export {
+  queueResendEmailDelivery,
+  deliverResendEmail,
+  processResendEmailOutbox,
+} from './resendEmail.js';
 
 export {
   getGoogleDrivePastPaperFolderContents,

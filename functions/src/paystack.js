@@ -1,8 +1,11 @@
 import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
+import { onDocumentCreated, onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
+import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 import { logger } from 'firebase-functions';
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { getDb, admin } from './admin.js';
+import { enqueueTaskOnce, stableTaskId } from './taskQueueUtils.js';
 import { getPaystackConfig } from './config.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
 import { getNextActualSubscriptionCharge, needsAuthorizationForZeroCostCheckout } from './paystackPricingCore.js';
@@ -55,7 +58,12 @@ const toMinorUnits = (amount) => {
   return minorUnits;
 };
 
-const MAX_AUTHORIZATION_REFUND_ATTEMPTS = 5;
+// One initial attempt followed by at most three 15-minute retries.
+const MAX_AUTHORIZATION_REFUND_ATTEMPTS = 4;
+const AUTHORIZATION_REFUND_RETRY_DELAY_MS = 15 * 60 * 1000;
+const WEBHOOK_MAX_ATTEMPTS = 72;
+const WEBHOOK_LOCK_TIMEOUT_MS = 10 * 60 * 1000;
+const PAYMENT_RECONCILIATION_STATUSES = ['initializing', 'initialized', 'pending', 'processing', 'ongoing'];
 
 const requestAuthorizationRefund = async ({ db, studentId, reference }) => {
   const paymentRef = studentPaymentRef(db, studentId, reference);
@@ -74,7 +82,8 @@ const requestAuthorizationRefund = async ({ db, studentId, reference }) => {
     if (Number(payment.authorizationRefundAttempts || 0) >= MAX_AUTHORIZATION_REFUND_ATTEMPTS) {
       transaction.set(paymentRef, {
         authorizationRefundStatus: 'needs-attention',
-        authorizationRefundError: 'Automatic refund initiation reached its retry limit.',
+        authorizationRefundError: 'Automatic refund initiation reached its limit after three retries; manual intervention is required.',
+        authorizationRefundRetryAt: admin.firestore.FieldValue.delete(),
         authorizationRefundUpdatedAt: now,
         updatedAt: now,
       }, { merge: true });
@@ -99,7 +108,6 @@ const requestAuthorizationRefund = async ({ db, studentId, reference }) => {
   });
   if (!claim.claimed) return claim;
 
-  let refundPostAttempted = false;
   try {
     let refund = null;
     if (claim.gatewayTransactionId) {
@@ -111,7 +119,6 @@ const requestAuthorizationRefund = async ({ db, studentId, reference }) => {
         Number(item.amount) === claim.amount && String(item.transaction?.reference ?? reference) === reference);
     }
     if (!refund) {
-      refundPostAttempted = true;
       refund = await paystackRequest({
         path: '/refund',
         method: 'POST',
@@ -130,27 +137,42 @@ const requestAuthorizationRefund = async ({ db, studentId, reference }) => {
       : providerStatus === 'failed' || providerStatus === 'needs-attention'
         ? providerStatus
         : 'pending';
+    const exhausted = normalizedStatus === 'failed' && claim.attempts >= MAX_AUTHORIZATION_REFUND_ATTEMPTS;
     await paymentRef.set({
-      authorizationRefundStatus: normalizedStatus,
+      authorizationRefundStatus: exhausted ? 'needs-attention' : normalizedStatus,
       authorizationRefundProviderStatus: providerStatus,
       authorizationRefundId: refund.id ?? null,
       authorizationRefundAmount: Number(refund.amount ?? claim.amount) / 100,
       authorizationRefundCurrency: refund.currency ?? 'ZAR',
       authorizationRefundExpectedAt: refund.expected_at ?? null,
       authorizationRefundUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      authorizationRefundError: admin.firestore.FieldValue.delete(),
+      authorizationRefundError: normalizedStatus === 'failed'
+        ? (exhausted
+          ? 'The refund failed after three retries; manual intervention is required.'
+          : 'Paystack reported the refund as failed.')
+        : admin.firestore.FieldValue.delete(),
+      authorizationRefundRetryAt: normalizedStatus === 'failed' && !exhausted
+        ? admin.firestore.Timestamp.fromDate(new Date(Date.now() + AUTHORIZATION_REFUND_RETRY_DELAY_MS))
+        : admin.firestore.FieldValue.delete(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
-    return { claimed: true, refundStatus: normalizedStatus, refundId: refund.id ?? null };
+    return { claimed: true, refundStatus: exhausted ? 'needs-attention' : normalizedStatus, refundId: refund.id ?? null };
   } catch (error) {
     logger.error('Could not initiate temporary subscription authorization refund', {
       studentId, reference, attempt: claim.attempts, error: error?.message ?? String(error),
     });
+    const exhausted = claim.attempts >= MAX_AUTHORIZATION_REFUND_ATTEMPTS;
+    const errorSummary = String(error?.message ?? error).slice(0, 400);
     await paymentRef.set({
-      // A lost response after POST is ambiguous: stop automatic retries until the
-      // provider's refund list has been reconciled, to avoid double-refunding.
-      authorizationRefundStatus: refundPostAttempted && !error?.paystackRejected ? 'needs-attention' : 'failed',
-      authorizationRefundError: String(error?.message ?? error).slice(0, 500),
+      // Every retry checks Paystack's refund list before posting again, so an
+      // ambiguous response can be reconciled without blindly creating a second refund.
+      authorizationRefundStatus: exhausted ? 'needs-attention' : 'failed',
+      authorizationRefundError: exhausted
+        ? `${errorSummary} Manual intervention is required after three retries.`.slice(0, 500)
+        : errorSummary,
+      authorizationRefundRetryAt: exhausted
+        ? admin.firestore.FieldValue.delete()
+        : admin.firestore.Timestamp.fromDate(new Date(Date.now() + AUTHORIZATION_REFUND_RETRY_DELAY_MS)),
       authorizationRefundUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true }).catch((persistError) => {
@@ -158,7 +180,7 @@ const requestAuthorizationRefund = async ({ db, studentId, reference }) => {
         studentId, reference, error: persistError?.message ?? String(persistError),
       });
     });
-    return { claimed: true, refundStatus: 'failed' };
+    return { claimed: true, refundStatus: exhausted ? 'needs-attention' : 'failed' };
   }
 };
 
@@ -1696,86 +1718,292 @@ export const paystackWebhook = onRequest({ cpu: 'gcf_gen1', invoker: 'public', t
   }
 });
 
+const enqueueWebhookTask = (eventId, generation, scheduleTime) => enqueueTaskOnce(
+  'processPaystackWebhookEventTask',
+  { eventId, generation },
+  {
+    id: stableTaskId('paystack-webhook', `${eventId}|${generation}`),
+    ...(scheduleTime ? { scheduleTime } : {}),
+  },
+);
+
+export const queuePaystackWebhookEvent = onDocumentCreated({
+  document: 'paystackWebhookEvents/{eventId}',
+  retry: true,
+  cpu: 'gcf_gen1',
+}, async (event) => {
+  if (event.data?.data()?.status !== 'pending') return;
+  await enqueueWebhookTask(event.params.eventId, 'initial');
+});
+
+const claimPaystackWebhookEvent = async (eventId) => {
+  const ref = getDb().collection('paystackWebhookEvents').doc(eventId);
+  return getDb().runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) return { terminal: true };
+    const data = snapshot.data();
+    if (['processed', 'needs-attention', 'ignored'].includes(data.status)) return { terminal: true };
+    const now = Date.now();
+    const nextAttemptAt = data.nextAttemptAt?.toDate?.()?.getTime?.() ?? 0;
+    const lockedAt = data.lockedAt?.toDate?.()?.getTime?.() ?? 0;
+    if (nextAttemptAt > now) return { retryAt: new Date(nextAttemptAt) };
+    if (data.status === 'processing' && now - lockedAt < WEBHOOK_LOCK_TIMEOUT_MS) {
+      return { retryAt: new Date(lockedAt + WEBHOOK_LOCK_TIMEOUT_MS + 1000) };
+    }
+    const attempts = Number(data.attempts || 0) + 1;
+    if (attempts > WEBHOOK_MAX_ATTEMPTS) {
+      transaction.set(ref, {
+        status: 'needs-attention',
+        lastError: 'Paystack webhook processing exceeded its retry limit.',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        lockedAt: admin.firestore.FieldValue.delete(),
+      }, { merge: true });
+      return { terminal: true };
+    }
+    transaction.set(ref, {
+      status: 'processing',
+      attempts,
+      lockedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return { event: data, attempts };
+  });
+};
+
+export const processPaystackWebhookEventTask = onTaskDispatched({
+  retryConfig: { maxAttempts: 5, minBackoffSeconds: 30, maxBackoffSeconds: 900, maxDoublings: 4, maxRetrySeconds: 3600 },
+  rateLimits: { maxConcurrentDispatches: 10, maxDispatchesPerSecond: 5 },
+  timeoutSeconds: 180,
+  cpu: 'gcf_gen1',
+}, async (request) => {
+  const eventId = String(request.data?.eventId ?? '');
+  if (!eventId) throw new Error('eventId is required to process a Paystack webhook.');
+  const claim = await claimPaystackWebhookEvent(eventId);
+  if (claim.terminal) return;
+  if (!claim.event) {
+    await enqueueWebhookTask(eventId, `deferred-${request.data?.generation ?? 0}`, claim.retryAt);
+    return;
+  }
+  const ref = getDb().collection('paystackWebhookEvents').doc(eventId);
+  try {
+    const result = await processPaystackWebhookEvent({ db: getDb(), event: claim.event });
+    await ref.set({
+      ...result,
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      lockedAt: admin.firestore.FieldValue.delete(),
+      nextAttemptAt: admin.firestore.FieldValue.delete(),
+      lastError: admin.firestore.FieldValue.delete(),
+    }, { merge: true });
+  } catch (error) {
+    const exhausted = claim.attempts >= WEBHOOK_MAX_ATTEMPTS;
+    const delayMs = Math.min(60 * 60 * 1000, 30 * 1000 * (2 ** Math.min(claim.attempts - 1, 7)));
+    const retryAt = new Date(Date.now() + delayMs);
+    logger.error('Paystack webhook event processing failed', {
+      eventId,
+      event: claim.event.event,
+      attempts: claim.attempts,
+      error: error?.message ?? String(error),
+    });
+    await ref.set({
+      status: exhausted ? 'needs-attention' : 'pending',
+      ...(exhausted ? {} : { nextAttemptAt: admin.firestore.Timestamp.fromDate(retryAt) }),
+      ...(exhausted ? { nextAttemptAt: admin.firestore.FieldValue.delete() } : {}),
+      lastError: String(error?.message ?? error).slice(0, 500),
+      lockedAt: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    if (!exhausted) await enqueueWebhookTask(eventId, `attempt-${claim.attempts}`, retryAt);
+  }
+});
+
 export const processPaystackWebhookEvents = onSchedule(
-  { schedule: 'every 1 minutes', timeZone: 'UTC', cpu: 'gcf_gen1' },
+  { schedule: '30 2 * * *', timeZone: 'Africa/Johannesburg', cpu: 'gcf_gen1' },
   async () => {
-    const db = getDb();
-    const pending = await db.collection('paystackWebhookEvents')
-      .where('status', '==', 'pending').limit(100).get();
+    const pending = await getDb().collection('paystackWebhookEvents')
+      .where('status', 'in', ['pending', 'processing']).limit(500).get();
+    const repairKey = new Date().toISOString().slice(0, 10);
     for (const snapshot of pending.docs) {
-      try {
-        const result = await processPaystackWebhookEvent({ db, event: snapshot.data() });
-        await snapshot.ref.set({ ...result, processedAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
-      } catch (error) {
-        const attempts = Number(snapshot.data().attempts || 0) + 1;
-        const exhausted = attempts >= 72;
-        logger.error('Paystack webhook event processing failed', {
-          eventId: snapshot.id, event: snapshot.data().event, attempts,
-          error: error?.message ?? String(error),
-        });
-        await snapshot.ref.set({
-          attempts,
-          ...(exhausted ? { status: 'needs-attention' } : {}),
-          lastError: String(error?.message ?? error).slice(0, 500),
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-      }
+      const data = snapshot.data();
+      const nextAttemptAt = data.nextAttemptAt?.toDate?.();
+      if (nextAttemptAt && nextAttemptAt > new Date()) continue;
+      const lockedAt = data.lockedAt?.toDate?.();
+      if (data.status === 'processing' && lockedAt && Date.now() - lockedAt.getTime() < WEBHOOK_LOCK_TIMEOUT_MS) continue;
+      await enqueueWebhookTask(snapshot.id, `repair-${repairKey}`);
     }
   },
 );
 
+const enqueueAuthorizationRefundTask = (studentId, reference, generation, scheduleTime) => enqueueTaskOnce(
+  'retryAuthorizationRefundTask',
+  { studentId, reference, generation },
+  {
+    id: stableTaskId('authorization-refund', `${studentId}|${reference}|${generation}`),
+    ...(scheduleTime ? { scheduleTime } : {}),
+  },
+);
+
+export const queueAuthorizationRefundRetry = onDocumentWritten({
+  document: 'users/{studentId}/payments/{reference}',
+  retry: true,
+  cpu: 'gcf_gen1',
+}, async (event) => {
+  const after = event.data?.after?.exists ? event.data.after.data() : null;
+  const before = event.data?.before?.exists ? event.data.before.data() : null;
+  if (!after || after.authorizationOnly !== true || after.status !== 'success') return;
+  if (!['pending_initiation', 'failed'].includes(after.authorizationRefundStatus)) return;
+  if (before?.authorizationRefundStatus === after.authorizationRefundStatus
+    && Number(before?.authorizationRefundAttempts || 0) === Number(after.authorizationRefundAttempts || 0)) return;
+  const attempts = Number(after.authorizationRefundAttempts || 0);
+  const retryAt = after.authorizationRefundRetryAt?.toDate?.()
+    ?? new Date(Date.now() + (after.authorizationRefundStatus === 'pending_initiation' ? 60 * 1000 : AUTHORIZATION_REFUND_RETRY_DELAY_MS));
+  await enqueueAuthorizationRefundTask(event.params.studentId, event.params.reference, `attempt-${attempts}`, retryAt);
+});
+
+export const retryAuthorizationRefundTask = onTaskDispatched({
+  retryConfig: { maxAttempts: 8, minBackoffSeconds: 60, maxBackoffSeconds: 600, maxDoublings: 4, maxRetrySeconds: 3600 },
+  rateLimits: { maxConcurrentDispatches: 5, maxDispatchesPerSecond: 2 },
+  timeoutSeconds: 180,
+  cpu: 'gcf_gen1',
+}, async (request) => {
+  const { studentId, reference } = request.data ?? {};
+  if (!studentId || !reference) throw new Error('studentId and reference are required to retry an authorization refund.');
+  const paymentRef = studentPaymentRef(getDb(), studentId, reference);
+  const snapshot = await paymentRef.get();
+  if (!snapshot.exists) return;
+  const payment = snapshot.data();
+  const status = payment.authorizationRefundStatus;
+  if (payment.status !== 'success' || payment.authorizationOnly !== true
+    || !['pending_initiation', 'failed'].includes(status)) return;
+  if (Number(payment.authorizationRefundAttempts || 0) >= MAX_AUTHORIZATION_REFUND_ATTEMPTS) {
+    await paymentRef.set({
+      authorizationRefundStatus: 'needs-attention',
+      authorizationRefundError: 'Automatic refund initiation reached its limit after three retries; manual intervention is required.',
+      authorizationRefundRetryAt: admin.firestore.FieldValue.delete(),
+      authorizationRefundUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return;
+  }
+  const retryAt = payment.authorizationRefundRetryAt?.toDate?.();
+  if (retryAt && retryAt > new Date()) {
+    await enqueueAuthorizationRefundTask(studentId, reference, `deferred-${retryAt.getTime()}`, retryAt);
+    return;
+  }
+  await requestAuthorizationRefund({ db: getDb(), studentId, reference });
+});
+
 export const retryAuthorizationRefunds = onSchedule(
-  { schedule: 'every 30 minutes', timeZone: 'UTC', cpu: 'gcf_gen1' },
+  { schedule: '0 */12 * * *', timeZone: 'Africa/Johannesburg', cpu: 'gcf_gen1' },
   async () => {
-    const db = getDb();
-    const snapshot = await db.collectionGroup('payments')
+    const snapshot = await getDb().collectionGroup('payments')
       .where('authorizationOnly', '==', true).limit(500).get();
     for (const paymentSnapshot of snapshot.docs) {
       const payment = paymentSnapshot.data();
-      const refundStatus = payment.authorizationRefundStatus;
+      const status = payment.authorizationRefundStatus;
       const attemptedAt = payment.authorizationRefundAttemptedAt?.toDate?.();
-      const staleRequest = refundStatus === 'requesting'
+      const staleRequest = status === 'requesting'
         && (!attemptedAt || Date.now() - attemptedAt.getTime() >= 10 * 60 * 1000);
-      const safelyRetryable = ['pending_initiation', 'failed'].includes(refundStatus) || staleRequest;
-      if (!safelyRetryable || payment.status !== 'success'
-        || Number(payment.authorizationRefundAttempts || 0) >= MAX_AUTHORIZATION_REFUND_ATTEMPTS) continue;
+      const eligible = ['pending_initiation', 'failed'].includes(status) || staleRequest;
+      if (!eligible || payment.status !== 'success') continue;
+      if (Number(payment.authorizationRefundAttempts || 0) >= MAX_AUTHORIZATION_REFUND_ATTEMPTS) {
+        await paymentSnapshot.ref.set({
+          authorizationRefundStatus: 'needs-attention',
+          authorizationRefundError: 'Automatic refund initiation reached its limit after three retries; manual intervention is required.',
+          authorizationRefundRetryAt: admin.firestore.FieldValue.delete(),
+          authorizationRefundUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        continue;
+      }
+      const retryAt = payment.authorizationRefundRetryAt?.toDate?.();
+      if (retryAt && retryAt > new Date()) continue;
       const studentId = payment.studentId || paymentSnapshot.ref.parent.parent?.id;
       const reference = payment.reference || paymentSnapshot.id;
       if (!studentId || !reference) continue;
-      await requestAuthorizationRefund({ db, studentId, reference });
+      await enqueueAuthorizationRefundTask(studentId, reference, `repair-${new Date().toISOString().slice(0, 10)}`);
     }
   },
 );
 
+const enqueuePaymentReconciliationTask = (studentId, reference, generation, scheduleTime) => enqueueTaskOnce(
+  'reconcileUnfinalizedPaystackPaymentTask',
+  { studentId, reference, generation },
+  {
+    id: stableTaskId('payment-reconcile', `${studentId}|${reference}|${generation}`),
+    ...(scheduleTime ? { scheduleTime } : {}),
+  },
+);
+
+export const queueUnfinalizedPaystackPayment = onDocumentWritten({
+  document: 'users/{studentId}/payments/{reference}',
+  retry: true,
+  cpu: 'gcf_gen1',
+}, async (event) => {
+  const after = event.data?.after?.exists ? event.data.after.data() : null;
+  const before = event.data?.before?.exists ? event.data.before.data() : null;
+  if (!after || !PAYMENT_RECONCILIATION_STATUSES.includes(after.status) || after.recurring === true) return;
+  if (PAYMENT_RECONCILIATION_STATUSES.includes(before?.status)) return;
+  const eventAt = new Date(event.time || after.createdAt?.toDate?.() || Date.now()).getTime();
+  const now = Date.now();
+  let overdueCheckQueued = false;
+  const checks = [5, 20, 60].flatMap((minutes) => {
+    const dueAt = eventAt + minutes * 60 * 1000;
+    if (dueAt <= now) {
+      if (overdueCheckQueued) return [];
+      overdueCheckQueued = true;
+    }
+    return [{
+      generation: `stage-${minutes}m`,
+      scheduleTime: new Date(dueAt <= now ? now + 60 * 1000 : dueAt),
+    }];
+  });
+  await Promise.all(checks.map(({ generation, scheduleTime }) => enqueuePaymentReconciliationTask(
+    event.params.studentId,
+    event.params.reference,
+    generation,
+    scheduleTime,
+  )));
+});
+
+export const reconcileUnfinalizedPaystackPaymentTask = onTaskDispatched({
+  retryConfig: { maxAttempts: 5, minBackoffSeconds: 60, maxBackoffSeconds: 900, maxDoublings: 4, maxRetrySeconds: 3600 },
+  rateLimits: { maxConcurrentDispatches: 10, maxDispatchesPerSecond: 5 },
+  timeoutSeconds: 180,
+  cpu: 'gcf_gen1',
+}, async (request) => {
+  const { studentId, reference } = request.data ?? {};
+  if (!studentId || !reference) throw new Error('studentId and reference are required to reconcile a Paystack payment.');
+  const paymentRef = studentPaymentRef(getDb(), studentId, reference);
+  const snapshot = await paymentRef.get();
+  if (!snapshot.exists) return;
+  const payment = snapshot.data();
+  if (payment.recurring === true || !PAYMENT_RECONCILIATION_STATUSES.includes(payment.status)) return;
+  if (!payment.payerId || !payment.planId || !payment.billingPeriod) return;
+  await paymentRef.set({
+    reconciliationAttempts: admin.firestore.FieldValue.increment(1),
+    lastReconciliationAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+  const result = await finalizePaystackPayment({ reference, studentId, payerId: payment.payerId });
+  logger.info('Reconciled a pending Paystack checkout', { studentId, reference, status: result.status });
+});
+
 export const reconcileUnfinalizedPaystackPayments = onSchedule(
-  { schedule: 'every 15 minutes', timeZone: 'UTC', cpu: 'gcf_gen1' },
+  { schedule: '0 3 * * *', timeZone: 'Africa/Johannesburg', cpu: 'gcf_gen1' },
   async () => {
-    const db = getDb();
-    const pending = await db.collectionGroup('payments')
-      .where('status', 'in', ['initializing', 'initialized', 'pending', 'processing', 'ongoing'])
-      .limit(500).get();
+    const pending = await getDb().collectionGroup('payments')
+      .where('status', 'in', PAYMENT_RECONCILIATION_STATUSES).limit(500).get();
     const cutoff = Date.now() - 5 * 60 * 1000;
+    const repairKey = new Date().toISOString().slice(0, 10);
     for (const paymentSnapshot of pending.docs) {
       const payment = paymentSnapshot.data();
       if (payment.recurring === true) continue;
       const createdAt = payment.createdAt?.toDate?.()?.getTime?.();
       if (createdAt && createdAt > cutoff) continue;
       const studentId = payment.studentId || paymentSnapshot.ref.parent.parent?.id;
-      const payerId = payment.payerId;
       const reference = payment.reference || paymentSnapshot.id;
-      if (!studentId || !payerId || !reference || !payment.planId || !payment.billingPeriod) continue;
-      try {
-        await paymentSnapshot.ref.set({
-          reconciliationAttempts: admin.firestore.FieldValue.increment(1),
-          lastReconciliationAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-        const result = await finalizePaystackPayment({ reference, studentId, payerId });
-        logger.info('Reconciled a pending Paystack checkout', { studentId, reference, status: result.status });
-      } catch (error) {
-        logger.error('Could not reconcile a pending Paystack checkout', {
-          studentId, reference, error: error?.message ?? String(error),
-        });
-      }
+      if (!studentId || !payment.payerId || !payment.planId || !payment.billingPeriod || !reference) continue;
+      await enqueuePaymentReconciliationTask(studentId, reference, `repair-${repairKey}`);
     }
   },
 );
