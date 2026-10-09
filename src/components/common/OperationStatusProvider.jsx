@@ -21,6 +21,7 @@ export const OperationStatusProvider = ({ children }) => {
           state={status.state}
           operationName={status.operationName}
           message={status.message}
+          showProgress={status.showProgress}
           onDone={status.state === 'working' || status.state === 'processing' ? undefined : dismissOperationStatus}
         />
       ) : null}

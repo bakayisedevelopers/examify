@@ -5,6 +5,7 @@ import { ProtectedRoute } from '../components/common/ProtectedRoute';
 import { AppRouteErrorBoundary } from '../components/common/AppRouteErrorBoundary';
 import { ROLES } from '../lib/constants';
 import { PaidStudentRoute } from '../components/common/PaidStudentRoute';
+import { ExamifyingLoader } from '../components/common/ExamifyingLoader';
 
 const lazyNamed = (loader, exportName) => lazy(() => loader().then((module) => ({ default: module[exportName] })));
 
@@ -57,7 +58,7 @@ export const AppRoutes = () => {
 
   return (
     <AppRouteErrorBoundary key={location.pathname} onGoHome={() => navigate(homePath)}>
-      <Suspense fallback={<div className="flex min-h-screen items-center justify-center text-sm text-slate-500" role="status">Loading page…</div>}>
+      <Suspense fallback={<ExamifyingLoader />}>
     <Routes>
     <Route element={<MarketingLayout />}>
       <Route path="/" element={<PortalHomePage />} />

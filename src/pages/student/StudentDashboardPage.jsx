@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CreditCard, Hourglass, LockKeyhole, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
-import { OperationStatusOverlay } from '../../components/common/OperationStatusOverlay';
 import { MarkingCanvas as ImageEditor } from '../../components/canvas/pictureEditorCanvas';
 import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
 import { useAuth } from '../../hooks/useAuth';
@@ -20,7 +19,7 @@ import {
   getStudentExerciseCalendarWindow,
   getStudentAccessState,
   getStudentEntitlementState,
-  getTodayExercises,
+  subscribeToTodayExercisesForStudent,
   subscribeToExerciseGenerationStatus,
 } from '../../services/firestoreService';
 import { getCachedStudentSubscriptionState, loadStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
@@ -50,23 +49,6 @@ const TodayExerciseCard = ({ exercise, onOpen }) => {
     </button>
   );
 };
-
-const ExerciseGenerationProgressBar = ({ progress = 65, indeterminate = false }) => (
-  <div
-    className="relative h-8 w-full overflow-hidden rounded-full bg-slate-200"
-    role="progressbar"
-    aria-label="Generating exercises"
-    aria-valuemin="0"
-    aria-valuemax="100"
-    {...(!indeterminate ? { 'aria-valuenow': progress } : {})}
-  >
-    <div
-      className={`h-full rounded-full bg-lime-400 transition-all duration-500 ease-out ${indeterminate ? 'animate-pulse' : ''}`}
-      style={{ width: `${indeterminate ? 65 : Math.min(100, Math.max(0, progress))}%` }}
-    />
-    <span className="absolute inset-0 flex items-center justify-center text-sm font-semibold text-slate-900">Generating...</span>
-  </div>
-);
 
 const getLocalDateKey = (date = new Date()) => [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
 const shiftDateKey = (dateKey, days) => {
@@ -222,7 +204,7 @@ const ReadinessChecklist = ({ rows, studentName }) => {
 export const StudentDashboardPage = () => {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
-  const { operationStatus, runOperation, closeOperationStatus } = useOperationStatus();
+  const { runOperation } = useOperationStatus();
   const cachedDashboardState = getCachedStudentDashboardState(profile?.uid);
   const cachedSubscriptionState = getCachedStudentSubscriptionState(profile?.uid);
   const hasCachedAccessState = Boolean(cachedDashboardState?.accessChecked || cachedSubscriptionState);
@@ -237,6 +219,7 @@ export const StudentDashboardPage = () => {
   const [availableSubjectEpisodes, setAvailableSubjectEpisodes] = useState(() => cachedDashboardState?.availableSubjectEpisodes ?? []);
   const [isLoadingSubjects, setIsLoadingSubjects] = useState(() => !cachedDashboardState?.subjectsLoaded);
   const [todayExercises, setTodayExercises] = useState(() => cachedDashboardState?.todayExercises ?? []);
+  const todayExercisesRef = useRef(cachedDashboardState?.todayExercises ?? []);
   const [peerAssignments, setPeerAssignments] = useState(() => cachedDashboardState?.peerAssignments ?? []);
   const [calendarWeekStart, setCalendarWeekStart] = useState(() => shiftDateKey(getLocalDateKey(), -6));
   const [exerciseCalendarBounds, setExerciseCalendarBounds] = useState(null);
@@ -250,11 +233,12 @@ export const StudentDashboardPage = () => {
   const [isLoadingPeerAssignments, setIsLoadingPeerAssignments] = useState(() => !cachedDashboardState?.peerAssignmentsLoaded);
   const [isCheckingAccess, setIsCheckingAccess] = useState(() => !hasCachedAccessState);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [generationProgress, setGenerationProgress] = useState(0);
   const [readinessRows, setReadinessRows] = useState(() => cachedDashboardState?.readinessRows ?? []);
   const [generationStatuses, setGenerationStatuses] = useState({});
   const [initialRetrySubjects, setInitialRetrySubjects] = useState([]);
   const [retryingInitialSubject, setRetryingInitialSubject] = useState('');
+  const localGenerationSubjectsRef = useRef(new Set());
+  const backgroundGenerationOperationsRef = useRef(new Map());
   const [subscriptionPlanId, setSubscriptionPlanId] = useState(() => cachedDashboardState?.subscriptionPlanId ?? cachedSubscriptionState?.subscriptionPlanId ?? 'free');
   const [subscriptionPlanName, setSubscriptionPlanName] = useState(() => cachedDashboardState?.subscriptionPlanName ?? cachedSubscriptionState?.subscriptionPlanName ?? 'Free');
   const [requiresSubscriptionSelection, setRequiresSubscriptionSelection] = useState(() => cachedDashboardState?.requiresSubscriptionSelection ?? cachedSubscriptionState?.requiresSubscriptionSelection ?? true);
@@ -268,6 +252,7 @@ export const StudentDashboardPage = () => {
         setAvailableSubjects([]);
         setAvailableSubjectEpisodes([]);
         setTodayExercises([]);
+        todayExercisesRef.current = [];
         setPeerAssignments([]);
         setReadinessRows([]);
         setIsLoadingSubjects(true);
@@ -286,6 +271,7 @@ export const StudentDashboardPage = () => {
     setAvailableSubjectEpisodes(snapshot.availableSubjectEpisodes ?? []);
     setIsLoadingSubjects(!snapshot.subjectsLoaded);
     setTodayExercises(snapshot.todayExercises ?? []);
+    todayExercisesRef.current = snapshot.todayExercises ?? [];
     setPeerAssignments(snapshot.peerAssignments ?? []);
     setReadinessRows(snapshot.readinessRows ?? []);
     setSubscriptionPlanId(snapshot.subscriptionPlanId ?? 'free');
@@ -343,6 +329,36 @@ export const StudentDashboardPage = () => {
   }, [profile?.uid, saveLastAppData]);
 
   useEffect(() => {
+    if (!profile?.uid || isLoadingSubjects) return undefined;
+    if (!availableSubjectEpisodes.length) {
+      setTodayExercises([]);
+      todayExercisesRef.current = [];
+      saveLastAppData({ todayExercises: [], exercisesLoaded: true });
+      setIsLoadingExercises(false);
+      return undefined;
+    }
+
+    return subscribeToTodayExercisesForStudent(profile.uid, availableSubjectEpisodes, (exercises) => {
+      todayExercisesRef.current = exercises;
+      setTodayExercises(exercises);
+      saveLastAppData({ todayExercises: exercises, exercisesLoaded: true });
+      setIsLoadingExercises(false);
+    }, (error) => {
+      setLoadError((current) => current || error?.message || 'Today’s exercises could not be refreshed.');
+      setIsLoadingExercises(false);
+    });
+  }, [availableSubjectEpisodes, isLoadingSubjects, profile?.uid, saveLastAppData]);
+
+  useEffect(() => {
+    const today = getLocalDateKey();
+    if (today < calendarWeekStart || today > shiftDateKey(calendarWeekStart, 6)) return;
+    setCalendarExercises((current) => [
+      ...current.filter((exercise) => String(exercise.assignmentDate ?? '').slice(0, 10) !== today),
+      ...todayExercises,
+    ].sort((left, right) => String(left.assignmentDate ?? '').localeCompare(String(right.assignmentDate ?? ''))));
+  }, [calendarWeekStart, todayExercises]);
+
+  useEffect(() => {
     let active = true;
     if (!profile?.uid || isLoadingSubjects) return undefined;
     if (!availableSubjectEpisodes.length) {
@@ -364,12 +380,10 @@ export const StudentDashboardPage = () => {
       setCalendarExercises([]);
       setCompletedCalendarMarking([]);
       setIsLoadingCalendar(false);
-      setIsLoadingExercises(false);
       return undefined;
     }
 
     const weekEnd = shiftDateKey(calendarWeekStart, 6);
-    const visibleIncludesToday = getLocalDateKey() >= calendarWeekStart && getLocalDateKey() <= weekEnd;
     setIsLoadingCalendar(true);
     Promise.all([
       getStudentExerciseCalendarWindow({
@@ -390,18 +404,16 @@ export const StudentDashboardPage = () => {
       }),
     ]).then(([exercises, completedMarking]) => {
       if (!active) return;
-      setCalendarExercises(exercises);
+      const today = getLocalDateKey();
+      const todayIsVisible = today >= calendarWeekStart && today <= weekEnd;
+      const currentWeekExercises = todayIsVisible
+        ? [...exercises.filter((exercise) => String(exercise.assignmentDate ?? '').slice(0, 10) !== today), ...todayExercisesRef.current]
+        : exercises;
+      setCalendarExercises(currentWeekExercises);
       setCompletedCalendarMarking(completedMarking);
-      if (visibleIncludesToday) {
-        const todaysExercises = exercises.filter((exercise) => String(exercise.assignmentDate ?? '').slice(0, 10) === getLocalDateKey());
-        setTodayExercises(todaysExercises);
-        saveLastAppData({ todayExercises: todaysExercises, exercisesLoaded: true });
-        setIsLoadingExercises(false);
-      }
     }).catch((error) => {
       if (active) {
         setLoadError((current) => current || error?.message || 'Exercise activity could not be loaded.');
-        if (visibleIncludesToday) setIsLoadingExercises(false);
       }
     }).finally(() => {
       if (active) setIsLoadingCalendar(false);
@@ -412,30 +424,105 @@ export const StudentDashboardPage = () => {
 
   useEffect(() => {
     if (!profile?.uid) return undefined;
+    const generationOperations = backgroundGenerationOperationsRef.current;
     const unsubscribes = availableSubjects.map((subject) => {
       const episode = availableSubjectEpisodes.find((item) => item.studentId === profile.uid && item.subjectKey === subject);
       return subscribeToExerciseGenerationStatus(profile.uid, subject, (status) => {
         setGenerationStatuses((current) => ({ ...current, [subject]: status }));
+        if (!status) return;
+
+        const episodeId = episode?.id ?? subject;
+        const currentOperation = generationOperations.get(episodeId);
+        const runId = status.startedAtMs ?? status.generationRunId ?? null;
+        if (status.status === 'processing') {
+          setReadinessRows((current) => {
+            const next = current.filter((row) => row.subject !== subject);
+            if (next.length !== current.length) saveLastAppData({ readinessRows: next });
+            return next;
+          });
+          setInitialRetrySubjects((current) => current.filter((item) => item !== subject));
+
+          if (localGenerationSubjectsRef.current.has(subject)) return;
+          if (currentOperation && currentOperation.runId === runId) return;
+          currentOperation?.resolve({ superseded: true });
+
+          let resolveOperation;
+          let rejectOperation;
+          const operationPromise = new Promise((resolve, reject) => {
+            resolveOperation = resolve;
+            rejectOperation = reject;
+          });
+          generationOperations.set(episodeId, {
+            runId,
+            resolve: resolveOperation,
+            reject: rejectOperation,
+          });
+          runOperation({
+            operationName: `Generating ${subject} exercises`,
+            successMessage: 'Exercise generation has finished.',
+            failureMessage: 'Could not generate the exercise plan.',
+            autoDismissMs: 1800,
+            showProgress: true,
+          }, () => operationPromise).catch(() => {});
+          return;
+        }
+
+        if (status.status === 'completed' || status.status === 'failed') {
+          if (status.status === 'completed') {
+            setReadinessRows((current) => {
+              const next = current.filter((row) => row.subject !== subject);
+              if (next.length !== current.length) saveLastAppData({ readinessRows: next });
+              return next;
+            });
+            setInitialRetrySubjects((current) => current.filter((item) => item !== subject));
+          } else if (status.lastTrigger === 'initial') {
+            setInitialRetrySubjects((current) => current.includes(subject) ? current : [...current, subject]);
+          }
+
+          const operation = generationOperations.get(episodeId);
+          if (operation && (operation.runId == null || runId == null || operation.runId === runId)) {
+            generationOperations.delete(episodeId);
+            if (status.status === 'completed') operation.resolve();
+            else operation.reject(new Error(status.message || 'Exercise generation did not complete.'));
+          }
+        }
       }, episode?.id ?? null);
     });
-    return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
-  }, [profile?.uid, availableSubjects, availableSubjectEpisodes]);
+    return () => {
+      unsubscribes.forEach((unsubscribe) => unsubscribe());
+      generationOperations.forEach((operation) => operation.resolve());
+      generationOperations.clear();
+    };
+  }, [profile?.uid, availableSubjects, availableSubjectEpisodes, runOperation, saveLastAppData]);
 
   useEffect(() => {
     let active = true;
 
     const runGeneratePlan = async (subject, mode) => {
       setIsGenerating(true);
-      setGenerationProgress(25);
-
-      const result = await runOperation({
-        operationName: `Generating ${subject} exercises`,
-        successMessage: 'Exercise generation has finished.',
-        failureMessage: 'Could not generate the exercise plan.',
-      }, () => generateExercisePlanIfEligible({ student: profile, mode, subject }));
-
-      setGenerationProgress(75);
-      return result;
+      setReadinessRows((current) => {
+        const next = current.filter((row) => row.subject !== subject);
+        if (next.length !== current.length) saveLastAppData({ readinessRows: next });
+        return next;
+      });
+      localGenerationSubjectsRef.current.add(subject);
+      try {
+        return await runOperation({
+          operationName: `Generating ${subject} exercises`,
+          successMessage: 'Exercise generation has finished.',
+          failureMessage: 'Could not generate the exercise plan.',
+          autoDismissMs: 1800,
+          showProgress: true,
+        }, async () => {
+          const result = await generateExercisePlanIfEligible({ student: profile, mode, subject });
+          if (!result?.generated) throw new Error(result?.reason || 'Exercise generation did not produce assignments.');
+          return result;
+        });
+      } catch (error) {
+        return { generated: false, reason: error?.message || 'Exercise generation failed.' };
+      } finally {
+        localGenerationSubjectsRef.current.delete(subject);
+      }
     };
 
     const load = async () => {
@@ -518,10 +605,12 @@ export const StudentDashboardPage = () => {
           for (const { subject, access } of accessStates) {
             const initialWasAttempted = access.generationRunStatus?.lastTrigger === 'initial'
               && ['completed', 'failed'].includes(access.generationRunStatus?.status);
+            const generationIsProcessing = access.generationRunStatus?.status === 'processing';
             const shouldGenerate = access.paidSubscriptionActive
               && !access.hasInitialGeneration
               && access.initialGenerationReady
-              && !initialWasAttempted;
+              && !initialWasAttempted
+              && !generationIsProcessing;
             if (shouldGenerate) {
               const result = await runGeneratePlan(subject, 'initial');
               if (!result?.generated) {
@@ -535,7 +624,7 @@ export const StudentDashboardPage = () => {
                   reason: result?.reason ?? 'Generation did not complete.',
                 });
               }
-            } else if (!access.hasInitialGeneration && !access.generationStatus?.initial?.ready) {
+            } else if (!generationIsProcessing && !access.hasInitialGeneration && !access.generationStatus?.initial?.ready) {
               readiness.push({ subject, mode: 'initial', checks: access.generationStatus?.initial?.checks ?? {}, availablePaperCount: access.matchingQuestionPapers?.length ?? 0, completedLessonCount: access.completedLessons?.length ?? 0 });
             }
           }
@@ -543,7 +632,6 @@ export const StudentDashboardPage = () => {
           if (!active) return;
           setReadinessRows(readiness);
           saveLastAppData({ readinessRows: readiness });
-          setGenerationProgress(100);
         } catch (error) {
           if (active) setLoadError((current) => current || error?.message || 'Subject readiness could not be loaded yet.');
         }
@@ -576,25 +664,33 @@ export const StudentDashboardPage = () => {
     if (!subject || retryingInitialSubject) return;
     setRetryingInitialSubject(subject);
     setIsGenerating(true);
-    setGenerationProgress(25);
+    setReadinessRows((current) => {
+      const next = current.filter((row) => row.subject !== subject);
+      if (next.length !== current.length) saveLastAppData({ readinessRows: next });
+      return next;
+    });
+    localGenerationSubjectsRef.current.add(subject);
     try {
       const result = await runOperation({
         operationName: `Generating ${subject} exercises`,
         successMessage: 'Exercise generation has finished.',
         failureMessage: 'Initial exercise generation failed.',
-      }, () => generateExercisePlanIfEligible({ student: profile, mode: 'initial', subject }));
-      setGenerationProgress(100);
+        autoDismissMs: 1800,
+        showProgress: true,
+      }, async () => {
+        const generated = await generateExercisePlanIfEligible({ student: profile, mode: 'initial', subject });
+        if (!generated?.generated) throw new Error(generated?.reason || 'Initial exercise generation did not produce assignments.');
+        return generated;
+      });
       if (!result.generated) return;
 
       setInitialRetrySubjects((current) => current.filter((item) => item !== subject));
       setReadinessRows((current) => current.filter((row) => row.subject !== subject));
-      const episode = availableSubjectEpisodes.find((item) => item.studentId === profile.uid && item.subjectKey === subject) ?? null;
-      const refreshedExercises = await getTodayExercises(profile.uid, subject, episode);
-      setTodayExercises((current) => [...current.filter((item) => item.subjectInstanceId !== episode?.id), ...refreshedExercises]
-        .sort((left, right) => String(left.subject).localeCompare(String(right.subject))));
+      saveLastAppData({ readinessRows: readinessRows.filter((row) => row.subject !== subject) });
     } catch (error) {
       setLoadError(error.message || 'Initial generation failed.');
     } finally {
+      localGenerationSubjectsRef.current.delete(subject);
       setRetryingInitialSubject('');
       setTimeout(() => setIsGenerating(false), 500);
     }
@@ -678,41 +774,22 @@ export const StudentDashboardPage = () => {
         </div>
       ) : null}
 
-      {Object.entries(generationStatuses).filter(([subject, status]) => {
-        if (!status) return false;
-        if (status.status === 'processing') return !isGenerating && Date.now() < Number(status.expiresAtMs ?? 0);
-        if (status.status === 'failed' && status.lastTrigger === 'initial' && initialRetrySubjects.includes(subject)) return true;
-        return Date.now() - Number(status.finishedAtMs || 0) < 120000;
-      }).map(([subject, status]) => (
-        status.status === 'processing' ? (
-          <div key={subject} className="panel p-4" role="status" aria-live="polite">
-            <ExerciseGenerationProgressBar indeterminate />
+      {initialRetrySubjects.map((subject) => (
+        <div key={`generation-retry-${subject}`} role="status" className="panel flex flex-wrap items-center justify-between gap-3 border border-rose-400/30 bg-rose-400/10 p-4">
+          <div>
+            <p className="font-semibold text-rose-900">{subject} exercises could not be generated.</p>
+            {generationStatuses[subject]?.message ? <p className="mt-1 text-sm text-rose-800">{generationStatuses[subject].message}</p> : null}
           </div>
-        ) : (
-          <div key={subject} role="status" aria-live="polite" className={`panel flex items-start gap-3 p-4 ${status.status === 'failed' ? 'border border-rose-400/30 bg-rose-400/10 text-rose-300' : 'border border-lime-400/30 bg-lime-400/10 text-lime-300'}`}>
-            <div>
-              <p className="font-semibold">{status.status === 'completed' ? `${subject}: Exercise generation complete` : `${subject}: Exercise generation did not complete`}</p>
-              <p className="mt-1 text-sm">{status.message}</p>
-              {status.status === 'failed' && status.lastTrigger === 'initial' && initialRetrySubjects.includes(subject) ? (
-                <button
-                  type="button"
-                  className="btn-secondary mt-3"
-                  onClick={() => retryInitialGeneration(subject)}
-                  disabled={Boolean(retryingInitialSubject)}
-                >
-                  {retryingInitialSubject === subject ? 'Retrying initial generation...' : 'Retry initial generation'}
-                </button>
-              ) : null}
-            </div>
-          </div>
-        )
-      ))}
-
-      {isGenerating ? (
-        <div className="panel p-4">
-          <ExerciseGenerationProgressBar progress={generationProgress} />
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => retryInitialGeneration(subject)}
+            disabled={Boolean(retryingInitialSubject)}
+          >
+            {retryingInitialSubject === subject ? 'Retrying initial generation…' : 'Retry initial generation'}
+          </button>
         </div>
-      ) : null}
+      ))}
 
       <section className="space-y-4">
         <div className="rounded-2xl bg-gradient-to-r from-lime-300 via-lime-400 to-emerald-400 p-5 text-slate-950 shadow-soft sm:p-6">
@@ -744,7 +821,7 @@ export const StudentDashboardPage = () => {
             </div>
           )}
         </div>
-        {!isGenerating ? <ReadinessChecklist rows={readinessRows} studentName={profile?.displayName || profile?.name || profile?.email || 'Student'} /> : null}
+        <ReadinessChecklist rows={readinessRows} studentName={profile?.displayName || profile?.name || profile?.email || 'Student'} />
       </section>
 
       {isLoadingPeerAssignments && !peerAssignments.length ? <LoadingState label="Checking for work assigned to you to mark…" /> : null}
@@ -777,12 +854,6 @@ export const StudentDashboardPage = () => {
           </div>
         </section>
       ) : null}
-      <OperationStatusOverlay
-        state={operationStatus?.state}
-        operationName={operationStatus?.operationName}
-        message={operationStatus?.message}
-        onDone={closeOperationStatus}
-      />
     </AppShell>
   );
 };

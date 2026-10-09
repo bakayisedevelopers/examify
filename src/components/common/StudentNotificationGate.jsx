@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { LoaderCircle } from 'lucide-react';
 import { subscribePeerMarkingAssignmentsForStudent } from '../../services/firestoreService';
 import { getNotificationSupportState, registerStudentNotificationDevice } from '../../services/notificationService';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
+import { ExamifyingLoader } from './ExamifyingLoader';
 
 const getNotificationPermission = () => {
   if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported';
@@ -181,7 +181,7 @@ export const StudentNotificationGate = ({ profile, children, required = true }) 
   if (aiStudio) return children;
 
   if (permission === 'checking') {
-    return <div className="flex min-h-screen items-center justify-center gap-3 bg-slate-950 text-sm font-semibold text-slate-200" role="status"><LoaderCircle className="h-5 w-5 animate-spin text-lime-300" aria-hidden="true" /><span className="bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 bg-clip-text text-transparent">Loading Examifying…</span></div>;
+    return <ExamifyingLoader />;
   }
 
   // Browser permission is the access decision. Device token registration continues in the

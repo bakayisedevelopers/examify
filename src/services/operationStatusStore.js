@@ -23,7 +23,12 @@ const showLatestActiveOperation = () => {
   }
   const [id, operation] = latest;
   currentOperationId = id;
-  snapshot = { state: 'working', operationName: operation.operationName, message: operation.message || '' };
+  snapshot = {
+    state: 'working',
+    operationName: operation.operationName,
+    message: operation.message || '',
+    showProgress: operation.showProgress === true,
+  };
 };
 
 export const dismissOperationStatus = () => {
@@ -35,14 +40,14 @@ export const dismissOperationStatus = () => {
   publish();
 };
 
-export const runGlobalOperation = async ({ operationName = 'Saving your changes', successMessage = '', failureMessage = '', message = '', autoDismissMs = 0 } = {}, action) => {
+export const runGlobalOperation = async ({ operationName = 'Saving your changes', successMessage = '', failureMessage = '', message = '', autoDismissMs = 0, showProgress = false } = {}, action) => {
   if (typeof action !== 'function') throw new TypeError('An operation callback is required.');
 
   const id = ++sequence;
-  const operation = { operationName, message };
+  const operation = { operationName, message, showProgress };
   activeOperations.set(id, operation);
   currentOperationId = id;
-  snapshot = { state: 'working', operationName, message, operationId: id };
+  snapshot = { state: 'working', operationName, message, showProgress, operationId: id };
   publish();
 
   try {

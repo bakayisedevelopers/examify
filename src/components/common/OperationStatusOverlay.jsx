@@ -49,6 +49,7 @@ export const OperationStatusOverlay = ({
   operationName = 'your request',
   title,
   message = '',
+  showProgress = false,
   onDone,
   onRetry,
   doneLabel = 'Done',
@@ -89,6 +90,14 @@ export const OperationStatusOverlay = ({
             <p className="mt-1 text-sm text-slate-300">{message && !isFailure && !isSuccess ? message : defaultDescription}</p>
           </div>
         </div>
+        {state === 'working' && showProgress ? (
+          <div className="space-y-2" role="progressbar" aria-label={`${operationName} progress`}>
+            <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-700">
+              <div className="h-full w-2/3 animate-pulse rounded-full bg-gradient-to-r from-lime-300 via-lime-400 to-emerald-400" />
+            </div>
+            <p className="text-center text-xs font-semibold text-slate-300">Generating exercises…</p>
+          </div>
+        ) : null}
         {isFailure && message ? <p className="rounded-xl border border-rose-400/20 bg-rose-400/5 p-3 text-sm text-rose-100" role="alert">{message}</p> : null}
         {isSuccess && message ? <p className="text-sm text-slate-300">{message}</p> : null}
         {isSuccess && onDone ? <button type="button" className="btn-primary w-full" onClick={onDone}>{doneLabel}</button> : null}
