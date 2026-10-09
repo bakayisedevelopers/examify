@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom';
+import { ChevronLeft } from 'lucide-react';
 import { LEGAL_POLICY_EFFECTIVE_DATE } from '../lib/legalPolicyVersion';
 
 const PolicySection = ({ id, title, children }) => (
@@ -24,10 +25,22 @@ export const PoliciesPage = () => {
 
   return (
     <main className="mx-auto min-h-screen max-w-4xl scroll-smooth px-4 py-12 lg:px-6">
+      <div className="mb-6 grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-2 bg-transparent lg:hidden">
+        <button
+          type="button"
+          onClick={() => navigate(-1)}
+          className="grid h-11 w-11 place-items-center rounded-full border border-slate-700/80 bg-slate-950 text-lime-300 shadow-[0_3px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)] transition hover:border-lime-400/60 hover:bg-slate-900 hover:text-lime-200 active:scale-95"
+          aria-label="Go back"
+        >
+          <ChevronLeft className="h-6 w-6 stroke-[2.5]" aria-hidden="true" />
+        </button>
+        <p className="justify-self-center rounded-full border border-slate-700/80 bg-slate-950 px-3 py-1 text-sm font-bold text-lime-200 shadow-[0_3px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)]">Legal</p>
+        <span aria-hidden="true" />
+      </div>
       <button
         type="button"
         onClick={() => navigate(-1)}
-        className="mb-6 text-sm font-semibold text-lime-400 hover:text-lime-300 hover:underline"
+        className="mb-6 hidden text-sm font-semibold text-lime-400 hover:text-lime-300 hover:underline lg:inline-flex"
       >
         ← Back
       </button>

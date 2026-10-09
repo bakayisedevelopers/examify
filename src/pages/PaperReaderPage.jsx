@@ -14,15 +14,15 @@ const StudentFullPagePdf = ({ paper, documentUrl, documentTitle, pageNumber, que
   const viewerUrl = documentUrl ? `${documentUrl}#page=${pageNumber}&toolbar=1&navpanes=0` : '';
   return (
     <main className="fixed inset-0 z-50 flex h-[100dvh] flex-col bg-slate-950 text-slate-900">
-      <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-3 sm:px-5">
-        <button type="button" className="inline-flex min-h-10 items-center gap-2 rounded-md px-2 text-sm font-semibold text-slate-700 hover:bg-slate-100" onClick={onBack}>
-          <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back
+      <header className="grid h-14 shrink-0 grid-cols-[2.5rem_minmax(0,1fr)_auto] items-center gap-2 border-b border-transparent bg-transparent px-3 sm:px-5 lg:flex lg:justify-between lg:gap-3 lg:border-slate-200 lg:bg-white">
+        <button type="button" className="grid h-10 w-10 place-items-center rounded-full border border-slate-700/80 bg-slate-950 text-lime-300 shadow-[0_3px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)] transition hover:border-lime-400/60 hover:bg-slate-900 hover:text-lime-200 lg:inline-flex lg:h-auto lg:w-auto lg:gap-2 lg:rounded-md lg:border-transparent lg:bg-transparent lg:px-2 lg:text-sm lg:font-semibold lg:text-slate-700 lg:shadow-none lg:hover:bg-slate-100" onClick={onBack} aria-label="Go back">
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" /> <span className="hidden lg:inline">Back</span>
         </button>
-        <p className="min-w-0 flex-1 truncate text-center text-sm font-semibold text-slate-700">{title}{questionReference ? ` • Q${questionReference}` : ''}</p>
+        <p className="min-w-0 truncate rounded-full border border-slate-700/80 bg-slate-950 px-3 py-1 text-center text-sm font-semibold text-lime-200 shadow-[0_3px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)] lg:flex-1 lg:rounded-none lg:border-0 lg:bg-transparent lg:px-0 lg:py-0 lg:text-slate-700 lg:shadow-none">{title}{questionReference ? ` • Q${questionReference}` : ''}</p>
         <div className="flex shrink-0 items-center gap-1">
-          <button type="button" className="grid h-10 w-10 place-items-center rounded-md text-slate-700 hover:bg-slate-100 disabled:opacity-40" onClick={() => onPageChange(pageNumber - 1)} disabled={pageNumber <= 1} aria-label="Previous PDF page"><ChevronLeft className="h-5 w-5" /></button>
-          <span className="min-w-14 text-center text-xs font-semibold text-slate-600">Page {pageNumber}</span>
-          <button type="button" className="grid h-10 w-10 place-items-center rounded-md text-slate-700 hover:bg-slate-100" onClick={() => onPageChange(pageNumber + 1)} aria-label="Next PDF page"><ChevronRight className="h-5 w-5" /></button>
+          <button type="button" className="grid h-9 w-9 place-items-center rounded-full border border-slate-700/80 bg-slate-950 text-lime-300 shadow-[0_3px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)] transition hover:border-lime-400/60 hover:bg-slate-900 disabled:opacity-40 lg:h-10 lg:w-10 lg:rounded-md lg:border-transparent lg:bg-transparent lg:text-slate-700 lg:shadow-none lg:hover:bg-slate-100" onClick={() => onPageChange(pageNumber - 1)} disabled={pageNumber <= 1} aria-label="Previous PDF page"><ChevronLeft className="h-5 w-5" /></button>
+          <span className="min-w-14 rounded-full border border-slate-700/80 bg-slate-950 px-2 py-1 text-center text-[10px] font-semibold text-slate-300 shadow-[0_3px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)] lg:rounded-none lg:border-0 lg:bg-transparent lg:px-0 lg:text-xs lg:text-slate-600 lg:shadow-none">Page {pageNumber}</span>
+          <button type="button" className="grid h-9 w-9 place-items-center rounded-full border border-slate-700/80 bg-slate-950 text-lime-300 shadow-[0_3px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)] transition hover:border-lime-400/60 hover:bg-slate-900 lg:h-10 lg:w-10 lg:rounded-md lg:border-transparent lg:bg-transparent lg:text-slate-700 lg:shadow-none lg:hover:bg-slate-100" onClick={() => onPageChange(pageNumber + 1)} aria-label="Next PDF page"><ChevronRight className="h-5 w-5" /></button>
         </div>
       </header>
       {status || !viewerUrl ? (

@@ -52,7 +52,7 @@ export const StudentLessonDetailsPage = () => {
 
   return (
     <AppShell title="Lesson details" subtitle={lesson ? `${lesson.subject} • ${lesson.lessonDate || lesson.completedOn || 'No date'}` : 'Loading lesson'} role="student" user={profile} onLogout={logout}>
-      <Link to="/student/lessons" className="btn-secondary inline-flex w-fit">Back to lessons</Link>
+      <Link to="/student/lessons" className="btn-secondary hidden w-fit lg:inline-flex">Back to lessons</Link>
       {isLoading ? <LoadingState label="Loading lesson details…" /> : null}
       {loadError ? <div className="panel p-4 text-sm text-rose-700" role="alert">{loadError}</div> : null}
       {lesson ? (() => {

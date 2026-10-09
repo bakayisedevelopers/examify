@@ -526,7 +526,7 @@ export const TutorLessonDetailsPage = () => {
 
   return (
     <AppShell title={isNew ? 'Schedule lesson' : 'Lesson records'} subtitle="Plan lessons by student and log attendance, reports, and topic scores." role={role} user={profile} onLogout={logout}>
-      <Link to={`${basePath}/lessons`} className="btn-secondary inline-flex w-fit">Back to lessons</Link>
+      <Link to={`${basePath}/lessons`} className="btn-secondary hidden w-fit lg:inline-flex">Back to lessons</Link>
       {status ? <div className={`panel p-4 text-sm ${statusTone === 'error' ? 'border border-rose-200 bg-rose-50 font-medium text-rose-800' : 'text-slate-700'}`} role={statusTone === 'error' ? 'alert' : 'status'}>{status}</div> : null}
       {(!contextsLoaded || (isNew && !eligibilityLoaded) || (!isNew && existingLessonLoading)) ? <LoadingState label={isNew ? 'Loading assigned students and lesson topics…' : 'Loading lesson roster and records…'} /> : null}
 

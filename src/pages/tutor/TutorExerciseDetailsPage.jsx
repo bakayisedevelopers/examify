@@ -121,7 +121,7 @@ export const TutorExerciseDetailsPage = () => {
       {exercise && availability ? (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <Link to={`${basePath}/exercises`} className="btn-secondary inline-flex w-fit">Back to exercises</Link>
+            <Link to={`${basePath}/exercises`} className="btn-secondary hidden w-fit lg:inline-flex">Back to exercises</Link>
             {accessRole === 'co-owner' && !isHistorical && !exerciseStatus?.isToday ? <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={removeExercise} disabled={isDeleting}>
               <Trash2 className="h-4 w-4" aria-hidden="true" /> {isDeleting ? 'Deleting...' : 'Delete exercise'}
             </button> : null}

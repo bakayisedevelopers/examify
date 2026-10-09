@@ -196,7 +196,7 @@ export const AdminUserDetailsPage = () => {
   return (
     <AppShell title="User details" subtitle="Review role-specific account information." role="admin" user={profile} onLogout={logout}>
       <div className="space-y-5">
-        <Link to="/admin/users" className="btn-secondary w-fit"><ArrowLeft className="mr-2 h-4 w-4" aria-hidden="true" />All users</Link>
+        <Link to="/admin/users" className="btn-secondary hidden w-fit lg:inline-flex"><ArrowLeft className="mr-2 h-4 w-4" aria-hidden="true" />All users</Link>
 
         {loading ? <LoadingState label="Loading user details…" /> : null}
         {!loading && error ? (

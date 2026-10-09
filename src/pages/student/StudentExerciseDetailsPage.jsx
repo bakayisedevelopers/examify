@@ -69,7 +69,7 @@ export const StudentExerciseDetailsPage = () => {
       {status && !isLoading ? <div className="panel p-5 text-sm text-slate-500">{status}</div> : null}
       {exercise && availability ? (
         <div className="space-y-4">
-          <Link to="/student" className="btn-secondary inline-flex w-fit">Back to today’s exercises</Link>
+          <Link to="/student" className="btn-secondary hidden w-fit lg:inline-flex">Back to today’s exercises</Link>
           <ExerciseCard
             exercise={exercise}
             availability={availability}

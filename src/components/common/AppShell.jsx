@@ -83,34 +83,28 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
       <div className="mx-auto flex h-[100dvh] max-h-[100dvh] max-w-7xl flex-col gap-4 px-4 py-4 lg:grid lg:h-screen lg:max-h-none lg:grid-cols-[260px_1fr] lg:gap-6 lg:px-6">
         
         {/* Mobile Header */}
-        <div className="panel z-30 grid flex-none grid-cols-[auto_1fr_auto] items-center gap-3 p-4 border-slate-800 bg-slate-900/95 lg:hidden">
-          <div className="flex min-w-10 items-center justify-start">
-            <button
-              type="button"
-              onClick={handleBack}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-lime-400 transition hover:bg-slate-800 hover:text-lime-300"
-              aria-label="Go back"
-            >
-              <ChevronLeft className="h-6 w-6 stroke-[2.5]" />
-            </button>
-          </div>
-          <div className="min-w-0 text-center">
+        <div className="z-30 grid flex-none grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-2 border-0 bg-transparent p-0 shadow-none backdrop-blur-none lg:hidden">
+          <button
+            type="button"
+            onClick={handleBack}
+            className="grid h-11 w-11 place-items-center rounded-full border border-slate-700/80 bg-slate-950 text-lime-300 shadow-[0_3px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)] transition hover:border-lime-400/60 hover:bg-slate-900 hover:text-lime-200 active:scale-95"
+            aria-label="Go back"
+          >
+            <ChevronLeft className="h-6 w-6 stroke-[2.5]" />
+          </button>
+          <div className="flex min-w-0 justify-center text-center">
             {mobileHeaderContent ?? (
               <h1
-                className="truncate bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 bg-clip-text text-base font-extrabold text-transparent"
-                style={{
-                  backgroundImage: 'linear-gradient(90deg, #a3e635 0%, #bef264 50%, #34d399 100%)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
-                }}
+                className="inline-flex min-w-0 max-w-full items-center justify-center truncate rounded-full border border-slate-700/80 bg-slate-950 px-3 py-1 text-sm leading-5 font-extrabold text-lime-200 shadow-[0_3px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)]"
               >
-                {title}
+                <span className="truncate bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 bg-clip-text text-transparent">{title}</span>
               </h1>
             )}
           </div>
           <button
+            type="button"
             onClick={() => setIsMobileMenuOpen(true)}
-            className="rounded-lg p-2 text-lime-400 transition hover:bg-slate-800 hover:text-lime-300"
+            className="grid h-11 w-11 place-items-center rounded-full border border-slate-700/80 bg-slate-950 text-lime-300 shadow-[0_3px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)] transition hover:border-lime-400/60 hover:bg-slate-900 hover:text-lime-200 active:scale-95"
             aria-label="Open navigation"
           >
             <Menu className="h-6 w-6" />
