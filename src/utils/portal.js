@@ -38,6 +38,13 @@ const PORTALS = {
 
 const HOSTNAME_PORTALS = {
   examifying: 'student',
+  tutors: 'tutor',
+  teachers: 'teacher',
+  parents: 'parent',
+  admin: 'admin',
+  teacher: 'teacher',
+  tutor: 'tutor',
+  parent: 'parent',
   'examifying-teachers': 'teacher',
   'examifying-tutors': 'tutor',
   'examifying-parents': 'parent',
@@ -45,11 +52,11 @@ const HOSTNAME_PORTALS = {
 };
 
 const PORTAL_SITE_URLS = {
-  student: 'https://examifying.web.app',
-  teacher: 'https://examifying-teachers.web.app',
-  tutor: 'https://examifying-tutors.web.app',
-  parent: 'https://examifying-parents.web.app',
-  admin: 'https://examifying-admin.web.app',
+  student: 'https://examifying.bakayise.com',
+  teacher: 'https://teachers.examifying.bakayise.com',
+  tutor: 'https://tutors.examifying.bakayise.com',
+  parent: 'https://parents.examifying.bakayise.com',
+  admin: 'https://admin.examifying.bakayise.com',
 };
 
 const isPortalId = (value) => Object.hasOwn(PORTALS, value);
@@ -58,20 +65,15 @@ const isTeacherProfile = (profile) => profile?.role === 'teacher'
   || profile?.isTeacher === 'true';
 
 export const getPortal = (hostname = window.location.hostname) => {
-  const configuredPortal = import.meta.env.DEV
+  const configuredPortal = import.meta.env?.DEV
     ? import.meta.env.VITE_APP_PORTAL?.trim().toLowerCase()
     : '';
   if (isPortalId(configuredPortal)) return configuredPortal;
 
   const normalizedHostname = hostname.toLowerCase().replace(/^www\./, '');
+  if (HOSTNAME_PORTALS[normalizedHostname]) return HOSTNAME_PORTALS[normalizedHostname];
   const hostLabel = normalizedHostname.split('.')[0];
   if (HOSTNAME_PORTALS[hostLabel]) return HOSTNAME_PORTALS[hostLabel];
-
-  // Also support custom domains that use a clear role subdomain, such as teacher.example.org.
-  if (/(^|[.-])teacher([.-]|$)/.test(normalizedHostname)) return 'teacher';
-  if (/(^|[.-])tutor([.-]|$)/.test(normalizedHostname)) return 'tutor';
-  if (/(^|[.-])parent([.-]|$)/.test(normalizedHostname)) return 'parent';
-  if (/(^|[.-])admin([.-]|$)/.test(normalizedHostname)) return 'admin';
   return 'student';
 };
 

@@ -8,6 +8,7 @@ const asQuestion = (question, index) => ({
   questionReference: String(question?.questionReference || `Question ${index + 1}`),
   paperId: String(question?.paperId || ''),
   pageNumber: Number(question?.pageNumber) || 0,
+  topicId: String(question?.topicId || question?.canonicalTopicKey || ''),
   totalMarks: Number(question?.marks ?? question?.totalMarks) || 0,
 });
 
@@ -16,17 +17,20 @@ export const TutorTopicScoreEditor = forwardRef(({
   studentId,
   subject,
   topic,
+  topicId,
   exerciseId,
   peerAssignmentId,
   questions = [],
   value,
   initialQuestionScores = [],
   compact = false,
+  hideQuestionLabel = false,
   hideSaveButton = false,
   onActionStateChange,
   onSaved,
 }, ref) => {
-  const normalizedQuestions = useMemo(() => (questions.length ? questions : [{}]).map(asQuestion), [questions]);
+  const questionShapeKey = JSON.stringify((questions.length ? questions : [{}]).map(asQuestion));
+  const normalizedQuestions = useMemo(() => JSON.parse(questionShapeKey), [questionShapeKey]);
   const initialScoresKey = JSON.stringify(initialQuestionScores);
   const [marks, setMarks] = useState({});
   const [saving, setSaving] = useState(false);
@@ -64,7 +68,7 @@ export const TutorTopicScoreEditor = forwardRef(({
 
   const save = useCallback(async () => {
     if (!allMarksValid) {
-      setMessage('Enter marks earned for every question with an available mark allocation.');
+      setMessage('Enter marks earned for this question using its available mark allocation.');
       return;
     }
     setSaving(true);
@@ -79,11 +83,12 @@ export const TutorTopicScoreEditor = forwardRef(({
         studentId,
         subject,
         topic,
+        topicId: topicId || normalizedQuestions[0]?.topicId || '',
         exerciseId,
         peerAssignmentId,
         questionMarks,
       }));
-      onSaved?.(result.topic, result.understandingLevel);
+      onSaved?.(result.topic, result.understandingLevel, questionMarks, result);
       const average = result.averageUnderstandingLevel ?? result.understandingLevel;
       setMessage(`Saved ${Math.round(calculatedScore * 100)}% from the question marks. 28-day topic average: ${Math.round(average * 100)}%.`);
     } catch (error) {
@@ -91,7 +96,7 @@ export const TutorTopicScoreEditor = forwardRef(({
     } finally {
       setSaving(false);
     }
-  }, [allMarksValid, calculatedScore, exerciseId, onSaved, peerAssignmentId, questionMarks, runOperation, studentId, subject, topic, tutorId]);
+  }, [allMarksValid, calculatedScore, exerciseId, normalizedQuestions, onSaved, peerAssignmentId, questionMarks, runOperation, studentId, subject, topic, topicId, tutorId]);
 
   const saveDisabled = saving || !tutorId || !allMarksValid;
   useImperativeHandle(ref, () => ({ save }), [save]);
@@ -110,7 +115,7 @@ export const TutorTopicScoreEditor = forwardRef(({
       <div className={compact ? 'space-y-2' : 'space-y-2'}>
         {normalizedQuestions.map((question, index) => (
           <div key={`${question.questionReference}-${index}`} className={compact ? 'flex flex-wrap items-center gap-2' : 'grid gap-2 rounded-md border border-slate-700/70 bg-slate-950/60 p-3 sm:grid-cols-[1fr_10rem] sm:items-end'}>
-            <p className={compact ? 'min-w-16 text-xs font-medium text-slate-600' : 'text-sm font-medium text-slate-200'}>{question.questionReference}{question.pageNumber > 0 ? ` · page ${question.pageNumber}` : ''}</p>
+            {!hideQuestionLabel ? <p className={compact ? 'min-w-16 text-xs font-medium text-slate-600' : 'text-sm font-medium text-slate-200'}>{question.questionReference}{question.pageNumber > 0 ? ` · page ${question.pageNumber}` : ''}</p> : null}
             <label className={compact ? 'flex items-center gap-2 text-xs font-semibold text-slate-600' : 'grid gap-1 text-xs font-semibold text-slate-300'}>
               {!compact ? 'Marks earned' : null}
               <span className="inline-flex items-center gap-2">

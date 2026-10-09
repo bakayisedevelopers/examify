@@ -3,13 +3,14 @@ import { CalendarDays, FileText, Lock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { SubmissionUpload } from './SubmissionUpload';
 import { ExerciseStatusBadges } from './ExerciseStatusBadges';
-import { deleteExerciseSubmissionFiles, uploadSubmissionImages, uploadTutorMarkedWork } from '../../services/storageService';
-import { getQuestionPapersByIds, saveTutorMarkedExercise } from '../../services/firestoreService';
+import { deleteExerciseSubmissionFiles, uploadPeerReviewImage, uploadSubmissionImages, uploadTutorMarkedWork } from '../../services/storageService';
+import { completePeerMarkingAssignment, getQuestionPapersByIds, saveTutorMarkedExercise } from '../../services/firestoreService';
 import { MarkingCanvas as ImageEditor } from '../canvas/pictureEditorCanvas';
 import { ImagePageViewer } from '../common/ImagePageViewer';
 import { ExerciseTopicScoresTable } from './ExerciseTopicScoresTable';
 import { OperationStatusOverlay } from '../common/OperationStatusOverlay';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
+import { getQuestionPaperPath } from '../../utils/exerciseTopicRows';
 
 const imagePages = (images, fallbackUrl, fallbackName) => Array.isArray(images) && images.length
   ? images
@@ -24,6 +25,8 @@ export const ExerciseCard = ({
   topicScores = {},
   scoreEntries = [],
   completedMarkingAssignments = [],
+  assignedMarkingAssignment = null,
+  onPeerMarkingCompleted,
   onTopicScoreSaved,
   showQuestionLinks = false,
   viewerRole = 'student',
@@ -44,6 +47,7 @@ export const ExerciseCard = ({
   const [studentSubmissionUrl, setStudentSubmissionUrl] = useState(exercise.submittedImageUrl ?? '');
   const [studentSubmissionFileName, setStudentSubmissionFileName] = useState(exercise.submittedFileName ?? '');
   const [isTutorMarking, setIsTutorMarking] = useState(false);
+  const [isStudentMarking, setIsStudentMarking] = useState(false);
   const [markStatus, setMarkStatus] = useState('');
   const [openViewer, setOpenViewer] = useState('');
   const { operationStatus, runOperation, closeOperationStatus } = useOperationStatus();
@@ -53,16 +57,15 @@ export const ExerciseCard = ({
     setStudentSubmissionImages(imagePages(exercise.submittedImages, exercise.submittedImageUrl, exercise.submittedFileName));
     setStudentSubmissionUrl(exercise.submittedImageUrl ?? '');
     setStudentSubmissionFileName(exercise.submittedFileName ?? '');
+    setIsStudentMarking(false);
     setOpenViewer('');
   }, [exercise.id, exercise.submittedImageUrl, exercise.submittedFileName, exercise.submittedImages, exercise.tutorMarkedFileName, exercise.tutorMarkedImageUrl, exercise.tutorMarkedImages]);
 
   const handleOpenPapers = async (targetExercise = exercise) => {
     const firstLink = Array.isArray(targetExercise?.questionLinks) ? targetExercise.questionLinks[0] : null;
-    if (firstLink?.paperId) {
-      const page = Math.max(1, Number(firstLink.pageNumber ?? 1) || 1);
-      const params = new URLSearchParams({ page: String(page) });
-      if (firstLink.questionReference) params.set('question', firstLink.questionReference);
-      navigate(`/${viewerRole}/papers/${firstLink.paperId}?${params.toString()}`);
+    const questionPath = getQuestionPaperPath(firstLink, viewerRole);
+    if (questionPath) {
+      navigate(questionPath);
       return;
     }
 
@@ -116,8 +119,47 @@ export const ExerciseCard = ({
     return result;
   });
 
+  const handleStudentPeerMarkingSubmit = async (files) => runOperation({
+    operationName: 'Submitting peer marking',
+    successMessage: 'Your marked pages were uploaded and the marking submission was saved.',
+    failureMessage: 'Could not submit peer marking.',
+  }, async () => {
+    const assignment = assignedMarkingAssignment;
+    if (!assignment || assignment.status !== 'assigned' || !assignment.assignmentPath
+      || !assignment.reviewerExerciseId || !assignment.reviewerSubjectInstanceId) {
+      throw new Error('This peer-marking assignment is no longer available. Refresh the exercise and try again.');
+    }
+    const reviewImages = await Promise.all(files.map(async (file, index) => {
+      const reviewFileName = (file.name || assignment.submittedFileName || 'submission.png')
+        .replace(/\.[^/.]+$/, `-peer-review-${index + 1}.png`);
+      const renamedFile = new File([file], reviewFileName, { type: file.type || 'image/png' });
+      const upload = await uploadPeerReviewImage({
+        file: renamedFile,
+        studentId,
+        exerciseId: assignment.reviewerExerciseId,
+        subjectInstanceId: assignment.reviewerSubjectInstanceId,
+      });
+      return { ...upload, pageNumber: index + 1 };
+    }));
+    await completePeerMarkingAssignment({
+      assignmentId: assignment.id,
+      assignmentPath: assignment.assignmentPath,
+      reviewerId: studentId,
+      reviewImages,
+    });
+    setIsStudentMarking(false);
+    onPeerMarkingCompleted?.({ assignment, reviewImages });
+    return reviewImages;
+  });
+
   const hasMarkingImages = peerMarkingImages.length || peerMarkedImages.length || markedImages.length;
   const hasSubmittedImages = studentSubmissionImages.length > 0;
+  const assignedWorkImages = assignedMarkingAssignment?.submittedImages?.length
+    ? assignedMarkingAssignment.submittedImages
+    : [assignedMarkingAssignment?.submittedImageUrl].filter(Boolean);
+  const hasAssignedWorkToMark = assignedMarkingAssignment?.status === 'assigned'
+    && hasSubmittedImages
+    && assignedWorkImages.length > 0;
   const canTutorAct = viewerRole === 'tutor' && accessRole !== 'viewer' && !isHistorical;
   const canEditTopicScores = canTutorAct && hasSubmittedImages;
 
@@ -149,9 +191,8 @@ export const ExerciseCard = ({
             <div className="mt-3 flex flex-wrap gap-2">
               {exercise.questionLinks.map((link, index) => {
                 const page = Math.max(1, Number(link.pageNumber ?? 1) || 1);
-                const params = new URLSearchParams({ page: String(page) });
-                if (link.questionReference) params.set('question', link.questionReference);
-                return <button key={`${link.paperId}-${link.questionReference}-${index}`} type="button" onClick={() => navigate(`/${viewerRole}/papers/${link.paperId}?${params.toString()}`)} className="btn-secondary px-3 py-2 text-sm">
+                const questionPath = getQuestionPaperPath(link, viewerRole);
+                return <button key={`${link.paperId}-${link.questionReference}-${index}`} type="button" onClick={() => questionPath && navigate(questionPath)} disabled={!questionPath} className="btn-secondary px-3 py-2 text-sm">
                   {link.questionReference || `Question ${index + 1}`} • page {page}{Number(link.marks) > 0 ? ` • ${link.marks} marks` : ''}
                 </button>;
               })}
@@ -215,22 +256,39 @@ export const ExerciseCard = ({
         </section>
       ) : null}
 
-      {viewerRole === 'student' && hasMarkingImages ? (
+      {viewerRole === 'student' && (hasAssignedWorkToMark || hasMarkingImages) ? (
         <section className="space-y-4">
           <div className="rounded-2xl bg-gradient-to-r from-lime-300 via-lime-400 to-emerald-400 p-5 text-slate-950 shadow-soft sm:p-6">
             <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-950/70">Peer marking</p>
             <h2 className="mt-1 text-2xl font-extrabold tracking-tight">Work to Mark</h2>
-            <p className="mt-2 max-w-2xl text-sm text-emerald-950/80">Open completed marking work and feedback for this exercise.</p>
+            <p className="mt-2 max-w-2xl text-sm text-emerald-950/80">{hasAssignedWorkToMark ? 'Mark the work assigned for this exercise.' : 'Open completed marking work and feedback for this exercise.'}</p>
           </div>
           <div className="panel space-y-4 p-5 sm:p-6">
-          <button type="button" className="btn-secondary px-3 py-2 text-sm" onClick={() => setOpenViewer((current) => current === 'marking' ? '' : 'marking')}>
-            {openViewer === 'marking' ? 'Close Marking' : 'Open Marking'}
-          </button>
-          {openViewer === 'marking' ? <div className="grid gap-5 lg:grid-cols-2">
+          {hasAssignedWorkToMark ? <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-semibold text-slate-950">{assignedMarkingAssignment.title || 'Exercise submission'}</p>
+              <p className="mt-1 text-sm text-slate-500">{assignedMarkingAssignment.subject} · {assignedMarkingAssignment.assignmentDate}</p>
+            </div>
+            <button type="button" className="btn-primary px-3 py-2 text-sm" onClick={() => setIsStudentMarking(true)}>
+              {isStudentMarking ? 'Marking open' : 'Open Marking'}
+            </button>
+          </div> : null}
+          {isStudentMarking && hasAssignedWorkToMark ? <ImageEditor
+            imageUrls={assignedWorkImages}
+            onSave={handleStudentPeerMarkingSubmit}
+            onCancel={() => setIsStudentMarking(false)}
+            saveLabel="Submit peer marking"
+          /> : null}
+          {hasMarkingImages ? <>
+            <button type="button" className="btn-secondary px-3 py-2 text-sm" onClick={() => setOpenViewer((current) => current === 'marking' ? '' : 'marking')}>
+              {openViewer === 'marking' ? 'Close completed work' : 'View completed marking'}
+            </button>
+            {openViewer === 'marking' ? <div className="grid gap-5 lg:grid-cols-2">
             {peerMarkingImages.length ? <ImagePageViewer images={peerMarkingImages} title="Your marking of another learner's work" alt="Peer marking you submitted" /> : null}
             {markedImages.length ? <ImagePageViewer images={markedImages} title="Tutor-marked work" alt="Tutor-marked version of your exercise work" /> : null}
             {peerMarkedImages.length ? <ImagePageViewer images={peerMarkedImages} title="Peer-marked work on your submission" alt="Peer-marked version of your exercise work" /> : null}
           </div> : null}
+          </> : null}
           </div>
         </section>
       ) : null}

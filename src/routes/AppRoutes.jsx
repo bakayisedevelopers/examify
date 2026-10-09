@@ -24,6 +24,7 @@ const TutorDashboardPage = lazyNamed(() => import('../pages/tutor/TutorDashboard
 const TutorStudentsPage = lazyNamed(() => import('../pages/tutor/TutorStudentsPage'), 'TutorStudentsPage');
 const TutorReportsPage = lazyNamed(() => import('../pages/tutor/TutorReportsPage'), 'TutorReportsPage');
 const TutorStudentDetailsPage = lazyNamed(() => import('../pages/tutor/TutorStudentDetailsPage'), 'TutorStudentDetailsPage');
+const TutorStudentHistorySubjectPage = lazyNamed(() => import('../pages/tutor/TutorStudentHistorySubjectPage'), 'TutorStudentHistorySubjectPage');
 const TutorExercisesPage = lazyNamed(() => import('../pages/tutor/TutorExercisesPage'), 'TutorExercisesPage');
 const TutorExerciseDetailsPage = lazyNamed(() => import('../pages/tutor/TutorExerciseDetailsPage'), 'TutorExerciseDetailsPage');
 const TutorLessonsPage = lazyNamed(() => import('../pages/tutor/TutorLessonsPage'), 'TutorLessonsPage');
@@ -104,6 +105,7 @@ export const AppRoutes = () => {
       <Route path="/tutor" element={<TutorDashboardPage />} />
       <Route path="/tutor/students" element={<TutorStudentsPage />} />
       <Route path="/tutor/students/:studentId" element={<TutorStudentDetailsPage />} />
+      <Route path="/tutor/students/:studentId/history/:periodId" element={<TutorStudentHistorySubjectPage />} />
       <Route path="/tutor/exercises" element={<TutorExercisesPage />} />
       <Route path="/tutor/exercises/:exerciseId" element={<TutorExerciseDetailsPage />} />
       <Route path="/tutor/lessons" element={<TutorLessonsPage />} />
@@ -126,6 +128,7 @@ export const AppRoutes = () => {
       <Route path="/teacher" element={<TutorDashboardPage />} />
       <Route path="/teacher/students" element={<TutorStudentsPage />} />
       <Route path="/teacher/students/:studentId" element={<TutorStudentDetailsPage />} />
+      <Route path="/teacher/students/:studentId/history/:periodId" element={<TutorStudentHistorySubjectPage />} />
       <Route path="/teacher/exercises" element={<TutorExercisesPage />} />
       <Route path="/teacher/exercises/:exerciseId" element={<TutorExerciseDetailsPage />} />
       <Route path="/teacher/lessons" element={<TutorLessonsPage />} />

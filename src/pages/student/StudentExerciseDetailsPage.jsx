@@ -4,9 +4,17 @@ import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { ExerciseCard } from '../../components/dashboard/ExerciseCard';
 import { useAuth } from '../../hooks/useAuth';
-import { getCompletedPeerMarkingAssignmentsForStudent, getExerciseAssignmentById, getStudentEntitlementState, getTopicUnderstandingQuestionScores } from '../../services/firestoreService';
+import { getCompletedPeerMarkingAssignmentsForStudent, getExerciseAssignmentById, getStudentEntitlementState, getTopicUnderstandingQuestionScores, subscribePeerMarkingAssignmentsForStudent } from '../../services/firestoreService';
 import { getExerciseAvailability } from '../../utils/exerciseRules';
-import { getExerciseTopicNames, getPeerMarkingTopicNames, uniqueTopicNames } from '../../utils/exerciseTopicRows';
+import { getExerciseTopicNames, getPeerMarkingTopicNames, getQuestionTopicIds, uniqueTopicNames } from '../../utils/exerciseTopicRows';
+
+const assignmentBelongsToExercise = (markingAssignment, exercise) => {
+  if (!markingAssignment || !exercise) return false;
+  const matchesPath = Boolean(exercise.documentPath && markingAssignment.reviewerExercisePath === exercise.documentPath);
+  const matchesIds = markingAssignment.reviewerExerciseId === exercise.id
+    && markingAssignment.reviewerSubjectInstanceId === exercise.subjectInstanceId;
+  return matchesPath || matchesIds;
+};
 
 export const StudentExerciseDetailsPage = () => {
   const { exerciseId } = useParams();
@@ -18,11 +26,13 @@ export const StudentExerciseDetailsPage = () => {
   const [status, setStatus] = useState('Loading exercise...');
   const [isLoading, setIsLoading] = useState(true);
   const [completedMarkingAssignments, setCompletedMarkingAssignments] = useState([]);
+  const [assignedMarkingAssignment, setAssignedMarkingAssignment] = useState(null);
   const [scoreEntries, setScoreEntries] = useState([]);
 
   useEffect(() => {
     let active = true;
     setIsLoading(true);
+    setAssignedMarkingAssignment(null);
     const load = async () => {
       try {
         const assignment = await getExerciseAssignmentById(exerciseId, { studentId: profile?.uid, subjectInstanceId });
@@ -32,12 +42,13 @@ export const StudentExerciseDetailsPage = () => {
           setStatus('Exercise not found.');
           return;
         }
-        const [access, markingAssignments] = await Promise.all([
+        const [access, allMarkingAssignments] = await Promise.all([
           getStudentEntitlementState(profile, assignment.subject, assignment.subjectInstanceId),
           getCompletedPeerMarkingAssignmentsForStudent(profile?.uid, assignment.subject).catch(() => []),
         ]);
         if (!active) return;
         setPaymentLocked(!access.paymentCompleted);
+        const markingAssignments = allMarkingAssignments.filter((item) => assignmentBelongsToExercise(item, assignment));
         const topicNames = uniqueTopicNames([
           ...getExerciseTopicNames(assignment),
           ...markingAssignments.flatMap(getPeerMarkingTopicNames),
@@ -46,6 +57,10 @@ export const StudentExerciseDetailsPage = () => {
           studentId: assignment.studentId || profile?.uid,
           subjectInstanceId: assignment.subjectInstanceId,
           topics: topicNames,
+          topicIds: [...new Set([
+            ...getQuestionTopicIds(assignment),
+            ...markingAssignments.flatMap(getQuestionTopicIds),
+          ])],
           sourceIds: [assignment.id, ...markingAssignments.map((item) => item.id)],
         }).catch(() => []);
         if (!active) return;
@@ -59,7 +74,41 @@ export const StudentExerciseDetailsPage = () => {
     };
     load().finally(() => { if (active) setIsLoading(false); });
     return () => { active = false; };
-  }, [exerciseId, profile?.uid, subjectInstanceId]);
+  }, [exerciseId, profile, subjectInstanceId]);
+
+  useEffect(() => {
+    if (!profile?.uid || !exercise) {
+      setAssignedMarkingAssignment(null);
+      return undefined;
+    }
+    return subscribePeerMarkingAssignmentsForStudent(profile.uid, (assignments) => {
+      const matchingAssignment = assignments.find((assignment) => assignment.status === 'assigned'
+        && assignment.reviewerId === profile.uid
+        && assignmentBelongsToExercise(assignment, exercise)) ?? null;
+      setAssignedMarkingAssignment(matchingAssignment);
+    });
+  }, [exercise, profile?.uid]);
+
+  const handlePeerMarkingCompleted = ({ assignment, reviewImages }) => {
+    setAssignedMarkingAssignment(null);
+    const completedAssignment = {
+      ...assignment,
+      status: 'completed',
+      reviewImages,
+      reviewImageUrl: reviewImages[0]?.url || '',
+    };
+    setCompletedMarkingAssignments((current) => [
+      completedAssignment,
+      ...current.filter((item) => item.assignmentPath !== assignment.assignmentPath),
+    ]);
+    setExercise((current) => current ? {
+      ...current,
+      peerMarkingImages: reviewImages,
+      peerMarkingImageUrl: reviewImages[0]?.url || '',
+      peerMarkingAssignmentId: assignment.id,
+      peerMarkingStatus: 'completed',
+    } : current);
+  };
 
   const availability = exercise ? getExerciseAvailability(exercise.assignmentDate, Boolean(exercise.submittedImageUrl || exercise.submitted === 'Yes')) : null;
 
@@ -77,6 +126,8 @@ export const StudentExerciseDetailsPage = () => {
             studentId={profile?.uid}
             scoreEntries={scoreEntries}
             completedMarkingAssignments={completedMarkingAssignments}
+            assignedMarkingAssignment={assignedMarkingAssignment}
+            onPeerMarkingCompleted={handlePeerMarkingCompleted}
             showQuestionLinks
           />
         </div>

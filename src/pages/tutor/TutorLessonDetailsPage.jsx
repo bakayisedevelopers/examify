@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { OperationStatusOverlay } from '../../components/common/OperationStatusOverlay';
@@ -67,7 +67,11 @@ export const TutorLessonDetailsPage = () => {
   const isNew = lessonId === 'new';
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { role, basePath } = useEffectiveRole();
+  const historyPeriodId = searchParams.get('period');
+  const historyStudentId = searchParams.get('studentId');
+  const historySubjectInstanceId = searchParams.get('subjectInstanceId');
   const { operationStatus, runOperation, closeOperationStatus } = useOperationStatus();
   const [contexts, setContexts] = useState([]);
   const [contextsLoaded, setContextsLoaded] = useState(false);
@@ -122,6 +126,11 @@ export const TutorLessonDetailsPage = () => {
 
   useEffect(() => {
     if (!profile?.uid) return;
+    if (historyPeriodId) {
+      setContexts([]);
+      setContextsLoaded(true);
+      return undefined;
+    }
     getTutorAssignedStudentContexts(profile.uid)
       .then((rows) => {
         setContexts(rows);
@@ -136,7 +145,7 @@ export const TutorLessonDetailsPage = () => {
         setStatusTone('error');
       })
       .finally(() => setContextsLoaded(true));
-  }, [profile?.uid]);
+  }, [historyPeriodId, profile?.uid]);
 
   useEffect(() => {
     if (!isNew || !contextsLoaded) return undefined;
@@ -178,17 +187,23 @@ export const TutorLessonDetailsPage = () => {
     let cancelled = false;
     setExistingLessonLoading(true);
     const load = async () => {
-      const lesson = await getLessonById(lessonId, { tutorId: profile.uid });
+      const lesson = await getLessonById(lessonId, historyPeriodId
+        ? { tutorId: profile.uid, studentId: historyStudentId, periodId: historyPeriodId }
+        : { tutorId: profile.uid });
       if (!lesson) throw new Error('Lesson not found.');
-      const rows = lesson.groupSessionId
+      if (historyPeriodId && (lesson.studentId !== historyStudentId
+        || (historySubjectInstanceId && lesson.subjectInstanceId !== historySubjectInstanceId))) {
+        throw new Error('This lesson is not part of the selected subject history.');
+      }
+      const rows = !historyPeriodId && lesson.groupSessionId
         ? await getLessonsByGroupSessionId(lesson.groupSessionId, profile.uid)
         : [lesson];
-      const accessibleRows = rows.filter((row) => contexts.some((context) =>
+      const accessibleRows = historyPeriodId ? rows : rows.filter((row) => contexts.some((context) =>
         context.studentId === row.studentId
         && context.subject === (row.subject || DEFAULT_SUBJECT)
         && context.accessRole === 'co-owner'));
       if (!accessibleRows.some((row) => row.id === lessonId)) throw new Error('This lesson is not available to your account.');
-      if (accessibleRows.length !== rows.length) throw new Error('Some students in this session are no longer available under your current co-owner access. Ask an admin to review the assignments before editing the session.');
+      if (!historyPeriodId && accessibleRows.length !== rows.length) throw new Error('Some students in this session are no longer available under your current co-owner access. Ask an admin to review the assignments before editing the session.');
       if (cancelled) return;
 
       setLessonRows(accessibleRows);
@@ -214,7 +229,7 @@ export const TutorLessonDetailsPage = () => {
     load().catch((error) => { if (!cancelled) setStatus(error.message || 'Could not load the lesson.'); })
       .finally(() => { if (!cancelled) setExistingLessonLoading(false); });
     return () => { cancelled = true; };
-  }, [contexts, contextsLoaded, isNew, lessonId, profile?.uid]);
+  }, [contexts, contextsLoaded, historyPeriodId, historyStudentId, historySubjectInstanceId, isNew, lessonId, profile?.uid]);
 
   const subjectOptions = useMemo(() => [...new Set(eligibleSubjectGrades.map((pair) => pair.subject))].sort(), [eligibleSubjectGrades]);
   const gradeOptions = useMemo(() => [...new Set(eligibleSubjectGrades
@@ -227,7 +242,7 @@ export const TutorLessonDetailsPage = () => {
       && (context.grade || '') === grade
       && eligibleSubjectGrades.some((pair) => pair.subject === (context.subject || DEFAULT_SUBJECT) && pair.grade === (context.grade || '')))
     .filter((context, index, list) => list.findIndex((row) => row.studentId === context.studentId) === index), [contexts, eligibleSubjectGrades, grade, subject]);
-  const canManageExisting = isNew || (lessonRows.length > 0 && lessonRows.every((row) => contexts.some((context) =>
+  const canManageExisting = isNew || (!historyPeriodId && lessonRows.length > 0 && lessonRows.every((row) => contexts.some((context) =>
     context.studentId === row.studentId
     && context.subject === (row.subject || DEFAULT_SUBJECT)
     && context.accessRole === 'co-owner')));
@@ -269,7 +284,7 @@ export const TutorLessonDetailsPage = () => {
   }, [availableStudents.length, contexts, contextsLoaded, eligibilityError, eligibilityLoaded, getStudentLessonBlocker, grade, isNew, lessonDate, profile?.uid, selectedStudents, sessionMode, subject, subjectOptions.length, topics.length]);
 
   useEffect(() => {
-    if (!subject || !grade || !isNew && !lessonRows.length) {
+    if (historyPeriodId || !subject || !grade || !isNew && !lessonRows.length) {
       setTopicOptions(emptyTopicGroups);
       return;
     }
@@ -298,7 +313,7 @@ export const TutorLessonDetailsPage = () => {
         setStatusTone('error');
       });
     return () => { cancelled = true; };
-  }, [contexts, grade, isNew, lessonRows, subject]);
+  }, [contexts, grade, historyPeriodId, isNew, lessonRows, subject]);
 
   const handleSubjectChange = (value) => {
     setSubject(value);
@@ -525,8 +540,8 @@ export const TutorLessonDetailsPage = () => {
   const title = isNew ? (sessionMode === 'group' ? 'Schedule group lesson' : 'Schedule one-on-one lesson') : 'Log lesson';
 
   return (
-    <AppShell title={isNew ? 'Schedule lesson' : 'Lesson records'} subtitle="Plan lessons by student and log attendance, reports, and topic scores." role={role} user={profile} onLogout={logout}>
-      <Link to={`${basePath}/lessons`} className="btn-secondary hidden w-fit lg:inline-flex">Back to lessons</Link>
+    <AppShell title={isNew ? 'Schedule lesson' : historyPeriodId ? 'Historical lesson' : 'Lesson records'} subtitle="Plan lessons by student and log attendance, reports, and topic scores." role={role} user={profile} onLogout={logout}>
+      <Link to={historyPeriodId ? `${basePath}/students/${encodeURIComponent(historyStudentId || '')}/history/${encodeURIComponent(historyPeriodId)}` : `${basePath}/lessons`} className="btn-secondary hidden w-fit lg:inline-flex">{historyPeriodId ? 'Back to subject history' : 'Back to lessons'}</Link>
       {status ? <div className={`panel p-4 text-sm ${statusTone === 'error' ? 'border border-rose-200 bg-rose-50 font-medium text-rose-800' : 'text-slate-700'}`} role={statusTone === 'error' ? 'alert' : 'status'}>{status}</div> : null}
       {(!contextsLoaded || (isNew && !eligibilityLoaded) || (!isNew && existingLessonLoading)) ? <LoadingState label={isNew ? 'Loading assigned students and lesson topics…' : 'Loading lesson roster and records…'} /> : null}
 
@@ -610,7 +625,7 @@ export const TutorLessonDetailsPage = () => {
             title={`${subject} • ${grade || 'Grade not recorded'}`}
             description={`${lessonDate} • ${lessonType === 'inPerson' ? 'In-person' : 'Online (WhatsApp)'} • ${lessonRows.length} student${lessonRows.length === 1 ? '' : 's'}`}
           />
-          {!canManageExisting ? <p className="text-sm font-medium text-amber-700">This lesson is read-only because your current role is not a co-owner for every student in the session.</p> : null}
+          {!canManageExisting ? <p className="text-sm font-medium text-amber-700">{historyPeriodId ? 'Historical lesson record · read-only.' : 'This lesson is read-only because your current role is not a co-owner for every student in the session.'}</p> : null}
           {lessonRows.length && lessonRows.every((row) => row.status === 'planned') && canManageExisting ? (
             <section className="space-y-4 border-y border-slate-200 py-4">
               <div><h3 className="text-sm font-semibold text-slate-900">Lesson logistics</h3><p className="mt-1 text-xs text-slate-500">Change the session type, WhatsApp link, or venue before logging attendance.</p></div>

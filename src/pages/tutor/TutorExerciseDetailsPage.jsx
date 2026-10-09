@@ -10,7 +10,7 @@ import { deleteExerciseAssignmentForTutor, getCompletedPeerMarkingWorkForTutor, 
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
 import { getExerciseAvailability, getExerciseStatusLabels } from '../../utils/exerciseRules';
 import { useEffectiveRole } from '../../utils/effectiveRole';
-import { getExerciseTopicNames, getPeerMarkingTopicNames, uniqueTopicNames } from '../../utils/exerciseTopicRows';
+import { getExerciseTopicNames, getPeerMarkingTopicNames, getQuestionTopicIds, uniqueTopicNames } from '../../utils/exerciseTopicRows';
 
 export const TutorExerciseDetailsPage = () => {
   const { exerciseId } = useParams();
@@ -54,6 +54,7 @@ export const TutorExerciseDetailsPage = () => {
             studentId: archivedExercise.studentId || result.studentId,
             subjectInstanceId: archivedExercise.subjectInstanceId || result.subjectInstanceId,
             topics: archivedTopics,
+            topicIds: getQuestionTopicIds(archivedExercise),
             sourceIds: [archivedExercise.id],
           }).catch(() => []));
           setAccessRole('viewer');
@@ -87,6 +88,10 @@ export const TutorExerciseDetailsPage = () => {
             studentId: result.studentId,
             subjectInstanceId: result.subjectInstanceId,
             topics: topicNames,
+            topicIds: [...new Set([
+              ...getQuestionTopicIds(result),
+              ...markingAssignments.flatMap(getQuestionTopicIds),
+            ])],
             sourceIds: [result.id, ...markingAssignments.map((item) => item.id)],
           }).catch(() => []));
         }

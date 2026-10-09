@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FileText, Trash2, UserPlus, X } from 'lucide-react';
+import { ChevronRight, Trash2, UserPlus, X } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { LoaderCircle } from 'lucide-react';
@@ -22,7 +22,6 @@ import {
   getTutorExercisesForAssignedStudents,
   getTutorLessonRowsForAssignedStudents,
   removeCompletedTopicFromLesson,
-  getCompletedPeerMarkingWorkForTutor,
   deleteLessonSession,
   deleteExerciseAssignmentForTutor,
   regenerateFutureUnsubmittedExercisesForTutor,
@@ -38,8 +37,6 @@ import {
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
 import { isExerciseSubmitted } from '../../services/exerciseGenerationPlan';
-import { ImagePageViewer } from '../../components/common/ImagePageViewer';
-import { TutorPeerMarkingScoreEditor } from '../../components/tutor/TutorPeerMarkingScoreEditor';
 
   const today = () => {
   const date = new Date();
@@ -48,16 +45,15 @@ import { TutorPeerMarkingScoreEditor } from '../../components/tutor/TutorPeerMar
 const emptyLessonForm = { selectedTopic: '', topicUnderstandingScores: [], topicReport: '', lessonDate: today(), lessonType: 'online', whatsappLessonLink: '', locationDetails: '' };
 const emptyTopicGroups = { extracted: [], manual: [], all: [] };
 const createLessonRequestId = () => globalThis.crypto?.randomUUID?.() ?? `lesson-log-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+const historyTimestamp = (value) => {
+  const date = value?.toDate?.() ?? (value instanceof Date ? value : value ? new Date(value) : null);
+  return date && !Number.isNaN(date.getTime()) ? date.getTime() : 0;
+};
 const hasValidScores = (entries = []) =>
   entries.length > 0 && entries.every((entry) => {
     const score = Number(entry.understandingLevel);
     return Number.isFinite(score) && score >= 0 && score <= 10;
   });
-const understandingScorePercent = (value) => {
-  const score = Number(value);
-  return Number.isFinite(score) ? Math.round(score > 1 ? score : score * 100) : 0;
-};
-
 const loadTutorStudentDetailCore = async ({ tutorId, studentId, periodId, subject, historyRows, currentContexts }) => {
   if (periodId) {
     const archivedContext = historyRows.find((item) => item.assignmentPeriodId === periodId);
@@ -65,7 +61,6 @@ const loadTutorStudentDetailCore = async ({ tutorId, studentId, periodId, subjec
       return {
         kind: 'unavailable-history',
         historyRows,
-        currentAssignmentSubjects: [...new Set(currentContexts.map((item) => item.subject).filter(Boolean))],
         status: 'This assignment history is not available to your account.',
       };
     }
@@ -73,12 +68,10 @@ const loadTutorStudentDetailCore = async ({ tutorId, studentId, periodId, subjec
     return {
       kind: 'historical',
       historyRows,
-      currentAssignmentSubjects: [...new Set(currentContexts.map((item) => item.subject).filter(Boolean))],
       student: { ...archivedContext, accessRole: 'viewer', historicalAccessRole: archivedContext.accessRole },
       studentSubjects: [archivedContext.subject],
       exercises: archivedData.exercises,
       lessons: archivedData.lessons,
-      peerMarkedWork: archivedData.peerMarkedWork,
       status: 'Historical assignment records are read-only.',
     };
   }
@@ -93,16 +86,14 @@ const loadTutorStudentDetailCore = async ({ tutorId, studentId, periodId, subjec
       kind: 'unavailable-current',
       historyRows,
       studentSubjects: accessibleSubjects,
-      currentAssignmentSubjects: accessibleSubjects,
       status: historyRows.length ? 'No current access. Previous assignment records remain available below.' : 'You do not have access to this student.',
     };
   }
 
   const studentContext = currentContexts.find((item) => item.studentId === studentId && item.subject === activeSubject) ?? null;
-  const [exerciseRows, subjectLessons, peerMarkedRows] = await Promise.all([
+  const [exerciseRows, subjectLessons] = await Promise.all([
     getTutorExercisesForAssignedStudents(tutorId, [studentContext]),
     getTutorLessonRowsForAssignedStudents(tutorId, [studentContext]),
-    getCompletedPeerMarkingWorkForTutor({ tutorId, studentId, subject: activeSubject }),
   ]);
 
   return {
@@ -111,11 +102,9 @@ const loadTutorStudentDetailCore = async ({ tutorId, studentId, periodId, subjec
     student: studentContext,
     studentContext,
     studentSubjects: accessibleSubjects,
-    currentAssignmentSubjects: accessibleSubjects,
     activeSubject,
     exercises: exerciseRows.filter((item) => item.studentId === studentId && item.subject === activeSubject),
     lessons: subjectLessons.filter((item) => item.studentId === studentId && item.subject === activeSubject),
-    peerMarkedWork: peerMarkedRows,
     status: '',
   };
 };
@@ -165,10 +154,8 @@ export const TutorStudentDetailsPage = () => {
   const [lessonEligibleSubjects, setLessonEligibleSubjects] = useState([]);
   const [lessonEligibilityLoading, setLessonEligibilityLoading] = useState(false);
   const [lessonEligibilityError, setLessonEligibilityError] = useState('');
-  const [currentAssignmentSubjects, setCurrentAssignmentSubjects] = useState([]);
   const [assignmentHistory, setAssignmentHistory] = useState([]);
   const [exercises, setExercises] = useState([]);
-  const [peerMarkedWork, setPeerMarkedWork] = useState([]);
   const [lessons, setLessons] = useState([]);
   const [topicOptions, setTopicOptions] = useState(emptyTopicGroups);
   const [lessonForm, setLessonForm] = useState(emptyLessonForm);
@@ -299,14 +286,12 @@ export const TutorStudentDetailsPage = () => {
     setAssignmentHistory(coreData.historyRows);
     setStudent(coreData.student ?? null);
     setStudentSubjects(coreData.studentSubjects ?? []);
-    setCurrentAssignmentSubjects(coreData.currentAssignmentSubjects ?? []);
     if (coreData.kind !== 'current') {
       setLessonEligibleSubjects([]);
       setLessonEligibilityError('');
     }
     setExercises(coreData.exercises ?? []);
     setLessons(coreData.lessons ?? []);
-    setPeerMarkedWork(coreData.peerMarkedWork ?? []);
     setLessonEligibilityLoading(false);
     if (coreData.kind === 'historical') {
       setStaffAccess([]);
@@ -352,7 +337,6 @@ export const TutorStudentDetailsPage = () => {
   };
 
   const canManage = student?.accessRole === 'co-owner';
-  const canMark = canManage || student?.accessRole === 'marker';
   const removeLessonTopic = async (lesson, topic) => {
     const operationKey = `${lesson.id}:${topic}`;
     if (!canManage || removingLessonTopicKey) return;
@@ -573,21 +557,6 @@ export const TutorStudentDetailsPage = () => {
         Historical assignment · {student.historicalAccessRole} access · read-only{student.endDateEstimated ? ' · end date estimated from legacy data' : ''}
       </div> : null}
 
-      {assignmentHistory.length ? <section className="panel space-y-3 p-4">
-        <div><h2 className="font-semibold text-slate-950">Previous access</h2><p className="text-sm text-slate-500">Ended assignments remain available as read-only records.</p></div>
-        <div className="flex flex-wrap gap-2">
-          {assignmentHistory.map((entry) => <button
-            key={entry.assignmentPeriodId}
-            type="button"
-            className={periodId === entry.assignmentPeriodId ? 'btn-primary' : 'btn-secondary'}
-            onClick={() => setSearchParams({ period: entry.assignmentPeriodId, subject: entry.subject })}
-          >
-            {entry.subject} · {entry.accessRole} · {entry.assignmentEndedAt?.toDate?.().toLocaleDateString?.() || (entry.assignmentEndedAt ? new Date(entry.assignmentEndedAt).toLocaleDateString() : 'Past access')}
-          </button>)}
-          {currentAssignmentSubjects.map((currentSubject) => <button key={`current-${currentSubject}`} type="button" className="btn-secondary" onClick={() => setSearchParams({ subject: currentSubject })}>Current · {currentSubject}</button>)}
-        </div>
-      </section> : null}
-
       {!student?.historicalAccessRole ? <div className="flex flex-wrap justify-center gap-2" role="tablist" aria-label="Student subjects">
         {studentSubjects.map((studentSubject) => (
           <button
@@ -754,46 +723,31 @@ export const TutorStudentDetailsPage = () => {
           ))}{!detailListsLoading && !studentDetailsQuery.isError && !exercises.length ? <p className="text-sm text-slate-400">No exercises yet.</p> : null}</div>
       </section>
 
-      <section className="space-y-4">
-        <SectionHeader eyebrow="Peer marking" title="Work this student marked" description="Review the original student work, your student's whiteboard annotations, and the exact paper question they marked." />
-        {peerMarkedWork.map((assignment) => (
-          <article key={assignment.id} className="panel space-y-4 p-5">
-            <div>
-              <p className="font-semibold text-slate-900">{assignment.title || 'Peer-marked exercise'} · {assignment.assignmentDate}</p>
-              <p className="mt-1 text-sm text-slate-500">{assignment.topic || subject} · {assignment.tutorReviewStatus === 'reviewed' ? 'Tutor reviewed' : 'Awaiting tutor review'}</p>
-              <p className="mt-1 text-xs text-slate-500">Marked exercise ID: {assignment.markedExerciseId || assignment.exerciseId} · Student exercise ID: {assignment.reviewerExerciseId || 'Not recorded'}</p>
-            </div>
-            {Array.isArray(assignment.questionLinks) && assignment.questionLinks.length ? (
-              <div className="flex flex-wrap gap-2">
-                {assignment.questionLinks.map((link, index) => (
-                  <Link key={`${link.paperId}-${link.questionReference}-${index}`} className="btn-secondary inline-flex items-center gap-2" to={`/tutor/papers/${link.paperId}?page=${Math.max(1, Number(link.pageNumber) || 1)}&question=${encodeURIComponent(link.questionReference || '')}`}>
-                    <FileText className="h-4 w-4" aria-hidden="true" />
-                    {link.questionReference ? `Q${link.questionReference}` : 'Question'} · page {link.pageNumber || 1}{Number(link.marks) > 0 ? ` · ${link.marks} marks` : ''}
-                  </Link>
-                ))}
-              </div>
-            ) : assignment.paperIds?.[0] ? (
-              <Link className="btn-secondary inline-flex items-center gap-2" to={`/tutor/papers/${assignment.paperIds[0]}?page=1`}><FileText className="h-4 w-4" aria-hidden="true" />Open question paper</Link>
-            ) : null}
-            {canMark ? <TutorPeerMarkingScoreEditor
-              tutorId={profile.uid}
-              studentId={studentId}
-              assignment={assignment}
-              onSaved={async (result) => {
-                const summary = (result.topicScores ?? []).map((entry) => `${entry.topic}: ${understandingScorePercent(entry.averageUnderstandingLevel ?? entry.understandingLevel)}%`).join(' · ');
-                setStatus(`Peer marking reviewed. ${summary}`);
-                await load();
-              }}
-            /> : null}
-            <div className="grid gap-5 lg:grid-cols-2">
-              <ImagePageViewer images={assignment.submittedImages?.length ? assignment.submittedImages : [assignment.submittedImageUrl].filter(Boolean)} title="Other student's original work" alt="Unmarked work the student reviewed" />
-              <ImagePageViewer images={assignment.reviewImages?.length ? assignment.reviewImages : [assignment.reviewImageUrl].filter(Boolean)} title="Student's peer marking" alt="Student's marked version of another learner's work" />
-              <ImagePageViewer images={assignment.targetExercise?.tutorMarkedImages?.length ? assignment.targetExercise.tutorMarkedImages : [assignment.targetExercise?.tutorMarkedImageUrl].filter(Boolean)} title="Tutor-marked work" alt="Tutor-marked image for the reviewed exercise" />
-            </div>
-          </article>
-        ))}
-        {!detailListsLoading && !studentDetailsQuery.isError && !peerMarkedWork.length ? <div className="panel p-5 text-sm text-slate-500">No completed peer-marking work is available yet.</div> : null}
-      </section>
+      {assignmentHistory.length ? <details className="panel group p-4 sm:p-5">
+        <summary className="cursor-pointer list-none rounded-xl text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-lime-400">
+          <span className="flex flex-wrap items-center justify-between gap-3">
+            <span><span className="block font-semibold text-slate-950">Historical subjects</span><span className="mt-1 block text-sm text-slate-500">Open a past subject episode to view its exercises and lessons.</span></span>
+            <span className="rounded-full bg-lime-100 px-3 py-1 text-xs font-semibold text-lime-900">{assignmentHistory.length} record{assignmentHistory.length === 1 ? '' : 's'}</span>
+          </span>
+        </summary>
+        <div className="mt-4 divide-y divide-slate-200 rounded-xl border border-slate-200">
+          {[...assignmentHistory]
+            .sort((left, right) => historyTimestamp(right.assignmentEndedAt) - historyTimestamp(left.assignmentEndedAt))
+            .map((entry) => {
+              const endedAt = entry.assignmentEndedAt?.toDate?.() ?? (entry.assignmentEndedAt ? new Date(entry.assignmentEndedAt) : null);
+              const endedLabel = endedAt && !Number.isNaN(endedAt.getTime()) ? endedAt.toLocaleDateString() : 'Past access';
+              return <Link
+                key={entry.assignmentPeriodId}
+                to={`${basePath}/students/${studentId}/history/${encodeURIComponent(entry.assignmentPeriodId)}`}
+                className="flex flex-wrap items-center justify-between gap-3 p-4 transition hover:bg-lime-50 focus-visible:bg-lime-50"
+              >
+                <span><span className="block font-semibold text-slate-900">{entry.subject || 'Historical subject'}</span><span className="mt-1 block text-xs text-slate-500">Access ended {endedLabel} · {entry.accessRole}</span></span>
+                <span className="inline-flex items-center gap-1 text-sm font-semibold text-lime-800">View subject history <ChevronRight className="h-4 w-4" aria-hidden="true" /></span>
+              </Link>;
+            })}
+        </div>
+      </details> : null}
+
       <OperationStatusOverlay
         state={operationStatus?.state}
         operationName={operationStatus?.operationName}

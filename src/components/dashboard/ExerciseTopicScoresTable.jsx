@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { TutorPeerMarkingScoreEditor } from '../tutor/TutorPeerMarkingScoreEditor';
+import { useNavigate } from 'react-router-dom';
 import { TutorTopicScoreEditor } from '../tutor/TutorTopicScoreEditor';
-import { getExerciseTopicNames, getPeerMarkingTopicNames, getTopicQuestionLinks } from '../../utils/exerciseTopicRows';
+import { getTopicQuestionLinks, getQuestionPaperPath } from '../../utils/exerciseTopicRows';
 
 const normalized = (value) => String(value ?? '').trim().toLocaleLowerCase();
 const questionMarks = (question) => Number(question?.marks ?? question?.totalMarks) || 0;
+const scoreKey = (question) => `${String(question?.paperId ?? '').trim()}::${normalized(question?.questionReference)}`;
 
 const latestScoreFor = (entries, row, question) => entries
   .filter((entry) => {
@@ -21,59 +22,92 @@ const latestScoreFor = (entries, row, question) => entries
     return timestamp(right.createdAt) - timestamp(left.createdAt);
   })[0] ?? null;
 
-const scoreQuestionsForTopic = (questionLinks = [], topic) => questionLinks
-  .filter((question) => normalized(question.topic) === normalized(topic))
-  .map((question, index) => ({
-    ...question,
-    questionReference: String(question.questionReference || `Question ${index + 1}`),
-    totalMarks: questionMarks(question),
-  }));
+const questionRowsFor = (source = {}) => {
+  const linkedQuestions = getTopicQuestionLinks(source.questionLinks, source.topicBreakdown);
+  const storedQuestions = Array.isArray(source.questions) ? source.questions : [];
+  const questionReferences = Array.isArray(source.questionReferences) ? source.questionReferences : [];
+  const questions = storedQuestions.length
+    ? storedQuestions.map((question, index) => {
+      const normalizedQuestion = typeof question === 'object' && question !== null
+        ? question
+        : { questionReference: question };
+      const reference = String(normalizedQuestion.questionReference || normalizedQuestion.reference || questionReferences[index] || '').trim().toLocaleLowerCase();
+      const paperId = String(normalizedQuestion.paperId || '').trim();
+      const matchingLink = linkedQuestions.find((link) =>
+        String(link.questionReference || link.reference || '').trim().toLocaleLowerCase() === reference
+        && (!paperId || !link.paperId || paperId === String(link.paperId).trim()));
+      return {
+        ...matchingLink,
+        ...normalizedQuestion,
+        questionReference: normalizedQuestion.questionReference || normalizedQuestion.reference || questionReferences[index],
+        paperId: normalizedQuestion.paperId || matchingLink?.paperId || '',
+        pageNumber: normalizedQuestion.pageNumber ?? normalizedQuestion.page ?? matchingLink?.pageNumber ?? 0,
+        marks: normalizedQuestion.marks ?? normalizedQuestion.totalMarks ?? matchingLink?.marks ?? 0,
+        topic: normalizedQuestion.topic || matchingLink?.topic || '',
+        topicId: normalizedQuestion.topicId || normalizedQuestion.canonicalTopicKey || matchingLink?.topicId || '',
+      };
+    })
+    : linkedQuestions.length
+      ? linkedQuestions
+      : questionReferences.map((questionReference) => ({ questionReference }));
+  const fallbackTopic = (Array.isArray(source.topics) ? source.topics[0] : '') || source.topic || '';
 
-const ExerciseScore = ({ row, scoreEntries, questions }) => (
-  <div className="space-y-1.5">
-    {questions.length ? questions.map((question, index) => {
-      const saved = latestScoreFor(scoreEntries, row, question);
-      const total = question.totalMarks;
-      return (
-        <div key={`${question.questionReference}-${index}`} className="flex flex-wrap items-baseline gap-x-2 text-sm">
-          {questions.length > 1 ? <span className="text-xs text-slate-500">{question.questionReference}</span> : null}
-          <span className="font-semibold text-slate-800">{saved ? saved.earnedMarks : '—'} / {total > 0 ? total : '—'}</span>
-        </div>
-      );
-    }) : <span className="text-sm font-semibold text-slate-800">— / —</span>}
-  </div>
-);
+  return questions.map((question, index) => {
+    const paperIds = Array.isArray(source.paperIds) ? source.paperIds : [];
+    const paperId = String(question.paperId || (paperIds.length === 1 ? paperIds[0] : '') || '');
+    return {
+      ...question,
+      paperId,
+      questionReference: String(question.questionReference || question.reference || `Question ${index + 1}`),
+      topic: String(question.topic || fallbackTopic || '').trim(),
+      topicId: String(question.topicId || question.canonicalTopicKey || ''),
+      totalMarks: questionMarks(question),
+      questionIndex: index,
+    };
+  });
+};
 
-const TutorExerciseScoreCells = ({ tutorId, studentId, exercise, row, topicScores, scoreEntries, onTopicScoreSaved }) => {
+const TutorQuestionScoreCells = ({ tutorId, studentId, exercise, row, topicScores, scoreEntries, onSaved }) => {
   const editorRef = useRef(null);
   const [actionState, setActionState] = useState({ disabled: true, saving: false });
   const updateActionState = useCallback((nextState) => setActionState(nextState), []);
-  const savedScores = row.questions.map((question) => latestScoreFor(scoreEntries, row, question)).filter(Boolean);
+  const saved = latestScoreFor(scoreEntries, row, row.question);
 
   return <>
-    <td className="min-w-64 px-4 py-3">
+    <td className="min-w-40 px-4 py-3 text-center">
       <TutorTopicScoreEditor
         ref={editorRef}
         compact
+        hideQuestionLabel
         hideSaveButton
         onActionStateChange={updateActionState}
         tutorId={tutorId}
         studentId={studentId}
         subject={exercise.subject}
         topic={row.topic}
-        exerciseId={exercise.id}
-        questions={row.questions}
-        initialQuestionScores={savedScores}
+        topicId={row.question.topicId}
+        exerciseId={row.activity === 'Exercise' ? row.sourceId : undefined}
+        peerAssignmentId={row.activity === 'Marking' ? row.sourceId : undefined}
+        questions={[row.question]}
+        initialQuestionScores={saved ? [saved] : []}
         value={topicScores[row.topic]}
-        onSaved={onTopicScoreSaved}
+        onSaved={(topic, average, marks) => onSaved(row, topic, average, marks)}
       />
     </td>
-    <td className="min-w-24 px-4 py-3">
-      <button type="button" className="btn-primary px-3 py-1.5 text-xs" onClick={() => editorRef.current?.save()} disabled={actionState.disabled}>
-        {actionState.saving ? 'Saving...' : 'Save'}
-      </button>
+    <td className="whitespace-nowrap px-3 py-3 text-center">
+      {row.topic && row.topic !== '—' && row.question.totalMarks > 0 ? (
+        <button type="button" className="btn-primary px-3 py-1.5 text-xs" onClick={() => editorRef.current?.save()} disabled={actionState.disabled}>
+          {actionState.saving ? 'Saving…' : 'Save'}
+        </button>
+      ) : <span className="text-sm text-slate-400">—</span>}
     </td>
   </>;
+};
+
+const ReadOnlyQuestionScore = ({ row, scoreEntries }) => {
+  const saved = latestScoreFor(scoreEntries, row, row.question);
+  const total = row.question.totalMarks;
+  return <span className="font-semibold text-slate-800">{saved ? saved.earnedMarks : '—'} / {total > 0 ? total : '—'}</span>;
 };
 
 export const ExerciseTopicScoresTable = ({
@@ -88,120 +122,113 @@ export const ExerciseTopicScoresTable = ({
   canEditMarkingScores = false,
   onTopicScoreSaved,
 }) => {
+  const navigate = useNavigate();
   const [visibleScoreEntries, setVisibleScoreEntries] = useState(scoreEntries);
   useEffect(() => setVisibleScoreEntries(scoreEntries), [scoreEntries]);
 
   const rows = useMemo(() => {
-    const rawQuestionLinks = Array.isArray(exercise?.questionLinks) ? exercise.questionLinks : [];
-    const topicBreakdown = Array.isArray(exercise?.topicBreakdown) ? exercise.topicBreakdown : [];
-    const questionLinks = getTopicQuestionLinks(rawQuestionLinks, topicBreakdown);
-    const ownTopics = getExerciseTopicNames(exercise);
-    const exerciseRows = ownTopics.map((topic) => ({
-      key: `exercise:${normalized(topic)}`,
-      topic,
+    const exerciseRows = questionRowsFor(exercise).map((question) => ({
+      key: `exercise:${exercise.id}:${scoreKey(question)}:${question.questionIndex}`,
+      question,
+      topic: question.topic || '—',
       activity: 'Exercise',
       sourceId: exercise.id,
-      assignmentTopics: [topic],
-      questions: scoreQuestionsForTopic(questionLinks, topic),
     }));
 
-    const markingRows = (completedMarkingAssignments ?? []).flatMap((assignment) => {
-      const links = Array.isArray(assignment.questionLinks) ? assignment.questionLinks : [];
-      const assignmentBreakdown = Array.isArray(assignment.topicBreakdown) ? assignment.topicBreakdown : [];
-      const topicLinks = getTopicQuestionLinks(links, assignmentBreakdown);
-      const assignmentTopics = getPeerMarkingTopicNames(assignment);
-      return assignmentTopics.map((topic) => ({
-        key: `marking:${assignment.id}:${normalized(topic)}`,
-        topic,
-        activity: 'Marking',
-        sourceId: assignment.id,
-        assignment,
-        assignmentTopics,
-        questions: scoreQuestionsForTopic(topicLinks, topic),
-      }));
-    });
+    const markingRows = (completedMarkingAssignments ?? []).flatMap((assignment) => questionRowsFor(assignment).map((question) => ({
+      key: `marking:${assignment.id}:${scoreKey(question)}:${question.questionIndex}`,
+      question,
+      topic: question.topic || '—',
+      activity: 'Marking',
+      sourceId: assignment.id,
+      assignment,
+    })));
     return [...exerciseRows, ...markingRows];
   }, [exercise, completedMarkingAssignments]);
 
-  const markingAssignmentActionShown = new Set();
-  const canTutorEdit = viewerRole === 'tutor' && canEditScores;
-  const canTutorEditMarking = viewerRole === 'tutor' && canEditMarkingScores;
-  const handleMarkingScoresSaved = (assignment, result) => {
-    const savedEntries = (result.topicScores ?? []).flatMap((topicResult) => (topicResult.questionScores ?? []).map((question) => ({
-      ...question,
-      topic: topicResult.topic,
-      sourceType: 'Marking',
-      sourceId: assignment.id,
-      peerAssignmentId: assignment.id,
-      createdAt: new Date(),
-    })));
-    setVisibleScoreEntries((current) => [...current.filter((entry) => !savedEntries.some((saved) =>
-      saved.topic === entry.topic && saved.sourceId === entry.sourceId && saved.questionReference === entry.questionReference,
-    )), ...savedEntries]);
+  const handleQuestionScoreSaved = (row, topic, average, marks = []) => {
+    const mark = marks[0];
+    if (mark) {
+      const savedEntry = {
+        ...mark,
+        topic,
+        sourceType: row.activity,
+        sourceId: row.sourceId,
+        ...(row.activity === 'Exercise' ? { exerciseId: row.sourceId } : { peerAssignmentId: row.sourceId }),
+        score: Number(mark.earnedMarks) / Number(mark.totalMarks),
+        scoreScale: 'ratio-0-to-1',
+        createdAt: new Date(),
+      };
+      setVisibleScoreEntries((current) => [
+        ...current.filter((entry) => !(entry.sourceType === savedEntry.sourceType
+          && entry.sourceId === savedEntry.sourceId
+          && scoreKey(entry) === scoreKey(savedEntry))),
+        savedEntry,
+      ]);
+    }
+    onTopicScoreSaved?.(topic, average);
   };
+
+  const canTutorEditExercise = viewerRole === 'tutor' && canEditScores;
+  const canTutorEditMarking = viewerRole === 'tutor' && canEditMarkingScores;
 
   return (
     <section className="space-y-4">
       <div className="rounded-2xl bg-gradient-to-r from-lime-300 via-lime-400 to-emerald-400 p-5 text-slate-950 shadow-soft sm:p-6">
         <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-950/70">Understanding</p>
-        <h2 className="mt-1 text-2xl font-extrabold tracking-tight">Topic Scores</h2>
-        <p className="mt-2 max-w-2xl text-sm text-emerald-950/80">Question marks are grouped by topic and show whether they came from exercise work or peer marking.</p>
+        <h2 className="mt-1 text-2xl font-extrabold tracking-tight">Question Scores</h2>
+        <p className="mt-2 max-w-2xl text-sm text-emerald-950/80">Each question is listed separately, including questions that share a topic.</p>
       </div>
       <div className="panel overflow-hidden p-0">
         <div className="overflow-x-auto overscroll-x-contain">
-          <table className="min-w-[760px] w-full border-collapse text-left text-sm">
+          <table className="min-w-[720px] w-full border-collapse text-left text-sm">
             <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-600">
               <tr>
-                <th scope="col" className="px-4 py-3 font-semibold">Topic</th>
-                <th scope="col" className="px-4 py-3 font-semibold">Activity</th>
-                <th scope="col" className="px-4 py-3 font-semibold">Score</th>
-                <th scope="col" className="px-4 py-3 font-semibold">Actions</th>
+                <th scope="col" className="px-4 py-3 text-left font-semibold">Question</th>
+                <th scope="col" className="px-4 py-3 text-left font-semibold">Topic</th>
+                <th scope="col" className="px-4 py-3 text-center font-semibold">Source</th>
+                <th scope="col" className="px-4 py-3 text-center font-semibold">Score</th>
+                <th scope="col" className="w-px whitespace-nowrap px-3 py-3 text-center font-semibold">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
               {rows.map((row) => {
-                const firstMarkingRowForAssignment = row.activity === 'Marking' && !markingAssignmentActionShown.has(row.sourceId);
-                if (firstMarkingRowForAssignment) markingAssignmentActionShown.add(row.sourceId);
+                const canEdit = row.activity === 'Exercise' ? canTutorEditExercise : canTutorEditMarking;
+                const questionPath = getQuestionPaperPath(row.question, viewerRole);
                 return (
                   <tr key={row.key} className="align-top">
-                    <th scope="row" className="whitespace-normal px-4 py-4 font-semibold text-slate-900">{row.topic}</th>
-                    <td className="px-4 py-4">
+                    <th scope="row" className="whitespace-nowrap px-4 py-4 text-left font-semibold text-slate-900">
+                      {questionPath ? (
+                        <button type="button" className="font-semibold text-lime-800 underline decoration-lime-500/50 underline-offset-2 hover:text-emerald-800" onClick={() => navigate(questionPath)}>
+                          {row.question.questionReference}
+                        </button>
+                      ) : row.question.questionReference}
+                    </th>
+                    <td className="whitespace-normal px-4 py-4 text-left font-medium text-slate-800">{row.topic}</td>
+                    <td className="px-4 py-4 text-center">
                       <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${row.activity === 'Exercise' ? 'bg-lime-100 text-lime-800' : 'bg-emerald-100 text-emerald-800'}`}>{row.activity}</span>
                     </td>
-                    {canTutorEdit && row.activity === 'Exercise' ? (
-                      <TutorExerciseScoreCells
-                        key={row.key}
+                    {canEdit ? (
+                      <TutorQuestionScoreCells
                         tutorId={tutorId}
                         studentId={studentId}
                         exercise={exercise}
                         row={row}
                         topicScores={topicScores}
                         scoreEntries={visibleScoreEntries}
-                        onTopicScoreSaved={onTopicScoreSaved}
+                        onSaved={handleQuestionScoreSaved}
                       />
                     ) : (
                       <>
-                        <td className="min-w-64 px-4 py-3">
-                        <ExerciseScore row={row} scoreEntries={visibleScoreEntries} questions={row.questions} />
-                        </td>
-                        <td className="min-w-56 px-4 py-3">
-                          {canTutorEditMarking && row.activity === 'Marking' && firstMarkingRowForAssignment ? (
-                            <details className="group">
-                              <summary className="inline-flex cursor-pointer list-none rounded-full border border-lime-600/30 bg-lime-50 px-3 py-1.5 text-xs font-semibold text-lime-900">Enter marking scores</summary>
-                              <div className="mt-3 min-w-64 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                                <TutorPeerMarkingScoreEditor compact tutorId={tutorId} studentId={studentId} assignment={row.assignment}
-                                  onSaved={(result) => handleMarkingScoresSaved(row.assignment, result)} />
-                              </div>
-                            </details>
-                          ) : <span className="text-sm text-slate-400">—</span>}
-                        </td>
+                        <td className="px-4 py-4 text-center"><ReadOnlyQuestionScore row={row} scoreEntries={visibleScoreEntries} /></td>
+                        <td className="px-3 py-4 text-center"><span className="text-sm text-slate-400">—</span></td>
                       </>
                     )}
                   </tr>
                 );
               })}
               {!rows.length ? (
-                <tr><td colSpan={4} className="px-4 py-8 text-center text-sm text-slate-500">Topic details will appear here when exercise questions are available.</td></tr>
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-500">Question details will appear here when exercise or marking questions are available.</td></tr>
               ) : null}
             </tbody>
           </table>

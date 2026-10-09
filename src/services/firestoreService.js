@@ -1558,7 +1558,7 @@ export const removeCompletedTopicFromLesson = async ({ studentId, subjectInstanc
   return response.data;
 };
 
-export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT, topic, exerciseId, peerAssignmentId, questionMarks = [] }) => {
+export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT, topic, topicId = '', exerciseId, peerAssignmentId, questionMarks = [] }) => {
   const topicName = String(topic || '').trim();
   if (!tutorId || !studentId || !topicName || (!exerciseId && !peerAssignmentId)) throw new Error('Tutor, student, topic, and exercise or marking assignment are required.');
   if (!Array.isArray(questionMarks) || !questionMarks.length || questionMarks.some((item) => {
@@ -1581,7 +1581,7 @@ export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subj
       tutorId,
       studentId,
       peerAssignmentId,
-      topicMarks: [{ topic: topicName, questionMarks }],
+      topicMarks: [{ topic: topicName, topicId, questionMarks }],
     });
   }
   const callable = httpsCallable(functions, 'saveTutorExerciseScore');
@@ -1591,6 +1591,7 @@ export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subj
     exerciseId,
     subject,
     topic: topicName,
+    topicId,
     scoreEventId: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     questionMarks,
   });
@@ -2863,14 +2864,18 @@ export const getCompletedPeerMarkingAssignmentsForStudent = async (reviewerId, s
     .sort((left, right) => String(right.assignmentDate ?? '').localeCompare(String(left.assignmentDate ?? '')));
 };
 
-export const getTopicUnderstandingQuestionScores = async ({ studentId, subjectInstanceId, topics = [], sourceIds = [] }) => {
-  if (!studentId || !subjectInstanceId || !isFirebaseConfigured || !topics.length) return [];
+export const getTopicUnderstandingQuestionScores = async ({ studentId, subjectInstanceId, topics = [], topicIds = [], sourceIds = [] }) => {
+  if (!studentId || !subjectInstanceId || !isFirebaseConfigured || (!topics.length && !topicIds.length)) return [];
   ensureDb();
-  const requestedTopics = new Set(topics.map((topic) => String(topic ?? '').trim().toLocaleLowerCase()).filter(Boolean));
+  const requestedTopics = new Set(topics.map(normalizeCatalogTopicKey).filter(Boolean));
+  const requestedTopicIds = new Set(topicIds.map((topicId) => String(topicId ?? '').trim()).filter(Boolean));
   const topicSnapshot = await getDocs(collection(db, 'users', studentId, 'subjects', subjectInstanceId, 'topics'));
-  const matchingTopics = topicSnapshot.docs.filter((item) => requestedTopics.has(
-    String(item.data().topicName || item.id).trim().toLocaleLowerCase(),
-  ));
+  const matchingTopics = topicSnapshot.docs.filter((item) => {
+    const data = item.data();
+    return requestedTopicIds.has(item.id)
+      || requestedTopicIds.has(String(data.canonicalTopicKey || '').trim())
+      || [data.topicName, data.canonicalTopicKey, item.id].some((value) => requestedTopics.has(normalizeCatalogTopicKey(value)));
+  });
   const requestedSourceIds = [...new Set(sourceIds.map((id) => String(id ?? '').trim()).filter(Boolean))];
   const scoreSnapshots = await Promise.all(matchingTopics.map(async (topic) => {
     const scoreCollection = collection(topic.ref, 'understandingScores');

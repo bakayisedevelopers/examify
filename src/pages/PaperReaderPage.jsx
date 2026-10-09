@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react';
 import { AppShell } from '../components/common/AppShell';
+import { InAppPdfPage } from '../components/common/InAppPdfPage';
 import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { useOperationStatus } from '../hooks/useOperationStatus';
@@ -11,7 +12,6 @@ import { getQuestionPaperById, subscribeQuestionPaperAnalysisActivity, updateQue
 const StudentFullPagePdf = ({ paper, documentUrl, documentTitle, pageNumber, questionReference, status, onPageChange, onBack }) => {
   const paperTitle = paper?.displayName || `${paper?.subject || 'Question paper'} ${paper?.grade || ''}`.trim();
   const title = documentTitle && documentTitle !== 'Question paper' ? `${paperTitle} · ${documentTitle}` : paperTitle;
-  const viewerUrl = documentUrl ? `${documentUrl}#page=${pageNumber}&toolbar=1&navpanes=0` : '';
   return (
     <main className="fixed inset-0 z-50 flex h-[100dvh] flex-col bg-slate-950 text-slate-900">
       <header className="grid h-14 shrink-0 grid-cols-[2.5rem_minmax(0,1fr)_auto] items-center gap-2 border-b border-transparent bg-transparent px-3 sm:px-5 lg:flex lg:justify-between lg:gap-3 lg:border-slate-200 lg:bg-white">
@@ -25,14 +25,14 @@ const StudentFullPagePdf = ({ paper, documentUrl, documentTitle, pageNumber, que
           <button type="button" className="grid h-9 w-9 place-items-center rounded-full border border-slate-700/80 bg-slate-950 text-lime-300 shadow-[0_3px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)] transition hover:border-lime-400/60 hover:bg-slate-900 lg:h-10 lg:w-10 lg:rounded-md lg:border-transparent lg:bg-transparent lg:text-slate-700 lg:shadow-none lg:hover:bg-slate-100" onClick={() => onPageChange(pageNumber + 1)} aria-label="Next PDF page"><ChevronRight className="h-5 w-5" /></button>
         </div>
       </header>
-      {status || !viewerUrl ? (
+      {status || !documentUrl ? (
         <div role="status" className="grid min-h-0 flex-1 place-items-center p-6 text-center text-sm text-white">
           {status === 'Loading paper...'
             ? <span className="inline-flex items-center gap-2"><LoaderCircle className="h-4 w-4 animate-spin text-lime-400" aria-hidden="true" />Loading paper…</span>
             : status || `This ${documentTitle?.toLowerCase() || 'document'} is not available.`}
         </div>
       ) : (
-        <iframe title={title} src={viewerUrl} className="min-h-0 flex-1 border-0 bg-slate-900" />
+        <InAppPdfPage url={documentUrl} pageNumber={pageNumber} className="flex-1 bg-slate-800 p-2 sm:p-4" />
       )}
     </main>
   );
@@ -321,11 +321,6 @@ export const PaperReaderPage = () => {
     });
   }, [paperId]);
 
-  const pdfUrl = useMemo(() => {
-    if (!documentUrl) return '';
-    return `${documentUrl}#page=${pageNumber}&toolbar=1&navpanes=0`;
-  }, [documentUrl, pageNumber]);
-
   const updatePage = (nextPage) => {
     const safePage = Math.max(1, nextPage);
     setPageNumber(safePage);
@@ -386,11 +381,7 @@ export const PaperReaderPage = () => {
               : status}
           </div>
         ) : (
-          <iframe
-            title="Question paper reader"
-            src={pdfUrl}
-            className="min-h-[70dvh] flex-1 rounded-2xl border border-slate-200 bg-white"
-          />
+          <InAppPdfPage url={documentUrl} pageNumber={pageNumber} className="min-h-[70dvh] flex-1 rounded-2xl border border-slate-200 bg-slate-800 p-2 sm:p-4" />
         )}
       </div>
       {actionStatus ? <div className="panel p-4 text-sm text-slate-600">{actionStatus}</div> : null}

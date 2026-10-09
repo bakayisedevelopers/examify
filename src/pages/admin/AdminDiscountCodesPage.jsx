@@ -32,7 +32,7 @@ const formatDate = (value) => value ? new Date(value).toLocaleString() : 'No exp
 const formatRemaining = (code) => code.remainingUses === null ? 'Unlimited' : `${code.remainingUses} of ${code.maxRedemptions}`;
 const buildShareLink = (code) => {
   const params = new URLSearchParams({ discountCode: code });
-  return `${window.location.origin}/?${params.toString()}`;
+  return `https://examifying.bakayise.com/?${params.toString()}`;
 };
 
 export const AdminDiscountCodesPage = () => {

@@ -3,7 +3,6 @@ import { Check, ChevronDown, ChevronLeft, ChevronRight, CreditCard, Hourglass, L
 import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
-import { MarkingCanvas as ImageEditor } from '../../components/canvas/pictureEditorCanvas';
 import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
 import { useAuth } from '../../hooks/useAuth';
 import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
@@ -11,7 +10,6 @@ import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { canOpenExercise } from '../../utils/exerciseRules';
 import {
   generateExercisePlanIfEligible,
-  completePeerMarkingAssignment,
   getActiveSubjectEpisodesForStudent,
   getCompletedPeerMarkingAssignmentsForCalendar,
   getPeerMarkingAssignmentsForStudent,
@@ -24,7 +22,6 @@ import {
 } from '../../services/firestoreService';
 import { getCachedStudentSubscriptionState, loadStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
 import { getCachedStudentDashboardState, updateCachedStudentDashboardState } from '../../services/studentDashboardStateStore';
-import { uploadPeerReviewImage } from '../../services/storageService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 
 const TodayExerciseCard = ({ exercise, onOpen }) => {
@@ -226,11 +223,9 @@ export const StudentDashboardPage = () => {
   const [calendarExercises, setCalendarExercises] = useState([]);
   const [completedCalendarMarking, setCompletedCalendarMarking] = useState([]);
   const [isLoadingCalendar, setIsLoadingCalendar] = useState(true);
-  const [reviewingAssignment, setReviewingAssignment] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [paymentLocked, setPaymentLocked] = useState(() => cachedDashboardState?.paymentLocked ?? true);
   const [isLoadingExercises, setIsLoadingExercises] = useState(() => !cachedDashboardState?.exercisesLoaded);
-  const [isLoadingPeerAssignments, setIsLoadingPeerAssignments] = useState(() => !cachedDashboardState?.peerAssignmentsLoaded);
   const [isCheckingAccess, setIsCheckingAccess] = useState(() => !hasCachedAccessState);
   const [isGenerating, setIsGenerating] = useState(false);
   const [readinessRows, setReadinessRows] = useState(() => cachedDashboardState?.readinessRows ?? []);
@@ -257,7 +252,6 @@ export const StudentDashboardPage = () => {
         setReadinessRows([]);
         setIsLoadingSubjects(true);
         setIsLoadingExercises(true);
-        setIsLoadingPeerAssignments(true);
         setPaymentLocked(currentSubscription ? !currentSubscription.paymentCompleted : true);
         setSubscriptionPlanId(currentSubscription?.subscriptionPlanId ?? 'free');
         setSubscriptionPlanName(currentSubscription?.subscriptionPlanName ?? 'Free');
@@ -279,13 +273,12 @@ export const StudentDashboardPage = () => {
     setRequiresSubscriptionSelection(snapshot.requiresSubscriptionSelection ?? true);
     setPaymentLocked(snapshot.paymentLocked ?? true);
     setIsLoadingExercises(!snapshot.exercisesLoaded);
-    setIsLoadingPeerAssignments(!snapshot.peerAssignmentsLoaded);
   }, [profile?.uid]);
 
   useScreenLoadMetrics(
     'Student Home',
     'student',
-    !isLoadingSubjects && !isCheckingAccess && !isLoadingExercises && !isLoadingPeerAssignments,
+    !isLoadingSubjects && !isCheckingAccess && !isLoadingExercises,
   );
 
   useEffect(() => {
@@ -531,7 +524,6 @@ export const StudentDashboardPage = () => {
         const previousData = getCachedStudentDashboardState(profile.uid);
         if (!previousData) setPaymentLocked(true);
         setIsLoadingExercises(!previousData?.exercisesLoaded);
-        setIsLoadingPeerAssignments(!previousData?.peerAssignmentsLoaded);
         setIsCheckingAccess(true);
         setInitialRetrySubjects([]);
         const readiness = [];
@@ -542,14 +534,12 @@ export const StudentDashboardPage = () => {
             if (active) {
               setPeerAssignments(rows);
               saveLastAppData({ peerAssignments: rows, peerAssignmentsLoaded: true });
-              setIsLoadingPeerAssignments(false);
             }
             return rows;
           })
           .catch((error) => {
             if (active) {
               setLoadError((current) => current || error?.message || 'Marking work could not be loaded yet.');
-              setIsLoadingPeerAssignments(false);
             }
             return [];
           });
@@ -647,7 +637,6 @@ export const StudentDashboardPage = () => {
           setPaymentLocked(true);
         }
         setIsLoadingExercises(false);
-        setIsLoadingPeerAssignments(false);
         setIsCheckingAccess(false);
         setLoadError(error?.message ?? 'Some exercises could not be loaded yet.');
       } finally {
@@ -694,34 +683,6 @@ export const StudentDashboardPage = () => {
       setTimeout(() => setIsGenerating(false), 500);
     }
   };
-
-  const handleSavePeerMarking = async (files) => runOperation({
-    operationName: 'Submitting peer marking',
-    successMessage: 'Your marked pages were uploaded and the marking submission was saved.',
-    failureMessage: 'Could not submit peer marking.',
-  }, async () => {
-    if (!reviewingAssignment) throw new Error('No peer-marking assignment is open.');
-    const reviewImages = await Promise.all(files.map(async (file, index) => {
-      const reviewFileName = (file.name || reviewingAssignment.submittedFileName || 'submission.png').replace(/\.[^/.]+$/, `-peer-review-${index + 1}.png`);
-      const renamedFile = new File([file], reviewFileName, { type: file.type || 'image/png' });
-      const upload = await uploadPeerReviewImage({
-        file: renamedFile,
-        studentId: profile.uid,
-        exerciseId: reviewingAssignment.reviewerExerciseId,
-        subjectInstanceId: reviewingAssignment.reviewerSubjectInstanceId,
-      });
-      return { ...upload, pageNumber: index + 1 };
-    }));
-    await completePeerMarkingAssignment({ assignmentId: reviewingAssignment.id, assignmentPath: reviewingAssignment.assignmentPath, reviewerId: profile.uid, reviewImages });
-    setCompletedCalendarMarking((current) => [
-      ...current.filter((item) => item.assignmentPath !== reviewingAssignment.assignmentPath),
-      { ...reviewingAssignment, status: 'completed' },
-    ]);
-    const refreshedAssignments = await getPeerMarkingAssignmentsForStudent(profile.uid);
-    setPeerAssignments(refreshedAssignments);
-    saveLastAppData({ peerAssignments: refreshedAssignments, peerAssignmentsLoaded: true });
-    setReviewingAssignment(null);
-  });
 
   if (subscriptionPlanId === 'free' && (hasCachedAccessState || !isCheckingAccess)) {
     return (
@@ -823,36 +784,6 @@ export const StudentDashboardPage = () => {
         <ReadinessChecklist rows={readinessRows} studentName={profile?.displayName || profile?.name || profile?.email || 'Student'} />
       </section>
 
-      {isLoadingPeerAssignments && !peerAssignments.length ? <LoadingState label="Checking for work assigned to you to mark…" /> : null}
-      {peerAssignments.length > 0 ? (
-        <section className="space-y-4">
-          {isLoadingPeerAssignments ? <p className="inline-flex items-center gap-2 text-xs font-medium text-slate-300" role="status"><span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-lime-300 border-r-transparent" aria-hidden="true" />Refreshing assigned marking work…</p> : null}
-          <div className="rounded-2xl bg-gradient-to-r from-lime-300 via-lime-400 to-emerald-400 p-5 text-slate-950 shadow-soft sm:p-6">
-            <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-950/70">Peer marking</p>
-            <h2 className="mt-1 text-2xl font-extrabold tracking-tight">Work to Mark</h2>
-            <p className="mt-2 max-w-2xl text-sm text-emerald-950/80">Mark the submitted work assigned to you.</p>
-          </div>
-          <div className="grid gap-4">
-            {peerAssignments.map((assignment) => (
-              <div key={assignment.id} className="panel p-4 sm:p-5">
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <p className="font-semibold text-slate-950">{assignment.title || 'Exercise submission'}</p>
-                    <p className="mt-1 text-sm text-slate-500">{assignment.subject} • {assignment.grade} • {assignment.assignmentDate}</p>
-                    <p className="mt-1 text-sm text-slate-600">{assignment.topic}</p>
-                  </div>
-                  <button type="button" className="btn-primary px-4 py-2" onClick={() => setReviewingAssignment((current) => current?.id === assignment.id ? null : assignment)}>{reviewingAssignment?.id === assignment.id ? 'Close marking' : 'Open Marking'}</button>
-                </div>
-                {reviewingAssignment?.id === assignment.id ? (
-                  <div className="mt-4">
-                    <ImageEditor imageUrls={assignment.submittedImages?.length ? assignment.submittedImages : [assignment.submittedImageUrl].filter(Boolean)} onSave={handleSavePeerMarking} onCancel={() => setReviewingAssignment(null)} />
-                  </div>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
     </AppShell>
   );
 };

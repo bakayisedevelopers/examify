@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { ReactSketchCanvas } from 'react-sketch-canvas';
 
@@ -24,6 +25,12 @@ export const MarkingCanvas = ({ imageUrl, imageUrls = [], onSave, onCancel, save
   useEffect(() => {
     setActivePage(0);
   }, [pageSignature]);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -75,8 +82,8 @@ export const MarkingCanvas = ({ imageUrl, imageUrls = [], onSave, onCancel, save
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-[70] flex flex-col bg-slate-950 p-2 text-white sm:p-4" role="dialog" aria-modal="true" aria-label="Mark exercise pages">
+  return createPortal((
+    <div className="fixed inset-0 z-[100] flex h-[100dvh] flex-col bg-slate-950 p-2 text-white sm:p-4" role="dialog" aria-modal="true" aria-label="Mark exercise pages">
       <header className="relative z-20 flex min-h-12 shrink-0 items-center justify-between gap-3 pb-2">
         <div className="flex items-center gap-2">
           <button type="button" className="btn-secondary inline-flex items-center justify-center p-2" onClick={(event) => { event.preventDefault(); event.stopPropagation(); onCancel?.(); }} aria-label="Close marking workspace" title="Close">
@@ -114,5 +121,5 @@ export const MarkingCanvas = ({ imageUrl, imageUrls = [], onSave, onCancel, save
       </main>
       {error ? <p role="alert" className="pt-2 text-sm text-rose-300">{error}</p> : null}
     </div>
-  );
+  ), document.body);
 };
