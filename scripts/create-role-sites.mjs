@@ -45,5 +45,3 @@ for (const portal of portals) {
   await writeFile(resolve(siteDirectory, 'sitemap.xml'), makeSitemap(portal));
   await writeFile(resolve(siteDirectory, 'robots.txt'), `User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
 }
-
-console.log(`Generated role-specific Firebase Hosting builds in ${hostingDirectory}`);

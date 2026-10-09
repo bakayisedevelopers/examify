@@ -23,12 +23,10 @@ export const AdminDashboardPage = () => {
 
   useEffect(() => {
     getRoleDashboardData('admin').then(setDashboard).catch((error) => {
-      console.error('[Examifying][AdminDashboard] load:error', error);
       setLoadError(error.message || 'Could not load admin dashboard data.');
     });
-    getRecentExerciseGenerationWarningsForAdmin().then(setGenerationWarnings).catch((error) => {
-      console.error('[Examifying][AdminDashboard] generation warnings load:error', error);
-    }).finally(() => setWarningsLoading(false));
+    getRecentExerciseGenerationWarningsForAdmin().then(setGenerationWarnings).catch(() => {})
+      .finally(() => setWarningsLoading(false));
   }, []);
 
   const latestWarnings = [...new Map([...generationWarnings]

@@ -63,7 +63,6 @@ export const extractDocumentText = async ({
         });
       } catch (error) {
         if (!embeddedText) throw error;
-        console.warn('[Examifying][DocumentExtraction] Vision extraction failed; using embedded PDF text:', error);
         onProgress?.(`${label} [${lastPage}/${totalPages} Embedded text used]`);
       }
 

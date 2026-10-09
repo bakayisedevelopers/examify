@@ -108,9 +108,7 @@ export const StudentBillingPage = () => {
     setIsVerifyingPayment(true);
     setStatus('Verifying your payment...');
     try {
-      console.log('[Examifying][Billing] payment:verify:start', { studentId: profile.uid, reference });
       const verification = await verifySubscriptionPayment(reference, profile.uid);
-      console.log('[Examifying][Billing] payment:verify:result', verification);
 
       if (verification?.status === 'success') {
         await completeStudentAccessFlow(reference, verification);
@@ -142,7 +140,6 @@ export const StudentBillingPage = () => {
       setStatus('Your payment is still processing.');
       return 'processing';
     } catch (error) {
-      console.error('[Examifying][Billing] payment:verify:error', error);
       const message = error?.message || 'Payment verification failed.';
       if (error?.details?.pendingReference) {
         setPendingCheckoutReference(error.details.pendingReference);

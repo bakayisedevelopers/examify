@@ -72,8 +72,8 @@ export const ExerciseCard = ({
       const papers = await getQuestionPapersByIds(targetExercise.paperIds);
       const firstPaper = papers[0];
       if (firstPaper?.id) navigate(`/${viewerRole}/papers/${firstPaper.id}?page=1`);
-    } catch (error) {
-      console.error('Failed to open papers:', error);
+    } catch {
+      // Opening the linked papers is best-effort; preserve the exercise card state.
     } finally {
       setOpeningPapers(false);
     }

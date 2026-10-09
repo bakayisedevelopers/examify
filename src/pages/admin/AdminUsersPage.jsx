@@ -61,7 +61,6 @@ export const AdminUsersPage = () => {
       setSelectedSubject(initialSubject);
       setAssignmentSubject('');
     }).catch((error) => {
-      console.error('[Examifying][AdminUsers] load:error', error);
       setSummary({ users: [] });
       setTutorOptions([]);
       setUsersError(error.message || 'Could not load users.');
@@ -89,7 +88,6 @@ export const AdminUsersPage = () => {
       setAssignmentSubject(selectedSubject);
     }).catch((error) => {
       if (!active) return;
-      console.error('[Examifying][AdminUsers] assignments:error', error);
       setAssignmentData({ students: [], tutors: [], assignments: [], unassignedStudents: [] });
       setStatus(error.message || 'Could not load subject assignments.');
     }).finally(() => {

@@ -83,8 +83,8 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
   } catch (error) {
     try {
       await deleteUser(credential.user);
-    } catch (cleanupError) {
-      console.error('[Examifying][Auth] Could not remove an account after profile creation failed:', cleanupError?.code || cleanupError?.message);
+    } catch {
+      // Preserve the original profile creation error if account cleanup also fails.
     }
     throw error;
   }

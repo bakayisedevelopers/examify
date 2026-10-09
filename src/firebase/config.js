@@ -22,8 +22,8 @@ export const isFirebaseConfigured = Boolean(
 let app = null;
 try {
   app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-} catch (error) {
-  console.warn('Firebase initialization failed:', error);
+} catch {
+  // Keep Firebase services unavailable when the runtime configuration cannot initialize.
 }
 export const firebaseApp = app;
 export const auth = app ? getAuth(app) : null;

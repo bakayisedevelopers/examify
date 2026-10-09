@@ -77,8 +77,7 @@ export const ProfileBillingPage = ({ role }) => {
   useEffect(() => {
     if (role === ROLES.TUTOR && profile?.uid) {
       setSummaryLoading(true);
-      getTutorBillingSummary(profile.uid).then(setSummary).catch((error) => {
-        console.error('[Examifying][TutorBilling] load:error', error);
+      getTutorBillingSummary(profile.uid).then(setSummary).catch(() => {
         setSummary({ totalLessons: 0, studentsTutored: 0, subjectsTutored: [], recentLessons: [] });
       }).finally(() => setSummaryLoading(false));
     }

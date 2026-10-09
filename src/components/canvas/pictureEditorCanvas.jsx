@@ -69,7 +69,6 @@ export const MarkingCanvas = ({ imageUrl, imageUrls = [], onSave, onCancel, save
       }));
       await onSave(files);
     } catch (saveError) {
-      console.error('Failed to export marked pages', saveError);
       setError(saveError.message || 'Could not save the marked work.');
     } finally {
       setSaving(false);

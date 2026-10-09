@@ -397,8 +397,7 @@ export const StudentDashboardPage = () => {
         startDate: calendarWeekStart,
         endDate: weekEnd,
         subjectInstanceIds: availableSubjectEpisodes.map((episode) => episode.id),
-      }).catch((error) => {
-        console.error('[Examifying][ExerciseCalendar] completed marking load:error', error);
+      }).catch(() => {
         if (active) setLoadError((current) => current || 'Completed marking activity could not be refreshed.');
         return [];
       }),

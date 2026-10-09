@@ -3377,9 +3377,7 @@ export const generateExercisePlanIfEligible = async (options = {}) => {
 
   const reportProgress = (message) => {
     onProgress?.(message);
-    setDoc(statusRef, { message, updatedAt: serverTimestamp() }, { merge: true }).catch((error) => {
-      console.warn('[Examifying][Firestore] generation progress update skipped:', error?.message);
-    });
+    setDoc(statusRef, { message, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
   };
 
   try {
@@ -3535,11 +3533,9 @@ export const subscribeToExerciseGenerationStatus = (studentId, subject, callback
     unsubscribe = onSnapshot(
       statusRef,
       (snapshot) => callback(snapshot.exists() ? snapshot.data() : null),
-      (error) => console.error('[Examifying][Firestore] exercise generation status subscription failed', error),
+      () => {},
     );
-  }).catch((error) => {
-    if (!cancelled) console.error('[Examifying][Firestore] exercise generation status subscription failed', error);
-  });
+  }).catch(() => {});
   return () => {
     cancelled = true;
     unsubscribe();
@@ -3948,7 +3944,7 @@ export const subscribeToUserProfile = (uid, callback) => {
   }
   return onSnapshot(doc(db, collections.users, uid), (snapshot) => {
     callback(snapshot.exists() ? snapshot.data() : null);
-  }, (error) => console.error('[Examifying][Firestore] subscribeToUserProfile error', error));
+  }, () => {});
 };
 
 

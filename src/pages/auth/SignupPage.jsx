@@ -160,7 +160,6 @@ export const SignupPage = () => {
         navigate(targetRoute);
       }
     } catch (error) {
-      console.error('Registration failed:', error);
       setStatus(error.message || 'Registration failed');
     } finally {
       setCreating(false);

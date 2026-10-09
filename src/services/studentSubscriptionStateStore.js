@@ -52,8 +52,7 @@ export const loadStudentSubscriptionState = (student, { maxAgeMs = Infinity, for
 
   const request = getStudentSubscriptionState(student)
     .then((state) => setStudentSubscriptionState(uid, state || FREE_PLAN_STATE))
-    .catch((error) => {
-      console.error('[Examifying][Subscription] state:error', error);
+    .catch(() => {
       return snapshots.get(uid)?.state || setStudentSubscriptionState(uid, FREE_PLAN_STATE);
     })
     .finally(() => {

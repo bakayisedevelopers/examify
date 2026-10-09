@@ -193,9 +193,7 @@ export const uploadSubmissionImages = async ({ files, studentId, exerciseId, sub
       submittedImageAnalysis: analysis.text ?? '',
       submittedImageAnalysisModel: analysis.model ?? null,
       submittedImageAnalyzedAt: serverTimestamp(),
-    })).catch((error) => {
-      console.warn('[Examifying][Storage] answer image analysis skipped:', error);
-    });
+    })).catch(() => {});
 
     return { submittedFileName: firstImage.fileName, submittedImageUrl: firstImage.url, submittedImages, exerciseId };
   } catch (error) {
@@ -203,12 +201,11 @@ export const uploadSubmissionImages = async ({ files, studentId, exerciseId, sub
       await Promise.all(uploadedFiles.filter(Boolean).map(async (uploadedFile) => {
         try {
           await deleteObject(ref(storage, uploadedFile.url));
-        } catch (cleanupError) {
-          console.warn('[Examifying][Storage] Could not clean up an incomplete submission upload:', cleanupError?.code || cleanupError?.message);
+        } catch {
+          // The original upload error remains authoritative if cleanup fails.
         }
       }));
     }
-    console.error('Upload/Update failed:', error);
     throw error;
   }
 };
@@ -233,18 +230,13 @@ export const uploadPeerReviewImage = async ({ file, studentId, exerciseId, subje
     };
   }
 
-  try {
-    if (!subjectInstanceId) throw new Error('An active subject episode is required to upload peer marking.');
-    const path = `users/${studentId}/subjects/${subjectInstanceId}/exercises/${exerciseId}/peer-reviews`;
-    const upload = await uploadFile({ file, path });
-    return { 
-      fileName: upload.fileName, 
-      url: upload.url 
-    };
-  } catch (error) {
-    console.error("Review upload failed:", error);
-    throw error;
-  }
+  if (!subjectInstanceId) throw new Error('An active subject episode is required to upload peer marking.');
+  const path = `users/${studentId}/subjects/${subjectInstanceId}/exercises/${exerciseId}/peer-reviews`;
+  const upload = await uploadFile({ file, path });
+  return {
+    fileName: upload.fileName,
+    url: upload.url,
+  };
 };
 
 export const deleteExerciseSubmissionFiles = async (urls = []) => {
@@ -253,8 +245,8 @@ export const deleteExerciseSubmissionFiles = async (urls = []) => {
   await Promise.all(uniqueUrls.map(async (url) => {
     try {
       await deleteObject(ref(storage, url));
-    } catch (error) {
-      console.warn('[Examifying][Storage] Could not remove an exercise attachment:', error?.code || error?.message);
+    } catch {
+      // File removal is best-effort; continue processing the remaining attachments.
     }
   }));
 };
@@ -308,8 +300,8 @@ const analyzeTutorMarksDocument = async ({ documentRef, documentRecord, tutor, f
         progressMessage: message,
         updatedAt: serverTimestamp(),
       });
-    } catch (error) {
-      console.warn('[Examifying][Storage] progress update skipped:', error);
+    } catch {
+      // Progress reporting is best-effort and must not interrupt document extraction.
     }
   };
 
@@ -358,8 +350,8 @@ const analyzeTutorMarksDocument = async ({ documentRef, documentRecord, tutor, f
       });
       normalizedModel = normalized?.model ?? '';
       marksText = [marksText, normalized?.text ?? ''].filter(Boolean).join('\n\n');
-    } catch (error) {
-      console.warn('[Examifying][Storage] marks normalization skipped:', error);
+    } catch {
+      // Use the original extracted marks if optional normalization is unavailable.
     }
 
     const extractedMarks = extractTutorSubjectMarks(marksText);
@@ -504,8 +496,8 @@ export const deleteTutorMarksDocument = async (documentRecord) => {
   if (documentRecord.fileUrl) {
     try {
       await deleteObject(ref(storage, documentRecord.fileUrl));
-    } catch (error) {
-      console.warn('[Examifying][Storage] tutor marks file delete skipped:', error);
+    } catch {
+      // Keep the Firestore document deletion successful if its optional file cleanup fails.
     }
   }
 

@@ -78,7 +78,6 @@ export const GuidePage = ({ role: propRole }) => {
       setLatestResult(result);
       setStatus(`Guide test saved successfully. Your latest mark is ${percentage}%.`);
     } catch (error) {
-      console.error('[Examifying][GuidePage] submit:error', error);
       setStatus(error?.message || 'Unable to save your guide test right now.');
     } finally {
       setIsSubmitting(false);

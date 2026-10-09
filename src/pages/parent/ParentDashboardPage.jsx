@@ -122,8 +122,7 @@ export const ParentDashboardPage = () => {
       
       setStudents(enrichedStudents);
       return enrichedStudents;
-    } catch (err) {
-      console.error(err);
+    } catch {
       return [];
     } finally {
       setStudentsLoaded(true);

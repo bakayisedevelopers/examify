@@ -89,7 +89,6 @@ export const ProfileSubjectsPage = ({ role }) => {
 
   useEffect(() => {
     loadTutorDocuments().catch((error) => {
-      console.error('[Examifying][TutorMarksDocuments] load:error', error);
       setStatus(error.message || 'Could not load uploaded tutor documents.');
     });
   }, [loadTutorDocuments]);
@@ -120,7 +119,6 @@ export const ProfileSubjectsPage = ({ role }) => {
     getGlobalSubjects().then((subjects) => {
       if (isActive) setGlobalSubjects(subjects);
     }).catch((error) => {
-      console.error('[Examifying][GlobalSubjects] load:error', error);
       if (isActive) {
         setGlobalSubjects([]);
         setStatus(error.message || 'Could not load the global subject list.');
@@ -139,8 +137,7 @@ export const ProfileSubjectsPage = ({ role }) => {
       if (!isActive) return;
       setHistoryCandidates(Array.isArray(result.candidates) ? result.candidates : []);
       setHistoryCapacity(Number(result.subjectCapacity) || 0);
-    }).catch((error) => {
-      console.error('[Examifying][SubjectHistory] load:error', error);
+    }).catch(() => {
       if (isActive) {
         setHistoryCandidates([]);
         setHistoryCapacity(0);

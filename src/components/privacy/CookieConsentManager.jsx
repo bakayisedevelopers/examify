@@ -60,9 +60,7 @@ export const CookieConsentManager = () => {
       }
     };
 
-    synchronize().catch((error) => {
-      console.warn('Cookie preference account sync failed:', error);
-    }).finally(() => {
+    synchronize().catch(() => {}).finally(() => {
       if (active) setConsentReady(true);
     });
 
@@ -85,8 +83,7 @@ export const CookieConsentManager = () => {
     if (user?.uid && isFirebaseConfigured) {
       try {
         await runOperation({ operationName: 'Saving privacy choices', successMessage: 'Your privacy choice was saved.' }, () => saveAccountCookieConsent(user.uid, nextConsent));
-      } catch (error) {
-        console.warn('Cookie preference account sync failed:', error);
+      } catch {
         setSyncMessage('Your choice is saved on this device, but could not be synced to your account.');
       }
     }

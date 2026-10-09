@@ -38,13 +38,12 @@ export const StudentLessonDetailsPage = () => {
           try {
             const access = await getAuthorizedLessonWhatsAppAccess({ studentId: profile.uid, subjectInstanceId, lessonId });
             if (active) setWhatsAppAccess(access || null);
-          } catch (error) {
-            console.warn('[Examifying][StudentLesson] WhatsApp access unavailable:', error?.code || error?.message);
+          } catch {
+            // Lesson details remain available when optional WhatsApp access is unavailable.
           }
         }
       })
       .catch((error) => {
-        console.error('[Examifying][StudentLesson] load:error', error);
         if (active) setLoadError(error.message || 'Could not load lesson details.');
       })
       .finally(() => { if (active) setIsLoading(false); });
