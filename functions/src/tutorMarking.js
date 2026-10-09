@@ -162,8 +162,8 @@ const questionLinksWithTopics = ({ questionLinks = [], topicBreakdown = [], ques
   });
 };
 
-const resolveTopicDocument = async (transaction, episodeRef, { topic, topicId = '' }) => {
-  const topicName = String(topic ?? '').trim();
+const resolveTopicDocument = async (transaction, episodeRef, { topic, topicName: suppliedTopicName, topicId = '' }) => {
+  const topicName = String(topic ?? suppliedTopicName ?? '').trim();
   const normalizedName = normalizeTopicKey(topicName);
   const requestedId = String(topicId ?? '').trim();
   const candidateIds = [...new Set([requestedId, normalizedName].filter((value) => value && !value.includes('/')))];
@@ -190,6 +190,10 @@ const resolveTopicDocument = async (transaction, episodeRef, { topic, topicId = 
         .some((value) => normalizeTopicKey(value) === normalizedName);
     });
     if (matching) return { topicRef: matching.ref, topicSnapshot: matching, canonicalTopicKey: matching.id };
+  }
+
+  if (!normalizedName) {
+    throw new HttpsError('invalid-argument', 'A topic name is required to save question scores.');
   }
 
   const topicRef = episodeRef.collection('topics').doc(normalizedName);
