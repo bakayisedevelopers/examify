@@ -372,54 +372,60 @@ export const queueInitialExerciseGenerationAfterSubscription = onDocumentWritten
   },
 );
 
-export const queuePendingInitialGenerationAfterPaperAnalysis = onDocumentWritten(
-  {
-    document: 'questionPapers/{paperId}',
-    retry: true,
-    memory: '256MiB',
-    maxInstances: 5,
-  },
-  async (event) => {
-    const paper = event.data?.after?.exists ? event.data.after.data() : null;
-    const before = event.data?.before?.exists ? event.data.before.data() : null;
-    if (paper?.analysisStatus !== 'Analyzed' || before?.analysisStatus === 'Analyzed'
-      || !String(paper.subject ?? '').trim()) return;
-    const db = getDb();
-    const pendingEpisodes = await db.collectionGroup('subjects').where('exerciseGenerationPending', '==', true).get();
-    const candidateDocs = pendingEpisodes.docs.filter((episodeDoc) => {
-      const path = episodeDoc.ref.path.split('/');
-      if (path.length !== 4 || path[0] !== 'users' || path[2] !== 'subjects') return false;
-      const episode = episodeDoc.data();
-      const episodeGrade = String(episode.grade ?? '').trim();
-      const pendingReason = episode.exerciseGenerationPendingTrigger;
-      return episode.status === 'active'
-        && String(episode.subjectKey ?? episode.subjectName ?? '').trim() === String(paper.subject).trim()
-        && (!String(paper.grade ?? '').trim() || episodeGrade === String(paper.grade).trim())
-        && ['initial', 'lesson'].includes(pendingReason);
+export const queuePendingInitialGenerationAfterPaperAnalysis = onTaskDispatched(TASK_OPTIONS, async (request) => {
+  const { paperId, runId } = request.data ?? {};
+  if (!paperId || !runId) throw new Error('paperId and runId are required.');
+  const db = getDb();
+  const paperRef = db.collection('questionPapers').doc(paperId);
+  const analysisRunRef = paperRef.collection('analysisRuns').doc(runId);
+  const [paperSnapshot, analysisRunSnapshot] = await Promise.all([paperRef.get(), analysisRunRef.get()]);
+  if (!paperSnapshot.exists || !analysisRunSnapshot.exists) return;
+  const paper = paperSnapshot.data();
+  const analysisRun = analysisRunSnapshot.data();
+  const paperCompletedAt = timestampMillis(paper.analysisCompletedAt);
+  const runCompletedAt = timestampMillis(analysisRun.completedAt);
+  if (paper.analysisStatus !== 'Analyzed' || analysisRun.status !== 'Analyzed'
+    || !paperCompletedAt || paperCompletedAt !== runCompletedAt
+    || !String(paper.subject ?? '').trim()) return;
+  const pendingEpisodes = await db.collectionGroup('subjects').where('exerciseGenerationPending', '==', true).get();
+  const candidateDocs = pendingEpisodes.docs.filter((episodeDoc) => {
+    const path = episodeDoc.ref.path.split('/');
+    if (path.length !== 4 || path[0] !== 'users' || path[2] !== 'subjects') return false;
+    const episode = episodeDoc.data();
+    const episodeGrade = String(episode.grade ?? '').trim();
+    const pendingReason = episode.exerciseGenerationPendingTrigger;
+    return episode.status === 'active'
+      && String(episode.subjectKey ?? episode.subjectName ?? '').trim() === String(paper.subject).trim()
+      && (!String(paper.grade ?? '').trim() || episodeGrade === String(paper.grade).trim())
+      && ['initial', 'lesson'].includes(pendingReason);
+  });
+  for (const episodeDoc of candidateDocs) {
+    const parts = episodeDoc.ref.path.split('/');
+    const studentId = parts[1];
+    const episode = episodeDoc.data();
+    const [studentSnapshot, generationSnapshot] = await Promise.all([
+      db.doc(`users/${studentId}`).get(),
+      episodeDoc.ref.collection('generationRuns').where('status', '==', 'completed').limit(1).get(),
+    ]);
+    const student = studentSnapshot.data() ?? {};
+    if (paper.region !== 'National' && String(student.province ?? '').trim() !== String(paper.region ?? '').trim()) continue;
+    await enqueueGeneration({
+      studentId,
+      subjectInstanceId: episodeDoc.id,
+      subject: String(episode.subjectKey ?? episode.subjectName ?? paper.subject).trim(),
+      reason: episode.exerciseGenerationPendingTrigger,
+      sourceLessonId: episode.exerciseGenerationPendingLessonId ?? null,
+      sourceLessonSignature: episode.exerciseGenerationPendingLessonSignature ?? null,
+      initialOnly: generationSnapshot.empty && episode.exerciseGenerationPendingTrigger === 'initial',
+      triggerKey: `paper:${paperId}:${runId}:${episodeDoc.id}`,
     });
-    for (const episodeDoc of candidateDocs) {
-      const parts = episodeDoc.ref.path.split('/');
-      const studentId = parts[1];
-      const episode = episodeDoc.data();
-      const [studentSnapshot, generationSnapshot] = await Promise.all([
-        db.doc(`users/${studentId}`).get(),
-        episodeDoc.ref.collection('generationRuns').where('status', '==', 'completed').limit(1).get(),
-      ]);
-      const student = studentSnapshot.data() ?? {};
-      if (paper.region !== 'National' && String(student.province ?? '').trim() !== String(paper.region ?? '').trim()) continue;
-      await enqueueGeneration({
-        studentId,
-        subjectInstanceId: episodeDoc.id,
-        subject: String(episode.subjectKey ?? episode.subjectName ?? paper.subject).trim(),
-        reason: episode.exerciseGenerationPendingTrigger,
-        sourceLessonId: episode.exerciseGenerationPendingLessonId ?? null,
-        sourceLessonSignature: episode.exerciseGenerationPendingLessonSignature ?? null,
-        initialOnly: generationSnapshot.empty && episode.exerciseGenerationPendingTrigger === 'initial',
-        triggerKey: `paper:${event.id}:${episodeDoc.id}`,
-      });
-    }
-  },
-);
+  }
+  logger.info('Queued generation for pending subject episodes after paper analysis', {
+    paperId,
+    runId,
+    candidateCount: candidateDocs.length,
+  });
+});
 
 const getMatchingPapers = async ({ db, subject, grade, region }) => {
   const snapshot = await db.collection('questionPapers').where('subject', '==', subject).get();

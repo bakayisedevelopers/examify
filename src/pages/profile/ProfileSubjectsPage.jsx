@@ -472,7 +472,7 @@ export const ProfileSubjectsPage = ({ role }) => {
                   key={subject}
                   type="button"
                   onClick={() => handleRemoveSelectedSubject(subject)}
-                  className="rounded-full border border-lime-300 bg-lime-100 px-3 py-1 text-sm font-semibold text-slate-900 shadow-sm transition hover:bg-rose-50 hover:text-rose-700"
+                  className="rounded-full border border-lime-500/50 bg-transparent px-3 py-1 text-sm font-semibold text-slate-900 shadow-sm transition hover:bg-rose-50 hover:text-rose-700"
                   title="Remove subject"
                 >
                   {subject} ×
@@ -520,7 +520,7 @@ export const ProfileSubjectsPage = ({ role }) => {
                   {documentRecord.extractedMarks?.length ? (
                     <div className="mt-3 flex flex-wrap gap-2">
                       {documentRecord.extractedMarks.map((item) => (
-                        <span key={`${documentRecord.id}-${item.subject}-${item.mark}`} className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-600">
+                        <span key={`${documentRecord.id}-${item.subject}-${item.mark}`} className="rounded-full border border-lime-500/40 bg-transparent px-3 py-1 text-xs font-medium text-slate-800">
                           {item.subject}: {item.mark}%
                         </span>
                       ))}

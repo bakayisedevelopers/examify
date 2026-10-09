@@ -200,7 +200,7 @@ export const SubscriptionLifecyclePanel = ({
         {!paymentMethodsLoading && !paymentMethodsError && paymentMethods.length ? (
           <ul className="mt-3 grid gap-2 sm:grid-cols-2">
             {paymentMethods.map((method) => (
-              <li key={method.id} className="flex items-center gap-3 rounded-xl border border-lime-200 bg-lime-50/70 p-3">
+              <li key={method.id} className="flex items-center gap-3 rounded-xl border border-lime-500/40 bg-transparent p-3">
                 <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white text-lime-800 shadow-sm">
                   <CreditCard className="h-4 w-4" aria-hidden="true" />
                 </span>

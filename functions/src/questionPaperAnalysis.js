@@ -11,6 +11,7 @@ import { getDb, storage, taskQueue } from './admin.js';
 import { mergeGlobalTopicLabels, normalizeGeneratedTopicLabel, normalizeStoredTopicLabel } from './globalTopicCatalog.js';
 import { callKiloVisionWithFallback } from './kilo.js';
 import { callGeminiGenerateContent } from './gemini.js';
+import { enqueueTaskOnce, stableTaskId } from './taskQueueUtils.js';
 
 const ANALYZING = 'Analyzing';
 const ANALYZED = 'Analyzed';
@@ -217,8 +218,15 @@ const chunk = (items = [], size = PAGES_PER_BATCH) => {
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const safeId = (value) => String(value).replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 120);
+const timestampMillis = (value) => value?.toMillis?.() ?? value?.toDate?.().getTime()
+  ?? (value ? new Date(value).getTime() : 0);
 const runRefFor = (paperId, runId) => getDb().collection('questionPapers').doc(paperId).collection(RUNS_COLLECTION).doc(runId);
 const queueTask = (name, data) => taskQueue(name).enqueue(data);
+const queuePendingInitialGenerationAfterAnalysis = ({ paperId, runId }) => enqueueTaskOnce(
+  'queuePendingInitialGenerationAfterPaperAnalysis',
+  { paperId, runId },
+  { id: stableTaskId('paper-initial-generation', `${paperId}:${runId}`) },
+);
 const paperQueueRef = () => getDb().collection(PAPER_QUEUE_COLLECTION);
 const paperQueueStateRef = () => getDb().collection(PAPER_QUEUE_STATE_COLLECTION).doc('worker');
 const paperAnalysisControlRef = () => getDb().collection(PAPER_ANALYSIS_CONTROL_COLLECTION).doc('global');
@@ -1102,10 +1110,17 @@ export const finalizeQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, asyn
   const active = await ensureActiveRun({ paperId, runId });
   if (!active) return;
   if (active.run.status === ANALYZED) {
+    const paperCompletedAt = timestampMillis(active.paper.analysisCompletedAt);
+    const runCompletedAt = timestampMillis(active.run.completedAt);
+    if (active.paper.analysisStatus === ANALYZED
+      && paperCompletedAt > 0 && paperCompletedAt === runCompletedAt) {
+      await queuePendingInitialGenerationAfterAnalysis({ paperId, runId });
+    }
     await releaseAnalysisSlot({ paperId, runId });
     return;
   }
 
+  let paperAnalysisCommitted = false;
   try {
     const batchesSnapshot = await active.runRef.collection(BATCHES_COLLECTION).get();
     const batches = batchesSnapshot.docs.map((item) => item.data());
@@ -1179,13 +1194,17 @@ export const finalizeQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, asyn
       analysisCompletedAt: completedAt,
       updatedAt: completedAt,
     }, { merge: true });
+    paperAnalysisCommitted = true;
+    await queuePendingInitialGenerationAfterAnalysis({ paperId, runId });
     await storage.bucket().deleteFiles({ prefix: `questionPaperAnalysis/${paperId}/${runId}/` }).catch((error) => {
       logger.warn('Could not clean up rendered question-paper pages', { paperId, runId, message: error?.message });
     });
     await releaseAnalysisSlot({ paperId, runId });
     logger.info('Question paper analysis completed', { paperId, runId, questionCount: analysis.questions.length });
   } catch (error) {
-    if (request.retryCount >= MAX_TASK_ATTEMPTS - 1) await markRunFailed({ paperId, runId, error });
+    if (!paperAnalysisCommitted && request.retryCount >= MAX_TASK_ATTEMPTS - 1) {
+      await markRunFailed({ paperId, runId, error });
+    }
     throw error;
   }
 });

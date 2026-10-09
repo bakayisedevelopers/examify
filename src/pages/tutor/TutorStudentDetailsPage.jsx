@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { FileText, Trash2, UserPlus, X } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -209,7 +209,7 @@ export const TutorStudentDetailsPage = () => {
     enabled: Boolean(profile?.uid && studentId),
     staleTime: 15_000,
   });
-  const currentContexts = contextsQuery.data ?? [];
+  const currentContexts = useMemo(() => contextsQuery.data ?? [], [contextsQuery.data]);
   const historyRows = historyQuery.data ?? [];
   const accessibleSubjects = [...new Set(currentContexts
     .filter((item) => item.studentId === studentId)
@@ -313,12 +313,14 @@ export const TutorStudentDetailsPage = () => {
       setStaffMembers([]);
     }
     if (coreData.status) setStatus(coreData.status);
-    if (coreData.kind === 'current' && coreData.activeSubject !== subject) {
+    if (coreData.kind === 'current'
+      && !currentContexts.some((item) => item.studentId === studentId && item.subject === subject)
+      && coreData.activeSubject !== subject) {
       setSearchParams({ subject: coreData.activeSubject }, { replace: true });
     } else if (coreData.kind === 'historical' && coreData.student?.subject !== subject) {
       setSearchParams({ period: periodId, subject: coreData.student.subject }, { replace: true });
     }
-  }, [coreData, periodId, setSearchParams, studentDetailsQuery.error, studentDetailsQuery.isError, subject]);
+  }, [coreData, currentContexts, periodId, setSearchParams, studentDetailsQuery.error, studentDetailsQuery.isError, studentId, subject]);
 
   useEffect(() => {
     if (!ancillaryQuery.data) return;

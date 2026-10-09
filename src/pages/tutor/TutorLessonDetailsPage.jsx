@@ -157,13 +157,20 @@ export const TutorLessonDetailsPage = () => {
 
   useEffect(() => {
     if (!isNew || !eligibilityLoaded || !eligibleSubjectGrades.length) return;
-    const currentPairAvailable = eligibleSubjectGrades.some((pair) => pair.subject === subject && pair.grade === grade);
-    if (currentPairAvailable) return;
-    const firstPair = eligibleSubjectGrades[0];
-    setSubject(firstPair.subject);
-    setGrade(firstPair.grade);
-    setSelectedStudentIds([]);
-    setTopics([]);
+    const subjectPairs = eligibleSubjectGrades.filter((pair) => pair.subject === subject);
+    if (!subjectPairs.length) {
+      const firstPair = eligibleSubjectGrades[0];
+      setSubject(firstPair.subject);
+      setGrade(firstPair.grade);
+      setSelectedStudentIds([]);
+      setTopics([]);
+      return;
+    }
+    if (!subjectPairs.some((pair) => pair.grade === grade)) {
+      setGrade(subjectPairs[0].grade);
+      setSelectedStudentIds([]);
+      setTopics([]);
+    }
   }, [eligibleSubjectGrades, eligibilityLoaded, grade, isNew, subject]);
 
   useEffect(() => {
@@ -736,7 +743,7 @@ const TopicPicker = ({ topicOptions, selectedTopic, setSelectedTopic, addTopic, 
       </label>
       <button type="button" className="btn-secondary self-end" onClick={addTopic} disabled={disabled || !selectedTopic}>Add topic</button>
     </div>
-    {topics.length ? <ul className="flex flex-wrap gap-2">{topics.map((topic) => <li key={topic} className="inline-flex items-center gap-2 rounded-md border border-lime-500/40 bg-lime-100 px-3 py-2 text-sm font-medium text-slate-900"><span>{topic}</span>{!disabled ? <button type="button" className="text-rose-800 hover:text-rose-950" aria-label={`Remove ${topic}`} onClick={() => removeTopic(topic)}>×</button> : null}</li>)}</ul> : null}
+    {topics.length ? <ul className="flex flex-wrap gap-2">{topics.map((topic) => <li key={topic} className="inline-flex items-center gap-2 rounded-md border border-lime-500/40 bg-transparent px-3 py-2 text-sm font-medium text-slate-900"><span>{topic}</span>{!disabled ? <button type="button" className="text-rose-800 hover:text-rose-950" aria-label={`Remove ${topic}`} onClick={() => removeTopic(topic)}>×</button> : null}</li>)}</ul> : null}
   </div>
 );
 
