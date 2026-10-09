@@ -7,7 +7,7 @@ import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { useOperationStatus } from '../hooks/useOperationStatus';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
-import { cancelQuestionPaperAnalysis, cleanupGlobalTopicCatalog, getGlobalTopicList, getGoogleDrivePastPaperFolderContents, getGoogleDrivePastPaperImportStatuses, getQuestionPaperAnalysisControl, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, setQuestionPaperAnalysisPaused, startGoogleDrivePastPaperImport, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
+import { cancelQuestionPaperAnalysis, getGlobalTopicList, getGoogleDrivePastPaperFolderContents, getGoogleDrivePastPaperImportStatuses, getQuestionPaperAnalysisControl, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, previewDriveTopicCatalogSync, queueLegacyDriveJsonAnalyses, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, setQuestionPaperAnalysisPaused, startGoogleDrivePastPaperImport, subscribeQuestionPapers, syncDriveTopicCatalog, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
 import { getApprovedTutorSubjects, getUserSubjects } from '../utils/tutorSubjects';
 import { buildTopicResolverRows } from '../services/topicResolver';
@@ -215,17 +215,30 @@ const PaperAnalysisStatus = ({ paper }) => {
   const current = Number(paper.analysisProgressCurrent ?? 0);
   const total = Math.max(1, Number(paper.analysisProgressTotal ?? 1));
   const percentage = status === 'Analyzed' ? 100 : Math.max(0, Math.min(100, Math.round((current / total) * 100)));
+  const sourceLabel = paper.analysisSource === 'google_drive_json'
+    ? 'Drive JSON'
+    : paper.analysisSource === 'firebase_ai'
+      ? 'AI analysis'
+      : paper.analysisSource === 'checking_drive_json'
+        ? 'Checking Drive JSON'
+        : '';
 
   return (
     <div className="mt-4 rounded-2xl bg-slate-50 p-3">
       <div className="flex items-center justify-between gap-3 text-xs font-semibold">
         <span className={`rounded-full px-3 py-1 ${paperStatusStyles[status] ?? 'bg-slate-100 text-slate-600'}`}>{status}</span>
-        <span className="text-slate-500">{percentage}%</span>
+        <span className="flex items-center gap-2 text-slate-500">
+          {sourceLabel ? <span className="rounded-full bg-lime-100 px-2 py-0.5 text-[10px] font-semibold text-lime-900">{sourceLabel}</span> : null}
+          {percentage}%
+        </span>
       </div>
       <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200">
         <div className="h-full rounded-full bg-brand-500 transition-all" style={{ width: `${percentage}%` }} />
       </div>
       <p className="mt-2 text-xs text-slate-500">{paper.analysisProgressMessage ?? (status === 'Analyzed' ? `${paper.questionCount ?? 0} questions indexed` : 'Waiting for analysis')}</p>
+      {paper.driveAnalysisJsonStatus === 'review_required' && paper.driveAnalysisJsonReviewReason ? (
+        <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">Drive analysis JSON needs review: {paper.driveAnalysisJsonReviewReason}</p>
+      ) : null}
     </div>
   );
 };
@@ -309,6 +322,9 @@ export const PastExamPapersPage = () => {
   const [topicResolverGeminiLoading, setTopicResolverGeminiLoading] = useState(false);
   const [topicResolverSaveLoading, setTopicResolverSaveLoading] = useState(false);
   const [topicResolverCleanupLoading, setTopicResolverCleanupLoading] = useState(false);
+  const [driveTopicSyncPreview, setDriveTopicSyncPreview] = useState(null);
+  const [driveTopicSyncApplying, setDriveTopicSyncApplying] = useState(false);
+  const [legacyDriveAnalysisQueueLoading, setLegacyDriveAnalysisQueueLoading] = useState(false);
 
   useEffect(() => {
     if (!topicResolverOpen) return undefined;
@@ -498,28 +514,61 @@ export const PastExamPapersPage = () => {
   const checkGlobalTopicCatalog = async () => {
     if (!topicResolverSubject || !topicResolverGrade || topicResolverCleanupLoading) return;
     setTopicResolverCleanupLoading(true);
-    setTopicResolverStatus('Checking saved global topics against analyzed questions and difficulty metadata…');
+    setDriveTopicSyncPreview(null);
+    setTopicResolverStatus('Previewing topics backed by analyzed question-paper questions and checking the matching Drive grade folder…');
     try {
-      const result = await runOperation({
-        operationName: 'Checking global topic catalog',
-        message: 'Topics without analyzed questions or difficulty metadata will be removed from the global lesson list.',
-        successMessage: 'The global topic catalog check completed.',
-      }, () => cleanupGlobalTopicCatalog({
-        action: 'reconcile-grade',
+      const result = await previewDriveTopicCatalogSync({
         subject: topicResolverSubject,
         grade: topicResolverGrade,
-      }));
-      const removedKeys = new Set((result.removedTopics ?? []).map((topic) => String(topic).trim().toLocaleLowerCase()));
-      setTopicResolverCatalog((current) => current.filter((topic) => !removedKeys.has(String(topic).trim().toLocaleLowerCase())));
-      const removedCount = result.removedTopics?.length ?? 0;
-      const metadataCount = Number(result.difficultyMetadataUpdatedCount) || 0;
-      setTopicResolverStatus(
-        `${result.checkedTopicCount ?? 0} stored topics checked. ${removedCount} topic${removedCount === 1 ? '' : 's'} removed${metadataCount ? `; difficulty saved for ${metadataCount} legacy topic${metadataCount === 1 ? '' : 's'}` : ''}. Existing student topic history was kept.`,
-      );
+      });
+      setDriveTopicSyncPreview(result);
+      setTopicResolverStatus(`Preview ready for ${topicResolverSubject}, ${topicResolverGrade}: ${result.analyzedTopicCount} topics from ${result.analyzedPaperCount} analyzed papers. ${result.removedTopics?.length ?? 0} current topics would be removed. Firestore will not change until you apply this preview.`);
     } catch (error) {
-      setTopicResolverStatus(error.message || 'Could not check the global topic catalog.');
+      setTopicResolverStatus(error.message || 'Could not preview the Firestore and Drive topic sync.');
     } finally {
       setTopicResolverCleanupLoading(false);
+    }
+  };
+
+  const applyDriveTopicCatalogSync = async () => {
+    if (!driveTopicSyncPreview?.previewToken || driveTopicSyncApplying) return;
+    setDriveTopicSyncApplying(true);
+    setTopicResolverStatus('Writing topics.json to the selected Drive grade folder and updating the Firestore global topic catalog…');
+    try {
+      const result = await runOperation({
+        operationName: `Syncing ${topicResolverSubject} topics for ${topicResolverGrade}`,
+        message: 'Updating this grade’s topics.json and global Firestore topic list from analyzed question data.',
+        successMessage: 'The Drive and Firestore topic catalogs were synchronized.',
+      }, () => syncDriveTopicCatalog({
+        subject: topicResolverSubject,
+        grade: topicResolverGrade,
+        previewToken: driveTopicSyncPreview.previewToken,
+      }));
+      setTopicResolverCatalog(result.topics ?? driveTopicSyncPreview.topics ?? []);
+      setDriveTopicSyncPreview(null);
+      setTopicResolverStatus(`Synced ${result.topicCount} topics for ${topicResolverSubject}, ${topicResolverGrade} from ${result.analyzedPaperCount} analyzed papers. ${result.removedTopics?.length ?? 0} unbacked topics were removed from Firestore; topics.json is in the Drive grade folder.`);
+    } catch (error) {
+      setTopicResolverStatus(error.message || 'Could not sync the Drive and Firestore topic catalogs.');
+    } finally {
+      setDriveTopicSyncApplying(false);
+    }
+  };
+
+  const queueLegacyDriveAnalyses = async () => {
+    if (!topicResolverSubject || !topicResolverGrade || legacyDriveAnalysisQueueLoading) return;
+    setLegacyDriveAnalysisQueueLoading(true);
+    setTopicResolverStatus(`Checking legacy ${topicResolverSubject}, ${topicResolverGrade} papers for matching Drive analysis JSON…`);
+    try {
+      const result = await runOperation({
+        operationName: 'Checking legacy paper analysis JSON',
+        message: 'Only papers with a valid, matching Drive JSON file will be placed into the existing analysis queue.',
+        successMessage: 'The legacy Drive JSON check completed.',
+      }, () => queueLegacyDriveJsonAnalyses({ subject: topicResolverSubject, grade: topicResolverGrade, maxPapers: 50 }));
+      setTopicResolverStatus(`Checked ${result.checkedCount} matching JSON file${result.checkedCount === 1 ? '' : 's'} for ${topicResolverSubject}, ${topicResolverGrade}; queued ${result.queuedCount}, flagged ${result.reviewCount} for review, skipped ${result.skippedCount} without a matching JSON${result.errorCount ? `, and had ${result.errorCount} Drive read error${result.errorCount === 1 ? '' : 's'}` : ''}.${result.analysisPaused ? ' The analysis queue is paused, so queued papers will wait until resumed.' : ''}${result.moreCandidates ? ' Run the check again to continue through remaining legacy papers.' : ''}`);
+    } catch (error) {
+      setTopicResolverStatus(error.message || 'Could not check legacy Drive analysis JSON files.');
+    } finally {
+      setLegacyDriveAnalysisQueueLoading(false);
     }
   };
 
@@ -1144,29 +1193,39 @@ export const PastExamPapersPage = () => {
             </p>
             {analysisQueueMessage ? <p className="mt-2 text-sm text-slate-700" role="status">{analysisQueueMessage}</p> : null}
           </div>
-          <button
-            type="button"
-            className={analysisQueuePaused
-              ? 'btn-primary inline-flex shrink-0 items-center justify-center gap-2'
-              : 'btn-secondary inline-flex shrink-0 items-center justify-center gap-2'}
-            disabled={!analysisQueueControlReady || analysisQueueControlSaving}
-            onClick={handleToggleAnalysisQueue}
-          >
-            {analysisQueueControlSaving || (!analysisQueueControlReady && !analysisQueueControlFailed)
-              ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
-              : analysisQueueControlFailed
-                ? <RotateCcw className="h-4 w-4" aria-hidden="true" />
-                : analysisQueuePaused
-                ? <Play className="h-4 w-4" aria-hidden="true" />
-                : <Pause className="h-4 w-4" aria-hidden="true" />}
-            {analysisQueueControlSaving
-              ? (analysisQueuePaused ? 'Resuming…' : 'Pausing…')
-              : !analysisQueueControlReady
-                ? analysisQueueControlFailed ? 'Status unavailable' : 'Loading status…'
-                : analysisQueuePaused
-                  ? 'Resume analysis'
-                  : 'Pause analysis queue'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn-secondary inline-flex shrink-0 items-center justify-center gap-2"
+              onClick={() => { setDriveTopicSyncPreview(null); setTopicResolverStatus('Choose a subject and grade to preview a Drive and Firestore topic sync.'); setTopicResolverOpen(true); }}
+            >
+              <ListChecks className="h-4 w-4" aria-hidden="true" />
+              Topic JSON sync
+            </button>
+            <button
+              type="button"
+              className={analysisQueuePaused
+                ? 'btn-primary inline-flex shrink-0 items-center justify-center gap-2'
+                : 'btn-secondary inline-flex shrink-0 items-center justify-center gap-2'}
+              disabled={!analysisQueueControlReady || analysisQueueControlSaving}
+              onClick={handleToggleAnalysisQueue}
+            >
+              {analysisQueueControlSaving || (!analysisQueueControlReady && !analysisQueueControlFailed)
+                ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+                : analysisQueueControlFailed
+                  ? <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                  : analysisQueuePaused
+                    ? <Play className="h-4 w-4" aria-hidden="true" />
+                    : <Pause className="h-4 w-4" aria-hidden="true" />}
+              {analysisQueueControlSaving
+                ? (analysisQueuePaused ? 'Resuming…' : 'Pausing…')
+                : !analysisQueueControlReady
+                  ? analysisQueueControlFailed ? 'Status unavailable' : 'Loading status…'
+                  : analysisQueuePaused
+                    ? 'Resume analysis'
+                    : 'Pause analysis queue'}
+            </button>
+          </div>
         </section>
       ) : null}
       {role === ROLES.ADMIN ? (
@@ -1563,7 +1622,7 @@ export const PastExamPapersPage = () => {
         </div>
       ) : null}
       {role === ROLES.ADMIN && topicResolverOpen ? (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-y-auto overscroll-contain bg-slate-950/70 p-3 md:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !topicResolverLoading && !topicResolverGeminiLoading && !topicResolverSaveLoading && !topicResolverCleanupLoading) setTopicResolverOpen(false); }}>
+        <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-y-auto overscroll-contain bg-slate-950/70 p-3 md:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !topicResolverLoading && !topicResolverGeminiLoading && !topicResolverSaveLoading && !topicResolverCleanupLoading && !driveTopicSyncApplying && !legacyDriveAnalysisQueueLoading) setTopicResolverOpen(false); }}>
           <section className="panel flex h-[calc(100dvh-1.5rem)] max-h-[calc(100dvh-1.5rem)] min-h-0 w-full max-w-7xl flex-col overflow-hidden border-slate-700 bg-slate-900 p-4 md:h-[calc(100dvh-3rem)] md:max-h-[calc(100dvh-3rem)] md:p-6" role="dialog" aria-modal="true" aria-labelledby="topic-resolver-title">
             <div className="flex shrink-0 items-start justify-between gap-4">
               <div className="min-w-0">
@@ -1571,32 +1630,62 @@ export const PastExamPapersPage = () => {
                 <h2 id="topic-resolver-title" className="mt-2 text-xl font-bold text-white md:text-2xl">Topic resolver preview</h2>
                 <p className="mt-2 max-w-3xl text-sm text-slate-300">Review Firestore topic matches and Google Gemini suggestions for one subject and grade. Saving reviewed mappings also copies each distinct resolved Child | Parent label into that grade’s global topic list. Duplicate labels are skipped; analyzed paper records are not changed.</p>
               </div>
-              <button type="button" className="btn-secondary h-10 w-10 flex-none p-0" aria-label="Close topic resolver" title="Close" onClick={() => setTopicResolverOpen(false)} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading}><X className="mx-auto h-4 w-4" /></button>
+              <button type="button" className="btn-secondary h-10 w-10 flex-none p-0" aria-label="Close topic resolver" title="Close" onClick={() => setTopicResolverOpen(false)} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading || driveTopicSyncApplying || legacyDriveAnalysisQueueLoading}><X className="mx-auto h-4 w-4" /></button>
             </div>
 
             <div className="topic-resolver-scroll mt-5 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2" aria-label="Topic resolver results and controls" tabIndex={0}>
             <div className="grid shrink-0 gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_auto_auto]">
               <label className="grid gap-2 text-sm font-semibold text-slate-200">Subject
-                  <select className="input" value={topicResolverSubject} onChange={(event) => { setTopicResolverSubject(event.target.value); setTopicResolverRows([]); setTopicResolverCatalog([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading}>
+                  <select className="input" value={topicResolverSubject} onChange={(event) => { setTopicResolverSubject(event.target.value); setTopicResolverRows([]); setTopicResolverCatalog([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); setDriveTopicSyncPreview(null); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading || driveTopicSyncApplying || legacyDriveAnalysisQueueLoading}>
                   <option value="">Choose subject</option>
                   {SUBJECTS.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
                 </select>
               </label>
               <label className="grid gap-2 text-sm font-semibold text-slate-200">Grade
-                  <select className="input" value={topicResolverGrade} onChange={(event) => { setTopicResolverGrade(event.target.value); setTopicResolverRows([]); setTopicResolverCatalog([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading}>
+                  <select className="input" value={topicResolverGrade} onChange={(event) => { setTopicResolverGrade(event.target.value); setTopicResolverRows([]); setTopicResolverCatalog([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); setDriveTopicSyncPreview(null); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading || driveTopicSyncApplying || legacyDriveAnalysisQueueLoading}>
                   <option value="">Choose grade</option>
                   {SOUTH_AFRICAN_GRADES.filter((grade) => grade !== 'Select Grade').map((grade) => <option key={grade} value={grade}>{grade}</option>)}
                 </select>
               </label>
-              <button type="button" className="btn-primary inline-flex items-center justify-center gap-2 self-end" onClick={searchTopicResolver} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading || !topicResolverSubject || !topicResolverGrade}>
+              <button type="button" className="btn-primary inline-flex items-center justify-center gap-2 self-end" onClick={searchTopicResolver} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading || driveTopicSyncApplying || legacyDriveAnalysisQueueLoading || !topicResolverSubject || !topicResolverGrade}>
                 {topicResolverLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
                 Search Firestore
               </button>
-              <button type="button" className="btn-secondary inline-flex items-center justify-center gap-2 self-end" onClick={checkGlobalTopicCatalog} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading || !topicResolverSubject || !topicResolverGrade}>
+              <button type="button" className="btn-secondary inline-flex items-center justify-center gap-2 self-end" onClick={checkGlobalTopicCatalog} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || topicResolverCleanupLoading || driveTopicSyncApplying || legacyDriveAnalysisQueueLoading || !topicResolverSubject || !topicResolverGrade}>
                 {topicResolverCleanupLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ListChecks className="h-4 w-4" />}
-                Check global topics
+                Preview topic sync
               </button>
             </div>
+
+            {driveTopicSyncPreview ? (
+              <section className="mt-4 rounded-xl border border-lime-300/30 bg-lime-300/5 p-4" aria-label="Drive topic sync preview">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h3 className="font-semibold text-white">Firestore and Drive preview</h3>
+                    <p className="mt-1 text-sm text-slate-300">{driveTopicSyncPreview.analyzedTopicCount} topics from {driveTopicSyncPreview.analyzedPaperCount} analyzed papers • {driveTopicSyncPreview.currentTopicCount} currently in Firestore • {driveTopicSyncPreview.topicsFileExists ? 'topics.json will be updated' : 'topics.json will be created'} in “{driveTopicSyncPreview.driveFolderName}”.</p>
+                    <p className="mt-2 text-xs text-amber-200">Applying this preview replaces the selected grade’s global topic list with topics referenced by analyzed questions. Existing student topic history is not changed.</p>
+                  </div>
+                  <button type="button" className="btn-primary inline-flex shrink-0 items-center justify-center gap-2" onClick={applyDriveTopicCatalogSync} disabled={driveTopicSyncApplying || topicResolverCleanupLoading || !driveTopicSyncPreview.previewToken}>
+                    {driveTopicSyncApplying ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                    {driveTopicSyncApplying ? 'Syncing…' : 'Apply Firestore + Drive sync'}
+                  </button>
+                </div>
+                {driveTopicSyncPreview.removedTopics?.length ? <p className="mt-3 text-sm text-slate-200"><span className="font-semibold text-rose-200">Will remove:</span> {driveTopicSyncPreview.removedTopics.join(' • ')}</p> : null}
+                {driveTopicSyncPreview.addedTopics?.length ? <p className="mt-2 text-sm text-slate-200"><span className="font-semibold text-lime-200">Will add:</span> {driveTopicSyncPreview.addedTopics.join(' • ')}</p> : null}
+                {!driveTopicSyncPreview.topics?.length ? <p className="mt-3 rounded-lg bg-amber-400/10 p-3 text-sm text-amber-100">No analyzed question topics were found. Applying will empty the selected grade’s global topic list and topics.json.</p> : null}
+              </section>
+            ) : null}
+
+            <section className="mt-4 flex flex-col gap-3 rounded-xl border border-slate-700 bg-slate-800/40 p-4 sm:flex-row sm:items-center sm:justify-between" aria-label="Legacy Drive analysis JSON check">
+              <div>
+                <h3 className="font-semibold text-slate-100">Legacy paper JSON backfill</h3>
+                <p className="mt-1 text-sm text-slate-300">Finds matching JSON files for unanalyzed papers in this subject and grade, validates their paper metadata, and queues valid matches through the existing pause-aware analysis queue. It queues up to 50 valid matches per run.</p>
+              </div>
+              <button type="button" className="btn-secondary inline-flex shrink-0 items-center justify-center gap-2" onClick={queueLegacyDriveAnalyses} disabled={legacyDriveAnalysisQueueLoading || topicResolverCleanupLoading || driveTopicSyncApplying || !topicResolverSubject || !topicResolverGrade}>
+                {legacyDriveAnalysisQueueLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <HardDriveDownload className="h-4 w-4" />}
+                {legacyDriveAnalysisQueueLoading ? 'Checking JSON…' : 'Check legacy papers'}
+              </button>
+            </section>
 
             {topicResolverRows.length ? (
               <div className="mt-4 grid shrink-0 gap-3 md:grid-cols-[1fr_auto_auto] md:items-center">
@@ -1678,12 +1767,12 @@ export const PastExamPapersPage = () => {
             </div>
             <div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-700 pt-4">
               <label className="flex items-start gap-2 text-xs text-slate-300">
-                <input type="checkbox" checked={topicResolverReviewed} onChange={(event) => setTopicResolverReviewed(event.target.checked)} disabled={Boolean(unresolvedTopicRows.length) || topicResolverGeminiLoading || topicResolverSaveLoading} />
+                <input type="checkbox" checked={topicResolverReviewed} onChange={(event) => setTopicResolverReviewed(event.target.checked)} disabled={Boolean(unresolvedTopicRows.length) || topicResolverGeminiLoading || topicResolverSaveLoading || driveTopicSyncApplying || legacyDriveAnalysisQueueLoading} />
                 <span>{unresolvedTopicRows.length ? `${unresolvedTopicRows.length} topics still need mappings.` : `I reviewed and confirmed every topic mapping${suggestedTopicRows.length ? `, including ${suggestedTopicRows.length} Google Gemini suggestion${suggestedTopicRows.length === 1 ? '' : 's'}` : ''}.`}</span>
               </label>
               <div className="flex flex-wrap gap-2">
-                <button type="button" className="btn-secondary" onClick={() => { setTopicResolverRows([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); setTopicResolverSearch(''); setTopicResolverStatus('Select a subject and grade to search.'); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading}>Clear results</button>
-                <button type="button" className="btn-primary inline-flex items-center justify-center gap-2" onClick={saveReviewedTopicMappings} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || !topicResolverRows.length || unresolvedTopicRows.length > 0 || !topicResolverReviewed}>
+                <button type="button" className="btn-secondary" onClick={() => { setTopicResolverRows([]); setTopicResolverCorrections({}); setTopicResolverMethods({}); setTopicResolverReviewed(false); setTopicResolverSearch(''); setDriveTopicSyncPreview(null); setTopicResolverStatus('Select a subject and grade to search or preview the topic sync.'); }} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || driveTopicSyncApplying || legacyDriveAnalysisQueueLoading}>Clear results</button>
+                <button type="button" className="btn-primary inline-flex items-center justify-center gap-2" onClick={saveReviewedTopicMappings} disabled={topicResolverLoading || topicResolverGeminiLoading || topicResolverSaveLoading || driveTopicSyncApplying || legacyDriveAnalysisQueueLoading || !topicResolverRows.length || unresolvedTopicRows.length > 0 || !topicResolverReviewed}>
                   {topicResolverSaveLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                   Save mappings & sync topics
                 </button>

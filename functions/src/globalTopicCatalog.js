@@ -1,12 +1,20 @@
+import { createHash } from 'node:crypto';
 import { FieldPath } from 'firebase-admin/firestore';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { getDb } from './admin.js';
+import {
+  findDrivePastPaperGradeFolder,
+  listDriveJsonFilesInGradeFolder,
+  summarizeDriveJsonError,
+  writeDriveTopicsJson,
+} from './googleDrivePaperJson.js';
 
 const MAX_CATALOG_GROUPS = 1000;
 const PAPER_PAGE_SIZE = 250;
 const MAPPING_PAGE_SIZE = 250;
 const MIGRATION_COLLECTION = 'settings';
 const MIGRATION_DOCUMENT = 'globalTopicCatalogMigration';
+const DRIVE_TOPIC_SYNC_LOCK_PREFIX = 'driveTopicCatalogSync';
 
 const normalizeTopicKey = (value) => String(value ?? '')
   .normalize('NFKD')
@@ -445,5 +453,199 @@ export const migrateGlobalTopicCatalog = onCall({ timeoutSeconds: 540, memory: '
   } catch (error) {
     await stateRef.set({ status: 'failed', error: String(error?.message ?? error).slice(0, 500), updatedAt: new Date() }, { merge: true }).catch(() => {});
     throw error;
+  }
+});
+
+const makeDriveTopicCatalogPlan = async ({ subject, grade }) => {
+  const db = getDb();
+  const gradeRef = db.collection('subjects').doc(subject).collection('grades').doc(grade);
+  const [gradeSnapshot, paperSnapshot, driveFolder] = await Promise.all([
+    gradeRef.get(),
+    db.collection('questionPapers').where('subject', '==', subject)
+      .select('subject', 'grade', 'analysisStatus', 'availableForGeneration', 'questions', 'topicMetadata', 'analysisCompletedAt')
+      .get(),
+    findDrivePastPaperGradeFolder({ subject, grade }),
+  ]);
+  if (!driveFolder) throw new HttpsError('failed-precondition', `No ${grade} folder for ${subject} exists under the configured past-papers Drive root.`);
+
+  const gradeData = gradeSnapshot.data() ?? {};
+  const currentTopics = uniqueTopicLabels(gradeData.topics);
+  const papers = paperSnapshot.docs.filter((paperDocument) => {
+    const paper = paperDocument.data();
+    return paper.grade === grade && paper.analysisStatus === 'Analyzed'
+      && paper.availableForGeneration !== false && Array.isArray(paper.questions) && paper.questions.length > 0;
+  });
+  const rows = new Map();
+  const addTopic = (value, difficulty) => {
+    const topic = normalizeStoredTopicLabel(value);
+    const key = normalizeTopicKey(topic);
+    if (!topic || !key) return;
+    const row = rows.get(key) ?? { topic, difficulties: [] };
+    const normalizedDifficulty = normalizeTopicDifficulty(difficulty);
+    if (normalizedDifficulty) row.difficulties.push(normalizedDifficulty);
+    rows.set(key, row);
+  };
+  papers.forEach((paperDocument) => {
+    const paper = paperDocument.data();
+    (Array.isArray(paper.questions) ? paper.questions : []).forEach((question) => {
+      const labels = Array.isArray(question?.topics) && question.topics.length ? question.topics : [question?.topic];
+      labels.forEach((label) => addTopic(label, question?.difficulty ?? question?.metadata?.difficulty));
+    });
+  });
+
+  const topics = [...rows.values()].map((row) => row.topic).sort((left, right) => left.localeCompare(right));
+  const savedDifficulty = new Map();
+  (Array.isArray(gradeData.topicMetadata) ? gradeData.topicMetadata : []).forEach((item) => {
+    const topic = normalizeStoredTopicLabel(item?.topic ?? item?.label);
+    const difficulty = normalizeTopicDifficulty(item?.difficulty);
+    if (topic && difficulty) savedDifficulty.set(normalizeTopicKey(topic), difficulty);
+  });
+  const topicMetadata = [...rows.entries()].flatMap(([key, row]) => {
+    const difficulty = savedDifficulty.get(key) || preferredDifficulty(row.difficulties);
+    return difficulty ? [{ topic: row.topic, difficulty }] : [];
+  }).sort((left, right) => left.topic.localeCompare(right.topic));
+  const nextKeys = new Set(topics.map(normalizeTopicKey));
+  const currentKeys = new Set(currentTopics.map(normalizeTopicKey));
+  const removedTopics = currentTopics.filter((topic) => !nextKeys.has(normalizeTopicKey(topic)));
+  const addedTopics = topics.filter((topic) => !currentKeys.has(normalizeTopicKey(topic)));
+  const topicJsonFiles = (await listDriveJsonFilesInGradeFolder(driveFolder.id))
+    .filter((file) => String(file.name ?? '').trim().toLocaleLowerCase() === 'topics.json');
+  if (topicJsonFiles.length > 1) {
+    throw new HttpsError('failed-precondition', 'More than one topics.json file exists in this Drive grade folder. Remove or rename the duplicate files before syncing.');
+  }
+  const hashInput = {
+    subject,
+    grade,
+    currentTopics: currentTopics.map(normalizeTopicKey).sort(),
+    topics: topics.map(normalizeTopicKey).sort(),
+    topicMetadata,
+    papers: papers.map((paperDocument) => ({
+      id: paperDocument.id,
+      completedAt: paperDocument.get('analysisCompletedAt')?.toMillis?.() ?? null,
+    })).sort((left, right) => left.id.localeCompare(right.id)),
+  };
+  const previewToken = createHash('sha256').update(JSON.stringify(hashInput)).digest('hex');
+  return {
+    subject,
+    grade,
+    gradeRef,
+    currentTopics,
+    topics,
+    topicMetadata,
+    removedTopics,
+    addedTopics,
+    analyzedPaperCount: papers.length,
+    driveFolderName: driveFolder.name,
+    topicsFileExists: topicJsonFiles.length === 1,
+    topicsFileId: topicJsonFiles[0]?.id ?? '',
+    previewToken,
+  };
+};
+
+export const previewDriveTopicCatalogSync = onCall({ timeoutSeconds: 180, memory: '512MiB' }, async (request) => {
+  await verifyAdmin(request);
+  const subject = String(request.data?.subject ?? '').trim().slice(0, 100);
+  const grade = String(request.data?.grade ?? '').trim().slice(0, 32);
+  if (!subject || !grade || subject.includes('/') || grade.includes('/')) {
+    throw new HttpsError('invalid-argument', 'Provide a valid subject and grade.');
+  }
+  try {
+    const plan = await makeDriveTopicCatalogPlan({ subject, grade });
+    return {
+      subject,
+      grade,
+      currentTopicCount: plan.currentTopics.length,
+      analyzedTopicCount: plan.topics.length,
+      analyzedPaperCount: plan.analyzedPaperCount,
+      removedTopics: plan.removedTopics,
+      addedTopics: plan.addedTopics,
+      topics: plan.topics,
+      topicMetadata: plan.topicMetadata,
+      driveFolderName: plan.driveFolderName,
+      topicsFileExists: plan.topicsFileExists,
+      previewToken: plan.previewToken,
+    };
+  } catch (error) {
+    if (error instanceof HttpsError) throw error;
+    throw new HttpsError('failed-precondition', summarizeDriveJsonError(error));
+  }
+});
+
+export const syncDriveTopicCatalog = onCall({ timeoutSeconds: 240, memory: '512MiB' }, async (request) => {
+  const uid = request.auth?.uid;
+  await verifyAdmin(request);
+  const subject = String(request.data?.subject ?? '').trim().slice(0, 100);
+  const grade = String(request.data?.grade ?? '').trim().slice(0, 32);
+  const previewToken = String(request.data?.previewToken ?? '').trim();
+  if (!subject || !grade || subject.includes('/') || grade.includes('/') || !previewToken) {
+    throw new HttpsError('invalid-argument', 'Choose a subject and grade and review a current topic-sync preview first.');
+  }
+  const db = getDb();
+  const lockId = createHash('sha256').update(`${subject}\u0000${grade}`).digest('hex').slice(0, 32);
+  const syncStateRef = db.collection('settings').doc(`${DRIVE_TOPIC_SYNC_LOCK_PREFIX}_${lockId}`);
+  const lockOwner = `${uid}_${Date.now()}`;
+  const lockAcquired = await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(syncStateRef);
+    const state = snapshot.data() ?? {};
+    const startedAt = state.startedAt?.toMillis?.() ?? 0;
+    if (state.status === 'running' && Date.now() - startedAt < 15 * 60 * 1000) return false;
+    transaction.set(syncStateRef, { status: 'running', owner: lockOwner, subject, grade, startedAt: new Date(), updatedAt: new Date(), error: '' }, { merge: true });
+    return true;
+  });
+  if (!lockAcquired) throw new HttpsError('failed-precondition', 'A topic sync for this subject and grade is already running.');
+
+  try {
+    const plan = await makeDriveTopicCatalogPlan({ subject, grade });
+    if (plan.previewToken !== previewToken) {
+      throw new HttpsError('failed-precondition', 'Analyzed papers or saved topics changed after the preview. Create a fresh preview before applying the sync.');
+    }
+    const driveResult = await writeDriveTopicsJson({
+      subject,
+      grade,
+      document: {
+        schemaVersion: 1,
+        subject,
+        grade,
+        topics: plan.topics,
+        topicMetadata: plan.topicMetadata,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    await db.runTransaction(async (transaction) => {
+      const latestSnapshot = await transaction.get(plan.gradeRef);
+      const latestTopics = uniqueTopicLabels(latestSnapshot.data()?.topics).map(normalizeTopicKey).sort();
+      const expectedTopics = plan.currentTopics.map(normalizeTopicKey).sort();
+      if (JSON.stringify(latestTopics) !== JSON.stringify(expectedTopics)) {
+        throw new HttpsError('failed-precondition', 'The Firestore topic list changed during sync. The Drive file was written; create a new preview and sync again.');
+      }
+      transaction.set(plan.gradeRef, {
+        subjectName: subject,
+        gradeName: grade,
+        topics: plan.topics,
+        topicMetadata: plan.topicMetadata,
+        driveTopicCatalogSyncInitialized: true,
+        driveTopicSyncStatus: 'synced',
+        driveTopicSyncError: '',
+        driveTopicsFileId: driveResult.file?.id ?? '',
+        driveTopicsSyncedAt: new Date(),
+        updatedAt: new Date(),
+      }, { merge: true });
+    });
+    await syncStateRef.set({ status: 'completed', owner: lockOwner, subject, grade, topicsFileId: driveResult.file?.id ?? '', topicCount: plan.topics.length, removedCount: plan.removedTopics.length, completedAt: new Date(), updatedAt: new Date(), error: '' }, { merge: true });
+    return {
+      subject,
+      grade,
+      topicCount: plan.topics.length,
+      removedTopics: plan.removedTopics,
+      addedTopics: plan.addedTopics,
+      analyzedPaperCount: plan.analyzedPaperCount,
+      topics: plan.topics,
+      topicsFileId: driveResult.file?.id ?? '',
+    };
+  } catch (error) {
+    const message = summarizeDriveJsonError(error);
+    await syncStateRef.set({ status: 'failed', owner: lockOwner, subject, grade, error: message, updatedAt: new Date() }, { merge: true }).catch(() => {});
+    if (error instanceof HttpsError) throw error;
+    throw new HttpsError('internal', `The topic sync did not complete: ${message}`);
   }
 });

@@ -2211,6 +2211,30 @@ export const cleanupGlobalTopicCatalog = async ({ action, subject, grade, topics
   return response.data;
 };
 
+export const previewDriveTopicCatalogSync = async ({ subject, grade } = {}) => {
+  if (!isFirebaseConfigured || !functions) throw new Error('Firebase Functions are not configured.');
+  if (!subject || !grade) throw new Error('Choose a subject and grade before previewing the Drive topic sync.');
+  const callable = httpsCallable(functions, 'previewDriveTopicCatalogSync', { timeout: 180000 });
+  const response = await callable({ subject, grade });
+  return response.data;
+};
+
+export const syncDriveTopicCatalog = async ({ subject, grade, previewToken } = {}) => {
+  if (!isFirebaseConfigured || !functions) throw new Error('Firebase Functions are not configured.');
+  if (!subject || !grade || !previewToken) throw new Error('Create a current topic-sync preview before applying the sync.');
+  const callable = httpsCallable(functions, 'syncDriveTopicCatalog', { timeout: 240000 });
+  const response = await callable({ subject, grade, previewToken });
+  return response.data;
+};
+
+export const queueLegacyDriveJsonAnalyses = async ({ subject, grade, maxPapers = 50 } = {}) => {
+  if (!isFirebaseConfigured || !functions) throw new Error('Firebase Functions are not configured.');
+  if (!subject || !grade) throw new Error('Choose a subject and grade before checking legacy Drive analysis JSON files.');
+  const callable = httpsCallable(functions, 'queueLegacyDriveJsonAnalyses', { timeout: 540000 });
+  const response = await callable({ subject, grade, maxPapers });
+  return response.data;
+};
+
 export const getTopicResolverMappings = async ({ subject, grade } = {}) => {
   if (!subject || !grade) throw new Error('Choose a subject and grade before loading saved mappings.');
   if (!isFirebaseConfigured) return [];
