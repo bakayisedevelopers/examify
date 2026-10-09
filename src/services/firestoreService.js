@@ -724,6 +724,88 @@ export const getTodayExercises = async (studentId, subject = DEFAULT_SUBJECT, kn
   return episodeExercises(studentId, subject, [where('assignmentDate', '==', localDateKey()), limit(MAX_EXERCISES_PER_DATE)], null, knownEpisode);
 };
 
+const normalizeAssignmentDate = (value) => String(value ?? '').slice(0, 10);
+
+export const getStudentExerciseCalendarBounds = async (studentId, subjectEpisodes = []) => {
+  if (!studentId || !subjectEpisodes.length) return { earliestDate: '', latestDate: '', subjectBounds: {} };
+  if (!isFirebaseConfigured) return { earliestDate: '', latestDate: '', subjectBounds: {} };
+  ensureDb();
+
+  const episodeBounds = await Promise.all(subjectEpisodes.filter((episode) => episode?.id).map(async (episode) => {
+    const exercisesRef = collection(db, 'users', studentId, 'subjects', episode.id, 'exercises');
+    const [firstSnapshot, lastSnapshot] = await Promise.all([
+      getDocs(query(exercisesRef, orderBy('assignmentDate', 'asc'), limit(1))),
+      getDocs(query(exercisesRef, orderBy('assignmentDate', 'desc'), limit(1))),
+    ]);
+    return {
+      subjectInstanceId: episode.id,
+      earliestDate: normalizeAssignmentDate(firstSnapshot.docs[0]?.data()?.assignmentDate),
+      latestDate: normalizeAssignmentDate(lastSnapshot.docs[0]?.data()?.assignmentDate),
+    };
+  }));
+
+  const dates = episodeBounds.flatMap((item) => [item.earliestDate, item.latestDate]).filter(Boolean).sort();
+  return {
+    earliestDate: dates[0] ?? '',
+    latestDate: dates.at(-1) ?? '',
+    subjectBounds: Object.fromEntries(episodeBounds.map((item) => [item.subjectInstanceId, item])),
+  };
+};
+
+export const getStudentExerciseCalendarWindow = async ({ studentId, subjectEpisodes = [], startDate, endDate }) => {
+  if (!studentId || !startDate || !endDate || !subjectEpisodes.length) return [];
+  if (!isFirebaseConfigured) {
+    const today = localDateKey();
+    if (today < startDate || today > endDate) return [];
+    const demoRows = await Promise.all(subjectEpisodes.map(async (episode) => {
+      const rows = await getTodayExercises(studentId, episode.subjectKey ?? DEFAULT_SUBJECT, episode);
+      return rows.map((item) => ({
+        ...item,
+        subject: item.subject ?? episode.subjectKey ?? DEFAULT_SUBJECT,
+        subjectInstanceId: item.subjectInstanceId ?? episode.id,
+      }));
+    }));
+    return demoRows.flat();
+  }
+  ensureDb();
+
+  const exerciseRows = await Promise.all(subjectEpisodes.filter((episode) => episode?.id).map(async (episode) => {
+    const snapshot = await getDocs(query(
+      collection(db, 'users', studentId, 'subjects', episode.id, 'exercises'),
+      where('assignmentDate', '>=', startDate),
+      where('assignmentDate', '<=', endDate),
+      orderBy('assignmentDate', 'asc'),
+    ));
+    return snapshot.docs.map((item) => ({
+      id: item.id,
+      ...item.data(),
+      studentId,
+      subject: item.data().subject ?? episode.subjectKey ?? DEFAULT_SUBJECT,
+      subjectInstanceId: episode.id,
+      documentPath: item.ref.path,
+    }));
+  }));
+
+  return exerciseRows.flat().sort((left, right) => String(left.assignmentDate).localeCompare(String(right.assignmentDate)));
+};
+
+export const getCompletedPeerMarkingAssignmentsForCalendar = async ({ reviewerId, startDate, endDate, subjectInstanceIds = [] }) => {
+  if (!reviewerId || !startDate || !endDate || !isFirebaseConfigured) return [];
+  ensureDb();
+  const snapshot = await getDocs(query(
+    collectionGroup(db, 'peerMarkingAssignments'),
+    where('reviewerId', '==', reviewerId),
+    where('status', '==', 'completed'),
+    where('assignmentDate', '>=', startDate),
+    where('assignmentDate', '<=', endDate),
+    orderBy('assignmentDate', 'desc'),
+  ));
+  const activeSubjectIds = new Set(subjectInstanceIds);
+  return snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data(), assignmentPath: item.ref.path }))
+    .filter((item) => !activeSubjectIds.size || activeSubjectIds.has(item.reviewerSubjectInstanceId));
+};
+
 export const getTodayExercise = async (studentId, subject = DEFAULT_SUBJECT, knownEpisode = null) => {
   const exercises = await getTodayExercises(studentId, subject, knownEpisode);
   return exercises.find((exercise) => !isExerciseSubmitted(exercise)) ?? exercises[0] ?? null;

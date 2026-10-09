@@ -451,15 +451,15 @@ export const ProfileSubjectsPage = ({ role }) => {
             </button>
           </div>
           {globalSubjectsLoading ? <LoadingState className="min-h-12 p-3" label="Loading available subjects…" /> : null}
-          {restorableHistoryCandidates.length || historyCandidatesLoading ? <fieldset className="space-y-2 rounded-2xl bg-amber-50 p-4">
-            <legend className="px-1 text-xs font-semibold uppercase tracking-[0.15em] text-amber-800">Recent topic history (optional)</legend>
-            <p className="text-xs text-amber-900">Choose a subject below if needed, then opt in to copy only its topics and understanding scores. Staff and lessons are not copied.</p>
+          {restorableHistoryCandidates.length || historyCandidatesLoading ? <fieldset className="space-y-2 rounded-2xl border border-lime-500/30 bg-transparent p-4">
+            <legend className="px-1 text-xs font-semibold uppercase tracking-[0.15em] text-lime-300">Recent subject history (optional)</legend>
+            <p className="text-xs text-slate-300">Choose a subject below if needed, then opt in to restore its previous topics and understanding scores. Staff and lessons are not copied.</p>
             <div className="space-y-2">
               {historyCandidatesLoading ? <LoadingState label="Loading eligible subject history…" /> : null}
               {restorableHistoryCandidates.map((candidate) => (
-                <label key={candidate.episodeId} className="flex items-start gap-3 rounded-xl bg-white/80 p-3 text-sm text-slate-700">
+                <label key={candidate.episodeId} className="flex items-start gap-3 rounded-xl border border-slate-700 bg-transparent p-3 text-sm text-slate-200">
                   <input type="checkbox" className="mt-0.5" checked={selectedHistoryIds.includes(candidate.episodeId)} onChange={(event) => handleRestoreHistoryChoice(candidate, event.target.checked)} disabled={historyCapacity === 0 || !selectedSubjects.includes(candidate.subject) && remainingSubjectSlots === 0} />
-                  <span><span className="font-semibold">{candidate.subject}</span><span className="block text-xs text-slate-500">Restore recent history from {new Date(candidate.cancelledAt).toLocaleDateString()} (capacity: {historyCapacity})</span></span>
+                  <span><span className="font-semibold text-slate-100">{candidate.subject}</span><span className="block text-xs text-slate-400">Restore subject history from {new Date(candidate.cancelledAt).toLocaleDateString()} (capacity: {historyCapacity})</span></span>
                 </label>
               ))}
             </div>
@@ -472,7 +472,7 @@ export const ProfileSubjectsPage = ({ role }) => {
                   key={subject}
                   type="button"
                   onClick={() => handleRemoveSelectedSubject(subject)}
-                  className="rounded-full border border-lime-500/50 bg-transparent px-3 py-1 text-sm font-semibold text-slate-900 shadow-sm transition hover:bg-rose-50 hover:text-rose-700"
+                  className="rounded-full border border-lime-500/50 bg-transparent px-3 py-1 text-sm font-semibold text-slate-900 shadow-sm transition hover:border-lime-300 hover:bg-lime-300 hover:text-slate-950"
                   title="Remove subject"
                 >
                   {subject} ×

@@ -1,7 +1,8 @@
 import { lazy, Suspense } from 'react';
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { MarketingLayout } from '../layouts/MarketingLayout';
 import { ProtectedRoute } from '../components/common/ProtectedRoute';
+import { AppRouteErrorBoundary } from '../components/common/AppRouteErrorBoundary';
 import { ROLES } from '../lib/constants';
 import { PaidStudentRoute } from '../components/common/PaidStudentRoute';
 
@@ -45,8 +46,18 @@ const ProfileSettingsPage = lazyNamed(() => import('../pages/profile/ProfileSett
 const TutorAgreementPage = lazyNamed(() => import('../pages/profile/TutorAgreementPage'), 'TutorAgreementPage');
 const PaperReaderPage = lazyNamed(() => import('../pages/PaperReaderPage'), 'PaperReaderPage');
 
-export const AppRoutes = () => (
-  <Suspense fallback={<div className="flex min-h-screen items-center justify-center text-sm text-slate-500" role="status">Loading page…</div>}>
+export const AppRoutes = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const homePath = location.pathname.startsWith('/student') ? '/student'
+    : location.pathname.startsWith('/teacher') ? '/teacher'
+      : location.pathname.startsWith('/tutor') ? '/tutor'
+        : location.pathname.startsWith('/parent') ? '/parent'
+          : location.pathname.startsWith('/admin') ? '/admin' : '/';
+
+  return (
+    <AppRouteErrorBoundary key={location.pathname} onGoHome={() => navigate(homePath)}>
+      <Suspense fallback={<div className="flex min-h-screen items-center justify-center text-sm text-slate-500" role="status">Loading page…</div>}>
     <Routes>
     <Route element={<MarketingLayout />}>
       <Route path="/" element={<PortalHomePage />} />
@@ -151,5 +162,7 @@ export const AppRoutes = () => (
 
     <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
-  </Suspense>
-);
+      </Suspense>
+    </AppRouteErrorBoundary>
+  );
+};

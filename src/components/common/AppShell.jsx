@@ -72,6 +72,11 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
     : ({ teacher: 'Teacher', tutor: 'Tutor', admin: 'Admin', parent: 'Parent' }[effectiveRole] || 'Account');
   const navigate = useNavigate();
   const handleLogout = () => runOperation({ operationName: 'Signing out', successMessage: 'You have been signed out.', autoDismissMs: 650 }, () => onLogout?.()).catch(() => {});
+  const handleBack = () => {
+    const historyIndex = Number(window.history.state?.idx);
+    if (Number.isInteger(historyIndex) && historyIndex > 0) navigate(-1);
+    else navigate(homePath, { replace: true });
+  };
 
   return (
     <div className="fixed inset-0 overflow-hidden bg-slate-950 text-slate-100 selection:bg-lime-400 selection:text-slate-950 lg:static lg:h-screen">
@@ -82,7 +87,7 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
           <div className="flex min-w-10 items-center justify-start">
             <button
               type="button"
-              onClick={() => navigate(-1)}
+              onClick={handleBack}
               className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-lime-400 transition hover:bg-slate-800 hover:text-lime-300"
               aria-label="Go back"
             >
