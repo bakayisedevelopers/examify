@@ -2577,6 +2577,21 @@ export const cancelQuestionPaperAnalysis = async (paperId) => {
   return response.data;
 };
 
+export const getQuestionPaperAnalysisControl = async () => {
+  if (!isFirebaseConfigured || !functions) throw new Error('Firebase Functions are not configured.');
+  const callable = httpsCallable(functions, 'getQuestionPaperAnalysisControl');
+  const response = await callable({});
+  return response.data;
+};
+
+export const setQuestionPaperAnalysisPaused = async (paused) => {
+  if (typeof paused !== 'boolean') throw new Error('Choose whether to pause or resume question-paper analysis.');
+  if (!isFirebaseConfigured || !functions) throw new Error('Firebase Functions are not configured.');
+  const callable = httpsCallable(functions, 'setQuestionPaperAnalysisPaused');
+  const response = await callable({ paused });
+  return response.data;
+};
+
 export const getPeerMarkingAssignmentsForStudent = async (reviewerId) => {
   if (!reviewerId || !isFirebaseConfigured) return [];
   ensureDb();

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, FileText, Folder, HardDriveDownload, ListChecks, LoaderCircle, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileText, Folder, HardDriveDownload, ListChecks, LoaderCircle, Pause, Play, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { AppShell } from '../components/common/AppShell';
 import { LoadingState } from '../components/common/LoadingState';
@@ -7,7 +7,7 @@ import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { useOperationStatus } from '../hooks/useOperationStatus';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
-import { cancelQuestionPaperAnalysis, cleanupGlobalTopicCatalog, getGlobalTopicList, getGoogleDrivePastPaperFolderContents, getGoogleDrivePastPaperImportStatuses, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, startGoogleDrivePastPaperImport, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
+import { cancelQuestionPaperAnalysis, cleanupGlobalTopicCatalog, getGlobalTopicList, getGoogleDrivePastPaperFolderContents, getGoogleDrivePastPaperImportStatuses, getQuestionPaperAnalysisControl, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, setQuestionPaperAnalysisPaused, startGoogleDrivePastPaperImport, subscribeQuestionPapers, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
 import { getApprovedTutorSubjects, getUserSubjects } from '../utils/tutorSubjects';
 import { buildTopicResolverRows } from '../services/topicResolver';
@@ -273,6 +273,12 @@ export const PastExamPapersPage = () => {
   const [driveFolderContents, setDriveFolderContents] = useState(null);
   const [driveFolderTrail, setDriveFolderTrail] = useState([]);
   const [driveFolderLoading, setDriveFolderLoading] = useState(false);
+  const [analysisQueuePaused, setAnalysisQueuePaused] = useState(false);
+  const [analysisQueueActivePaperId, setAnalysisQueueActivePaperId] = useState('');
+  const [analysisQueueControlReady, setAnalysisQueueControlReady] = useState(false);
+  const [analysisQueueControlFailed, setAnalysisQueueControlFailed] = useState(false);
+  const [analysisQueueControlSaving, setAnalysisQueueControlSaving] = useState(false);
+  const [analysisQueueMessage, setAnalysisQueueMessage] = useState('');
   const [uploadTab, setUploadTab] = useState('single');
   const [singleForm, setSingleForm] = useState(defaultPaperForm(profile));
   const [bulkRows, setBulkRows] = useState([]);
@@ -312,6 +318,25 @@ export const PastExamPapersPage = () => {
   }, [topicResolverOpen]);
 
   const role = useMemo(() => profile?.role ?? ROLES.STUDENT, [profile]);
+  useEffect(() => {
+    if (role !== ROLES.ADMIN) return undefined;
+    let active = true;
+    setAnalysisQueueControlReady(false);
+    setAnalysisQueueControlFailed(false);
+    getQuestionPaperAnalysisControl().then((control) => {
+      if (!active) return;
+      setAnalysisQueuePaused(control.paused === true);
+      setAnalysisQueueActivePaperId(String(control.activePaperId ?? ''));
+      setAnalysisQueueControlReady(true);
+      setAnalysisQueueControlFailed(false);
+      setAnalysisQueueMessage('');
+    }).catch((error) => {
+      if (!active) return;
+      setAnalysisQueueControlFailed(true);
+      setAnalysisQueueMessage(error.message || 'Could not load the analysis queue status. Refresh the page and try again.');
+    });
+    return () => { active = false; };
+  }, [role]);
   const allowedSubjects = useMemo(() => {
     if (role === ROLES.ADMIN) return SUBJECTS;
     if (role === ROLES.TUTOR) return getApprovedTutorSubjects(profile);
@@ -320,6 +345,25 @@ export const PastExamPapersPage = () => {
   const visibleSubjects = allowedSubjects.length ? allowedSubjects : SUBJECTS;
   const isStudentExploring = Boolean(searchTerm.trim()) || Object.keys(studentFilterOverrides).length > 0;
   const studentFilterValues = { subject: 'all', grade: 'all', year: 'all', region: 'all', month: 'all', paperNumber: 'all', ...studentFilterOverrides };
+
+  const handleToggleAnalysisQueue = async () => {
+    if (!analysisQueueControlReady || analysisQueueControlSaving) return;
+    const paused = !analysisQueuePaused;
+    setAnalysisQueueControlSaving(true);
+    setAnalysisQueueMessage('');
+    try {
+      const result = await setQuestionPaperAnalysisPaused(paused);
+      setAnalysisQueuePaused(result.paused === true);
+      setAnalysisQueueActivePaperId(String(result.activePaperId ?? ''));
+      setAnalysisQueueMessage(paused
+        ? 'The queue is paused. Any paper already in progress will finish; queued papers are being kept.'
+        : 'The queue has resumed. Queued papers will continue in order.');
+    } catch (error) {
+      setAnalysisQueueMessage(error.message || `Could not ${paused ? 'pause' : 'resume'} question-paper analysis.`);
+    } finally {
+      setAnalysisQueueControlSaving(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -1074,6 +1118,57 @@ export const PastExamPapersPage = () => {
             ? 'Review papers grouped by analysis status. Each section has separate filters.'
             : 'Browse papers across all subjects. Use filters to narrow by subject or year.'}
       />
+      {role === ROLES.ADMIN ? (
+        <section className="panel mb-4 flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between" aria-label="Question-paper analysis queue controls">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="font-semibold text-slate-900">Question-paper analysis queue</h2>
+              {analysisQueueControlReady ? (
+                <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${analysisQueuePaused
+                  ? 'border-amber-300 bg-amber-100 text-amber-900'
+                  : 'border-lime-300 bg-lime-100 text-lime-900'}`}>
+                  {analysisQueuePaused ? 'Paused' : 'Running'}
+                </span>
+              ) : null}
+            </div>
+            <p className="mt-1 text-sm text-slate-600">
+              {analysisQueueControlReady
+                ? analysisQueuePaused
+                  ? analysisQueueActivePaperId
+                    ? 'The current paper may finish. Remaining papers stay queued until you resume.'
+                    : 'Queued papers are being held until you resume analysis.'
+                  : 'Pause after the current paper finishes; queued papers will be kept.'
+                : analysisQueueControlFailed
+                  ? 'The queue status could not be loaded. Refresh the page before changing the queue.'
+                  : 'Checking the analysis queue status…'}
+            </p>
+            {analysisQueueMessage ? <p className="mt-2 text-sm text-slate-700" role="status">{analysisQueueMessage}</p> : null}
+          </div>
+          <button
+            type="button"
+            className={analysisQueuePaused
+              ? 'btn-primary inline-flex shrink-0 items-center justify-center gap-2'
+              : 'btn-secondary inline-flex shrink-0 items-center justify-center gap-2'}
+            disabled={!analysisQueueControlReady || analysisQueueControlSaving}
+            onClick={handleToggleAnalysisQueue}
+          >
+            {analysisQueueControlSaving || (!analysisQueueControlReady && !analysisQueueControlFailed)
+              ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+              : analysisQueueControlFailed
+                ? <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                : analysisQueuePaused
+                ? <Play className="h-4 w-4" aria-hidden="true" />
+                : <Pause className="h-4 w-4" aria-hidden="true" />}
+            {analysisQueueControlSaving
+              ? (analysisQueuePaused ? 'Resuming…' : 'Pausing…')
+              : !analysisQueueControlReady
+                ? analysisQueueControlFailed ? 'Status unavailable' : 'Loading status…'
+                : analysisQueuePaused
+                  ? 'Resume analysis'
+                  : 'Pause analysis queue'}
+          </button>
+        </section>
+      ) : null}
       {role === ROLES.ADMIN ? (
         <div className="panel !bg-transparent space-y-4 p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

@@ -25,6 +25,7 @@ const RUNS_COLLECTION = 'analysisRuns';
 const BATCHES_COLLECTION = 'batches';
 const PAPER_QUEUE_COLLECTION = 'questionPaperAnalysisQueue';
 const PAPER_QUEUE_STATE_COLLECTION = 'questionPaperAnalysisState';
+const PAPER_ANALYSIS_CONTROL_COLLECTION = 'questionPaperAnalysisControl';
 const TASK_OPTIONS = {
   retryConfig: { maxAttempts: MAX_TASK_ATTEMPTS, minBackoffSeconds: 10, maxBackoffSeconds: 300, maxDoublings: 4 },
   rateLimits: { maxConcurrentDispatches: 3, maxDispatchesPerSecond: 2 },
@@ -220,6 +221,56 @@ const runRefFor = (paperId, runId) => getDb().collection('questionPapers').doc(p
 const queueTask = (name, data) => taskQueue(name).enqueue(data);
 const paperQueueRef = () => getDb().collection(PAPER_QUEUE_COLLECTION);
 const paperQueueStateRef = () => getDb().collection(PAPER_QUEUE_STATE_COLLECTION).doc('worker');
+const paperAnalysisControlRef = () => getDb().collection(PAPER_ANALYSIS_CONTROL_COLLECTION).doc('global');
+
+const requireAnalysisAdmin = async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Sign in as an admin to manage question-paper analysis.');
+  const actor = await getDb().collection('users').doc(uid).get();
+  if (!actor.exists || actor.data()?.role !== 'admin') {
+    throw new HttpsError('permission-denied', 'Only an admin can manage question-paper analysis.');
+  }
+  return uid;
+};
+
+export const getQuestionPaperAnalysisControl = onCall(async (request) => {
+  await requireAnalysisAdmin(request);
+  const [controlSnapshot, stateSnapshot] = await Promise.all([
+    paperAnalysisControlRef().get(),
+    paperQueueStateRef().get(),
+  ]);
+  return {
+    paused: controlSnapshot.data()?.paused === true,
+    activePaperId: String(stateSnapshot.data()?.activePaperId ?? ''),
+  };
+});
+
+export const setQuestionPaperAnalysisPaused = onCall(async (request) => {
+  const uid = await requireAnalysisAdmin(request);
+  if (typeof request.data?.paused !== 'boolean') {
+    throw new HttpsError('invalid-argument', 'paused must be true or false.');
+  }
+  const paused = request.data.paused;
+  const controlRef = paperAnalysisControlRef();
+  const timestamp = FieldValue.serverTimestamp();
+  await controlRef.set({
+    paused,
+    ...(paused ? { pausedAt: timestamp, pausedBy: uid } : { resumedAt: timestamp, resumedBy: uid }),
+    updatedAt: timestamp,
+    updatedBy: uid,
+  }, { merge: true });
+
+  if (!paused) await queueTask('dispatchQuestionPaperAnalysis', {});
+  const stateSnapshot = await paperQueueStateRef().get();
+  logger.info(`Question-paper analysis queue ${paused ? 'paused' : 'resumed'} by admin`, {
+    uid,
+    activePaperId: stateSnapshot.data()?.activePaperId ?? '',
+  });
+  return {
+    paused,
+    activePaperId: String(stateSnapshot.data()?.activePaperId ?? ''),
+  };
+});
 
 const releaseAnalysisSlot = async ({ paperId, runId }) => {
   const db = getDb();
@@ -779,7 +830,11 @@ export const dispatchQuestionPaperAnalysis = onTaskDispatched({
   const stateRef = paperQueueStateRef();
   const queuedQuery = paperQueueRef().orderBy('createdAt', 'asc').limit(1);
   const claimed = await db.runTransaction(async (transaction) => {
-    const stateSnapshot = await transaction.get(stateRef);
+    const [controlSnapshot, stateSnapshot] = await Promise.all([
+      transaction.get(paperAnalysisControlRef()),
+      transaction.get(stateRef),
+    ]);
+    if (controlSnapshot.data()?.paused === true) return { paused: true };
     const state = stateSnapshot.data();
     if (state?.activeRunId) {
       const activeRunRef = runRefFor(state.activePaperId, state.activeRunId);
@@ -821,6 +876,10 @@ export const dispatchQuestionPaperAnalysis = onTaskDispatched({
   });
 
   if (!claimed) return;
+  if (claimed.paused) {
+    logger.info('Question-paper analysis queue is paused; leaving queued papers untouched.');
+    return;
+  }
   if (claimed.stale) {
     await queueTask('dispatchQuestionPaperAnalysis', {});
     return;

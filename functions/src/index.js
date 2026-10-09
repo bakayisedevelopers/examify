@@ -76,6 +76,8 @@ export {
   analyzeQuestionPaperBatch,
   finalizeQuestionPaperAnalysis,
   cancelQuestionPaperAnalysis,
+  getQuestionPaperAnalysisControl,
+  setQuestionPaperAnalysisPaused,
 } from './questionPaperAnalysis.js';
 
 export {
