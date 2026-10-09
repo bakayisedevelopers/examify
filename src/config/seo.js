@@ -2,24 +2,24 @@ import { getPortalSiteUrl } from '../utils/portal.js';
 
 export const PORTAL_SEO = {
   student: {
-    title: 'Examifying | Online Maths Practice and Exam Preparation',
-    description: 'Build confidence in Mathematics with focused daily exercises, handwritten work submissions, peer marking, and tutor guidance on Examifying.',
-    keywords: 'online maths practice, mathematics exam preparation, daily maths exercises, maths tutor, Examifying',
+    title: 'Examifying | Online Maths Practice in South Africa',
+    description: 'Examifying helps South African students build Mathematics confidence with daily practice, past-paper questions, peer marking, and tutor guidance.',
+    keywords: 'Maths tutor South Africa, online maths tutor, maths tutor for students, online maths practice, South African maths exam preparation, daily Mathematics exercises, maths past papers, peer marking, Examifying',
   },
   tutor: {
-    title: 'Examifying for Maths Tutors | Student Progress and Lessons',
-    description: 'Support Maths learners with connected student progress, exercise submissions, topic understanding, and lesson tools in the Examifying tutor portal.',
-    keywords: 'maths tutor platform, tutor student progress, mathematics lessons, student exercise review, Examifying tutor',
+    title: 'Examifying | Online Maths Tutor Platform in South Africa',
+    description: 'An online Maths tutor workspace to manage connected students, review exercise submissions, track topic understanding, and link lessons with daily practice.',
+    keywords: 'online maths tutor platform, Maths tutor portal, tutoring students online, tutor student management, maths lesson tracking, tutor exercise review, manage tutoring students online, Examifying tutor',
   },
   teacher: {
-    title: 'Examifying for Maths Teachers | Learner Progress and Practice',
-    description: 'Support Mathematics learners with a connected workspace for student progress, daily practice, exercise submissions, and lessons.',
-    keywords: 'maths teacher platform, mathematics learner progress, daily maths practice, teacher lesson tools, Examifying teacher',
+    title: 'Examifying | Maths Teacher Tools and Learner Progress',
+    description: 'A Maths teacher portal for tracking learner progress, reviewing exercise submissions, following topic understanding, and connecting lessons with daily practice.',
+    keywords: 'online maths teacher tools, South African maths teacher portal, Mathematics learner progress, maths lesson management, daily maths practice for learners, teacher exercise review, Examifying teacher',
   },
   parent: {
-    title: 'Examifying for Parents | Follow Maths Learning Progress',
-    description: 'Stay connected to your child’s Mathematics learning with the Examifying parent portal and the progress information available to your family.',
-    keywords: 'parent maths progress portal, child mathematics learning, Examifying parent portal',
+    title: 'Examifying | Parent Maths Progress Portal in South Africa',
+    description: 'Follow your child’s Maths learning with a parent portal for linked learners, available exercise activity, and progress information from Examifying.',
+    keywords: 'parent maths portal, child maths progress, maths learning for children, online maths practice for school students, South African Mathematics exam support, parent dashboard, tutor-supported maths learning, Examifying parent portal',
   },
   admin: {
     title: 'Examifying Administration Portal',

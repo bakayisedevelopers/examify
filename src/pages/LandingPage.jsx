@@ -101,7 +101,7 @@ export const LandingPage = () => {
             </h1>
 
             <p className="max-w-2xl text-lg text-slate-300 font-normal leading-relaxed">
-              Examifying is designed to help students get 60%+ in their exams through focused Mathematics practice, tutor guidance, and structured preparation.
+              Examifying is an online Mathematics learning platform for South African students, combining focused daily Maths practice, past-paper questions, peer marking, and tutor guidance for exam preparation.
             </p>
 
             <div className="flex flex-wrap items-center gap-4 pt-2">

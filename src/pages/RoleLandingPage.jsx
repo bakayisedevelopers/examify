@@ -6,9 +6,9 @@ import { getPortalConfig, getPortalForProfile, getSignupPathForPortal } from '..
 
 const portalContent = {
   teacher: {
-    eyebrow: 'Teacher workspace',
-    title: 'Give your Maths class clear, consistent support.',
-    description: 'Manage your assigned learners, review their exercise work, and connect lesson outcomes with ongoing practice.',
+    eyebrow: 'Maths teacher workspace',
+    title: 'Connect your Maths lessons with learner progress and practice.',
+    description: 'Review learner work, follow topic understanding, and keep Mathematics lessons connected to regular practice.',
     cards: [
       { icon: GraduationCap, title: 'Support your learners', body: 'Open the students connected to your teacher account.' },
       { icon: FileCheck2, title: 'Review exercise work', body: 'Use the existing submission, marking, and understanding-score tools.' },
@@ -16,9 +16,9 @@ const portalContent = {
     ],
   },
   tutor: {
-    eyebrow: 'Tutor workspace',
-    title: 'Help every learner make steady progress in Maths.',
-    description: 'Review student work, follow topic understanding, and keep lessons and daily practice connected in one workspace.',
+    eyebrow: 'Online Maths tutor workspace',
+    title: 'Help your Maths students make steady progress.',
+    description: 'Review assigned learner work, follow topic understanding, and keep lessons and daily Maths practice connected in one place.',
     cards: [
       { icon: Users, title: 'Manage your learners', body: 'See the students connected to your tutor account.' },
       { icon: FileCheck2, title: 'Review their work', body: 'Open exercise submissions and use the existing marking and score tools.' },
@@ -27,8 +27,8 @@ const portalContent = {
   },
   parent: {
     eyebrow: 'Parent and caregiver portal',
-    title: 'Stay close to your child’s Maths progress.',
-    description: 'Use the same Examifying account system to follow linked learners and manage the parent information available to your family.',
+    title: 'Follow your child’s Maths learning and progress.',
+    description: 'Use the Examifying parent portal to follow linked learners, exercise activity, and the progress information available to your family.',
     cards: [
       { icon: GraduationCap, title: 'Follow linked learners', body: 'View the learners connected to your parent account.' },
       { icon: FileCheck2, title: 'Review progress', body: 'Keep track of exercise activity and available learning updates.' },
