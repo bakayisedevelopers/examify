@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
 import { FieldPath } from 'firebase-admin/firestore';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
+import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 import { getDb } from './admin.js';
+import { enqueueTaskOnce, stableTaskId } from './taskQueueUtils.js';
 import {
   findDrivePastPaperGradeFolder,
+  listDrivePastPaperGradeFolders,
   listDriveJsonFilesInGradeFolder,
   summarizeDriveJsonError,
   writeDriveTopicsJson,
@@ -15,6 +18,15 @@ const MAPPING_PAGE_SIZE = 250;
 const MIGRATION_COLLECTION = 'settings';
 const MIGRATION_DOCUMENT = 'globalTopicCatalogMigration';
 const DRIVE_TOPIC_SYNC_LOCK_PREFIX = 'driveTopicCatalogSync';
+const DRIVE_TOPIC_ALL_SYNC_JOBS = 'driveTopicCatalogSyncJobs';
+const DRIVE_TOPIC_ALL_SYNC_POINTER = 'driveTopicCatalogAllSync';
+const DRIVE_TOPIC_ALL_SYNC_TASK = 'syncAllDriveTopicCatalogsTask';
+const DRIVE_TOPIC_ALL_SYNC_TASK_OPTIONS = {
+  retryConfig: { maxAttempts: 5, minBackoffSeconds: 10, maxBackoffSeconds: 300, maxDoublings: 4 },
+  rateLimits: { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 },
+  timeoutSeconds: 540,
+  memory: '1GiB',
+};
 
 const normalizeTopicKey = (value) => String(value ?? '')
   .normalize('NFKD')
@@ -456,16 +468,17 @@ export const migrateGlobalTopicCatalog = onCall({ timeoutSeconds: 540, memory: '
   }
 });
 
-const makeDriveTopicCatalogPlan = async ({ subject, grade }) => {
+const makeDriveTopicCatalogPlan = async ({ subject, grade, driveFolder: knownDriveFolder = null }) => {
   const db = getDb();
   const gradeRef = db.collection('subjects').doc(subject).collection('grades').doc(grade);
-  const [gradeSnapshot, paperSnapshot, driveFolder] = await Promise.all([
+  const [gradeSnapshot, paperSnapshot, discoveredDriveFolder] = await Promise.all([
     gradeRef.get(),
     db.collection('questionPapers').where('subject', '==', subject)
       .select('subject', 'grade', 'analysisStatus', 'availableForGeneration', 'questions', 'topicMetadata', 'analysisCompletedAt')
       .get(),
-    findDrivePastPaperGradeFolder({ subject, grade }),
+    knownDriveFolder ? Promise.resolve(knownDriveFolder) : findDrivePastPaperGradeFolder({ subject, grade }),
   ]);
+  const driveFolder = discoveredDriveFolder;
   if (!driveFolder) throw new HttpsError('failed-precondition', `No ${grade} folder for ${subject} exists under the configured past-papers Drive root.`);
 
   const gradeData = gradeSnapshot.data() ?? {};
@@ -647,5 +660,263 @@ export const syncDriveTopicCatalog = onCall({ timeoutSeconds: 240, memory: '512M
     await syncStateRef.set({ status: 'failed', owner: lockOwner, subject, grade, error: message, updatedAt: new Date() }, { merge: true }).catch(() => {});
     if (error instanceof HttpsError) throw error;
     throw new HttpsError('internal', `The topic sync did not complete: ${message}`);
+  }
+});
+
+const topicCatalogPairKey = ({ subject, grade }) => `${normalizeTopicKey(subject)}\u0000${normalizeTopicKey(grade)}`;
+const topicCatalogPairDocumentId = ({ subject, grade }) => createHash('sha256')
+  .update(topicCatalogPairKey({ subject, grade }))
+  .digest('hex')
+  .slice(0, 40);
+const driveTopicCatalogJobRef = (db, jobId) => db.collection(DRIVE_TOPIC_ALL_SYNC_JOBS).doc(jobId);
+const driveTopicCatalogPointerRef = (db) => db.collection(MIGRATION_COLLECTION).doc(DRIVE_TOPIC_ALL_SYNC_POINTER);
+const publicDriveTopicCatalogJob = (job, jobId) => ({
+  ...Object.fromEntries(Object.entries(job ?? {}).filter(([key]) => key !== 'pairs')),
+  jobId,
+});
+const enqueueDriveTopicCatalogJobTask = (jobId, index) => enqueueTaskOnce(
+  DRIVE_TOPIC_ALL_SYNC_TASK,
+  { jobId, index },
+  { id: stableTaskId('drive-topics', `${jobId}:${index}`) },
+);
+
+const collectDriveTopicCatalogPairs = async () => {
+  const db = getDb();
+  const [subjectsSnapshot, driveFolders] = await Promise.all([
+    db.collection('subjects').get(),
+    listDrivePastPaperGradeFolders(),
+  ]);
+  const pairs = new Map();
+  const driveFoldersByKey = new Map();
+  driveFolders.forEach((folder) => {
+    const key = topicCatalogPairKey({ subject: folder.subject, grade: folder.grade });
+    const existing = driveFoldersByKey.get(key) ?? [];
+    existing.push(folder);
+    driveFoldersByKey.set(key, existing);
+  });
+
+  for (const subjectSnapshot of subjectsSnapshot.docs) {
+    const subject = String(subjectSnapshot.data()?.subjectName ?? subjectSnapshot.id).trim();
+    if (!subject || subject.includes('/')) continue;
+    const gradesSnapshot = await subjectSnapshot.ref.collection('grades').get();
+    gradesSnapshot.docs.forEach((gradeSnapshot) => {
+      const grade = String(gradeSnapshot.data()?.gradeName ?? gradeSnapshot.id).trim();
+      if (!grade || grade.includes('/')) return;
+      const key = topicCatalogPairKey({ subject, grade });
+      const matchingDriveFolders = driveFoldersByKey.get(key) ?? [];
+      pairs.set(key, {
+        subject,
+        grade,
+        driveFolder: matchingDriveFolders.length === 1 ? matchingDriveFolders[0] : null,
+        driveFolderAmbiguous: matchingDriveFolders.length > 1,
+      });
+    });
+  }
+
+  driveFolders.forEach((folder) => {
+    const key = topicCatalogPairKey(folder);
+    if (!pairs.has(key)) pairs.set(key, { ...folder, driveFolder: folder, driveFolderAmbiguous: false });
+  });
+  return [...pairs.values()].sort((left, right) =>
+    left.subject.localeCompare(right.subject) || left.grade.localeCompare(right.grade));
+};
+
+export const startDriveTopicCatalogAllSync = onCall({ timeoutSeconds: 120, memory: '512MiB' }, async (request) => {
+  const uid = request.auth?.uid;
+  await verifyAdmin(request);
+  const db = getDb();
+  const pointerRef = driveTopicCatalogPointerRef(db);
+  const pointerSnapshot = await pointerRef.get();
+  const existingJobId = String(pointerSnapshot.data()?.jobId ?? '');
+  if (existingJobId) {
+    const existingJob = await driveTopicCatalogJobRef(db, existingJobId).get();
+    if (existingJob.data()?.status === 'running') return { ...publicDriveTopicCatalogJob(existingJob.data(), existingJobId), alreadyRunning: true };
+  }
+
+  let pairs;
+  try {
+    pairs = await collectDriveTopicCatalogPairs();
+  } catch (error) {
+    throw new HttpsError('failed-precondition', summarizeDriveJsonError(error));
+  }
+  if (!pairs.length) throw new HttpsError('failed-precondition', 'No subject-grade folders were found in Firestore or under the configured Google Drive past-papers root.');
+  if (pairs.length > MAX_CATALOG_GROUPS) throw new HttpsError('resource-exhausted', `The topic catalog contains more than ${MAX_CATALOG_GROUPS} subject-grade folders. Split the sync into smaller groups.`);
+
+  const jobId = `${Date.now()}_${uid}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120);
+  const jobRef = driveTopicCatalogJobRef(db, jobId);
+  const now = new Date();
+  const job = {
+    jobId,
+    status: 'running',
+    startedBy: uid,
+    startedAt: now,
+    updatedAt: now,
+    currentIndex: 0,
+    totalCount: pairs.length,
+    completedCount: 0,
+    failedCount: 0,
+    currentSubject: pairs[0].subject,
+    currentGrade: pairs[0].grade,
+    failures: [],
+    pairs,
+  };
+  const started = await db.runTransaction(async (transaction) => {
+    const latestPointer = await transaction.get(pointerRef);
+    const latestJobId = String(latestPointer.data()?.jobId ?? '');
+    if (latestJobId) {
+      const latestJobSnapshot = await transaction.get(driveTopicCatalogJobRef(db, latestJobId));
+      if (latestJobSnapshot.data()?.status === 'running') return { jobId: latestJobId, job: latestJobSnapshot.data(), alreadyRunning: true };
+    }
+    transaction.set(jobRef, job);
+    transaction.set(pointerRef, { jobId, status: 'running', updatedAt: now }, { merge: true });
+    return { jobId, job, alreadyRunning: false };
+  });
+  if (started.alreadyRunning) return { ...publicDriveTopicCatalogJob(started.job, started.jobId), alreadyRunning: true };
+
+  try {
+    await enqueueDriveTopicCatalogJobTask(jobId, 0);
+  } catch (error) {
+    const message = summarizeDriveJsonError(error);
+    await jobRef.set({ status: 'failed', error: message, completedAt: new Date(), updatedAt: new Date() }, { merge: true });
+    await pointerRef.set({ jobId, status: 'failed', updatedAt: new Date() }, { merge: true });
+    throw new HttpsError('internal', `The topic sync could not be queued: ${message}`);
+  }
+  return { ...publicDriveTopicCatalogJob(job, jobId), alreadyRunning: false };
+});
+
+export const getDriveTopicCatalogAllSyncStatus = onCall(async (request) => {
+  await verifyAdmin(request);
+  const db = getDb();
+  const requestedJobId = String(request.data?.jobId ?? '').trim();
+  let jobId = requestedJobId;
+  if (!jobId) {
+    const pointer = await driveTopicCatalogPointerRef(db).get();
+    jobId = String(pointer.data()?.jobId ?? '');
+  }
+  if (!jobId) return { status: 'not_started', jobId: '' };
+  const snapshot = await driveTopicCatalogJobRef(db, jobId).get();
+  if (!snapshot.exists) return { status: 'not_found', jobId };
+  return publicDriveTopicCatalogJob(snapshot.data(), jobId);
+});
+
+export const syncAllDriveTopicCatalogsTask = onTaskDispatched(DRIVE_TOPIC_ALL_SYNC_TASK_OPTIONS, async (request) => {
+  const jobId = String(request.data?.jobId ?? '').trim();
+  const taskIndex = Math.max(0, Math.floor(Number(request.data?.index) || 0));
+  if (!jobId) throw new Error('jobId is required.');
+  const db = getDb();
+  const jobRef = driveTopicCatalogJobRef(db, jobId);
+  try {
+    const jobSnapshot = await jobRef.get();
+    if (!jobSnapshot.exists || jobSnapshot.data()?.status !== 'running') return;
+    const job = jobSnapshot.data();
+    const currentIndex = Math.max(0, Number(job.currentIndex) || 0);
+    if (taskIndex < currentIndex) {
+      await enqueueDriveTopicCatalogJobTask(jobId, currentIndex);
+      return;
+    }
+    if (taskIndex > currentIndex) return;
+    const pair = job.pairs?.[currentIndex];
+    if (!pair) {
+      const status = Number(job.failedCount) > 0 ? 'completed_with_errors' : 'completed';
+      await jobRef.set({ status, completedAt: new Date(), updatedAt: new Date() }, { merge: true });
+      await driveTopicCatalogPointerRef(db).set({ jobId, status, updatedAt: new Date() }, { merge: true });
+      return;
+    }
+
+    const pairId = topicCatalogPairDocumentId(pair);
+    const gradeResultRef = jobRef.collection('grades').doc(pairId);
+    let result = (await gradeResultRef.get()).data();
+    if (!['completed', 'failed'].includes(result?.status)) {
+    await gradeResultRef.set({ subject: pair.subject, grade: pair.grade, status: 'processing', startedAt: new Date(), updatedAt: new Date(), error: '' }, { merge: true });
+    try {
+      if (pair.driveFolderAmbiguous) {
+        throw new Error(`More than one Drive folder matches ${pair.subject} / ${pair.grade}; rename duplicate subject or grade folders before syncing.`);
+      }
+      const plan = await makeDriveTopicCatalogPlan({ subject: pair.subject, grade: pair.grade, driveFolder: pair.driveFolder });
+      const driveResult = await writeDriveTopicsJson({
+        subject: pair.subject,
+        grade: pair.grade,
+        folder: plan.driveFolder,
+        document: {
+          schemaVersion: 1,
+          subject: pair.subject,
+          grade: pair.grade,
+          topics: plan.topics,
+          topicMetadata: plan.topicMetadata,
+          updatedAt: new Date().toISOString(),
+        },
+      });
+      await db.runTransaction(async (transaction) => {
+        const latestSnapshot = await transaction.get(plan.gradeRef);
+        const latestTopics = uniqueTopicLabels(latestSnapshot.data()?.topics).map(normalizeTopicKey).sort();
+        const expectedTopics = plan.currentTopics.map(normalizeTopicKey).sort();
+        if (JSON.stringify(latestTopics) !== JSON.stringify(expectedTopics)) {
+          throw new Error('The Firestore topic list changed during this grade sync. Run the all-topic sync again to reconcile the latest data.');
+        }
+        transaction.set(plan.gradeRef, {
+          subjectName: pair.subject,
+          gradeName: pair.grade,
+          topics: plan.topics,
+          topicMetadata: plan.topicMetadata,
+          driveTopicCatalogSyncInitialized: true,
+          driveTopicSyncStatus: 'synced',
+          driveTopicSyncError: '',
+          driveTopicsFileId: driveResult.file?.id ?? '',
+          driveTopicsSyncedAt: new Date(),
+          updatedAt: new Date(),
+        }, { merge: true });
+      });
+      result = {
+        subject: pair.subject,
+        grade: pair.grade,
+        status: 'completed',
+        topicCount: plan.topics.length,
+        removedCount: plan.removedTopics.length,
+        analyzedPaperCount: plan.analyzedPaperCount,
+        topicsFileId: driveResult.file?.id ?? '',
+        updatedAt: new Date(),
+      };
+      await gradeResultRef.set(result, { merge: true });
+    } catch (error) {
+      const message = summarizeDriveJsonError(error);
+      result = { subject: pair.subject, grade: pair.grade, status: 'failed', error: message, updatedAt: new Date() };
+      await gradeResultRef.set(result, { merge: true });
+    }
+    }
+
+    const nextIndex = currentIndex + 1;
+    const nextPair = job.pairs?.[nextIndex];
+    let nextStatus = 'running';
+    await db.runTransaction(async (transaction) => {
+    const latest = await transaction.get(jobRef);
+    const latestJob = latest.data();
+    if (!latest.exists || latestJob?.status !== 'running' || Number(latestJob.currentIndex) !== currentIndex) return;
+    const failedCount = Number(latestJob.failedCount ?? 0) + (result.status === 'failed' ? 1 : 0);
+    const completedCount = Number(latestJob.completedCount ?? 0) + (result.status === 'completed' ? 1 : 0);
+    const failures = result.status === 'failed'
+      ? [...(Array.isArray(latestJob.failures) ? latestJob.failures : []), { subject: pair.subject, grade: pair.grade, error: result.error }].slice(-20)
+      : (Array.isArray(latestJob.failures) ? latestJob.failures : []);
+    nextStatus = nextPair ? 'running' : failedCount > 0 ? 'completed_with_errors' : 'completed';
+    transaction.set(jobRef, {
+      currentIndex: nextIndex,
+      completedCount,
+      failedCount,
+      failures,
+      currentSubject: nextPair?.subject ?? '',
+      currentGrade: nextPair?.grade ?? '',
+      status: nextStatus,
+      ...(nextPair ? {} : { completedAt: new Date() }),
+      updatedAt: new Date(),
+    }, { merge: true });
+    if (!nextPair) transaction.set(driveTopicCatalogPointerRef(db), { jobId, status: nextStatus, updatedAt: new Date() }, { merge: true });
+    });
+    if (nextPair) await enqueueDriveTopicCatalogJobTask(jobId, nextIndex);
+  } catch (error) {
+    if (Number(request.retryCount) >= DRIVE_TOPIC_ALL_SYNC_TASK_OPTIONS.retryConfig.maxAttempts - 1) {
+      const message = summarizeDriveJsonError(error);
+      await jobRef.set({ status: 'failed', error: message, completedAt: new Date(), updatedAt: new Date() }, { merge: true }).catch(() => {});
+      await driveTopicCatalogPointerRef(db).set({ jobId, status: 'failed', updatedAt: new Date() }, { merge: true }).catch(() => {});
+    }
+    throw error;
   }
 });

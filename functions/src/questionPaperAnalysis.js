@@ -24,6 +24,8 @@ import {
 const ANALYZING = 'Analyzing';
 const ANALYZED = 'Analyzed';
 const FAILED = 'Failed';
+const WAITING_FOR_DRIVE_JSON = 'Waiting for Drive JSON';
+const driveJsonAnalysisOnly = () => String(process.env.QUESTION_PAPER_ANALYSIS_MODE ?? 'drive_json').trim().toLowerCase() !== 'firebase_ai';
 const MAX_PAGES_PER_DOCUMENT = 40;
 const PAGES_PER_BATCH = 1;
 const PDF_RENDER_SCALE = 1.6;
@@ -230,6 +232,11 @@ const timestampMillis = (value) => value?.toMillis?.() ?? value?.toDate?.().getT
   ?? (value ? new Date(value).getTime() : 0);
 const runRefFor = (paperId, runId) => getDb().collection('questionPapers').doc(paperId).collection(RUNS_COLLECTION).doc(runId);
 const queueTask = (name, data) => taskQueue(name).enqueue(data);
+const queueDriveJsonOnlyPrepareTask = ({ paperId, runId }) => enqueueTaskOnce(
+  'prepareQuestionPaperAnalysis',
+  { paperId, runId },
+  { id: stableTaskId('drive-json-prepare', `${paperId}:${runId}`) },
+);
 const queuePendingInitialGenerationAfterAnalysis = ({ paperId, runId }) => enqueueTaskOnce(
   'queuePendingInitialGenerationAfterPaperAnalysis',
   { paperId, runId },
@@ -444,6 +451,33 @@ const releaseAnalysisSlot = async ({ paperId, runId }) => {
     transaction.set(paperRef, { activeAnalysisRunId: null, updatedAt: new Date() }, { merge: true });
   });
   await queueTask('dispatchQuestionPaperAnalysis', {});
+};
+
+const markRunWaitingForDriveJson = async ({ paperId, runId, paperRef, runRef, expectedName = '' }) => {
+  const message = expectedName
+    ? `No matching ${expectedName} was found in the Google Drive grade folder. Add the analyzed JSON file, then retry this paper.`
+    : 'No matching analyzed JSON was found in the Google Drive grade folder. Add the JSON file, then retry this paper.';
+  const now = new Date();
+  await runRef.set({
+    status: 'WaitingForDriveJson',
+    analysisSource: 'google_drive_json',
+    driveAnalysisJsonStatus: 'not_found',
+    error: '',
+    waitingReason: message,
+    updatedAt: now,
+  }, { merge: true });
+  await paperRef.set({
+    analysisStatus: WAITING_FOR_DRIVE_JSON,
+    analysisStage: 'WaitingForDriveJson',
+    analysisSource: 'checking_drive_json',
+    driveAnalysisJsonStatus: 'not_found',
+    driveAnalysisJsonReviewReason: '',
+    analysisProgressMessage: message,
+    analysisError: '',
+    availableForGeneration: false,
+    updatedAt: now,
+  }, { merge: true });
+  await releaseAnalysisSlot({ paperId, runId });
 };
 
 export const cancelQuestionPaperAnalysis = onCall(async (request) => {
@@ -1291,7 +1325,7 @@ export const prepareQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, async
   }
   const { paper, paperRef, runRef } = active;
 
-  if (active.run.status === 'BatchesQueued') {
+  if (!driveJsonAnalysisOnly() && active.run.status === 'BatchesQueued') {
     await enqueuePendingBatches({ paperId, runId, runRef });
     return;
   }
@@ -1315,22 +1349,55 @@ export const prepareQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, async
         } catch (error) {
           driveJsonStatus = 'review_required';
           driveJsonReviewReason = summarizeDriveJsonError(error);
-          logger.warn('Drive analysis JSON did not match the expected paper schema; using the existing AI analyzer', {
+          logger.warn('Drive analysis JSON did not match the expected paper schema', {
             paperId,
             fileId: driveJsonResult.file?.id ?? '',
             reason: driveJsonReviewReason,
           });
+          if (driveJsonAnalysisOnly()) {
+            await runRef.set({ driveAnalysisJsonStatus: driveJsonStatus, driveAnalysisJsonReviewReason: driveJsonReviewReason, updatedAt: new Date() }, { merge: true });
+            await paperRef.set({ driveAnalysisJsonStatus: driveJsonStatus, driveAnalysisJsonReviewReason: driveJsonReviewReason, updatedAt: new Date() }, { merge: true });
+            await markRunFailed({ paperId, runId, error: new Error(`Drive analysis JSON needs review: ${driveJsonReviewReason}`) });
+            return;
+          }
         }
       }
     } catch (error) {
       driveJsonStatus = error?.code === 'ambiguous' ? 'review_required' : 'lookup_error';
       driveJsonReviewReason = summarizeDriveJsonError(error);
       logger.warn(driveJsonStatus === 'review_required'
-        ? 'Ambiguous Drive analysis JSON match; using the existing AI analyzer'
-        : 'Could not look up pre-analyzed JSON in Google Drive; using the existing AI analyzer', {
+        ? 'Ambiguous Drive analysis JSON match'
+        : 'Could not look up pre-analyzed JSON in Google Drive', {
         paperId,
         reason: driveJsonReviewReason,
       });
+      if (driveJsonAnalysisOnly() && driveJsonStatus === 'review_required') {
+        await runRef.set({ driveAnalysisJsonStatus: driveJsonStatus, driveAnalysisJsonReviewReason: driveJsonReviewReason, updatedAt: new Date() }, { merge: true });
+        await paperRef.set({ driveAnalysisJsonStatus: driveJsonStatus, driveAnalysisJsonReviewReason: driveJsonReviewReason, updatedAt: new Date() }, { merge: true });
+        await markRunFailed({ paperId, runId, error: new Error(`Drive analysis JSON needs review: ${driveJsonReviewReason}`) });
+        return;
+      }
+      if (driveJsonAnalysisOnly()) {
+        await paperRef.set({
+          analysisSource: 'checking_drive_json',
+          driveAnalysisJsonStatus: 'lookup_error',
+          driveAnalysisJsonReviewReason: driveJsonReviewReason,
+          analysisProgressMessage: 'Could not reach the Google Drive analysis JSON. Retrying the lookup.',
+          updatedAt: new Date(),
+        }, { merge: true });
+        throw new Error(`Google Drive analysis JSON lookup failed: ${driveJsonReviewReason}`);
+      }
+    }
+
+    if (driveJsonAnalysisOnly() && !driveJsonResult?.found) {
+      await markRunWaitingForDriveJson({
+        paperId,
+        runId,
+        paperRef,
+        runRef,
+        expectedName: driveJsonResult?.expectedName,
+      });
+      return;
     }
 
     if (driveJsonAnalysis && driveJsonResult?.found) {
@@ -1377,6 +1444,11 @@ export const prepareQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, async
         jsonFileId: driveJsonResult.file.id,
         completedAt: completedAt.toISOString(),
       });
+      return;
+    }
+
+    if (driveJsonAnalysisOnly()) {
+      await markRunWaitingForDriveJson({ paperId, runId, paperRef, runRef });
       return;
     }
 
@@ -1466,6 +1538,10 @@ export const analyzeQuestionPaperBatch = onTaskDispatched(BATCH_TASK_OPTIONS, as
   if (!paperId || !runId || !batchId) throw new Error('paperId, runId, and batchId are required.');
   const active = await ensureActiveRun({ paperId, runId });
   if (!active) return;
+  if (driveJsonAnalysisOnly()) {
+    await queueDriveJsonOnlyPrepareTask({ paperId, runId });
+    return;
+  }
   const batchRef = active.runRef.collection(BATCHES_COLLECTION).doc(batchId);
   const batchSnapshot = await batchRef.get();
   if (!batchSnapshot.exists) return;
@@ -1600,6 +1676,10 @@ export const finalizeQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, asyn
   if (!paperId || !runId) throw new Error('paperId and runId are required.');
   const active = await ensureActiveRun({ paperId, runId });
   if (!active) return;
+  if (driveJsonAnalysisOnly()) {
+    await queueDriveJsonOnlyPrepareTask({ paperId, runId });
+    return;
+  }
   if (active.run.status === ANALYZED) {
     const paperCompletedAt = timestampMillis(active.paper.analysisCompletedAt);
     const runCompletedAt = timestampMillis(active.run.completedAt);

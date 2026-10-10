@@ -7,7 +7,7 @@ import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { useOperationStatus } from '../hooks/useOperationStatus';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
-import { cancelQuestionPaperAnalysis, getGlobalTopicList, getGoogleDrivePastPaperFolderContents, getGoogleDrivePastPaperImportStatuses, getQuestionPaperAnalysisControl, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, previewDriveTopicCatalogSync, queueLegacyDriveJsonAnalyses, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, setQuestionPaperAnalysisPaused, startGoogleDrivePastPaperImport, subscribeQuestionPapers, syncDriveTopicCatalog, updateQuestionPaper } from '../services/firestoreService';
+import { cancelQuestionPaperAnalysis, getDriveTopicCatalogAllSyncStatus, getGlobalTopicList, getGoogleDrivePastPaperFolderContents, getGoogleDrivePastPaperImportStatuses, getQuestionPaperAnalysisControl, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, previewDriveTopicCatalogSync, queueLegacyDriveJsonAnalyses, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, setQuestionPaperAnalysisPaused, startDriveTopicCatalogAllSync, startGoogleDrivePastPaperImport, subscribeQuestionPapers, syncDriveTopicCatalog, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
 import { getApprovedTutorSubjects, getUserSubjects } from '../utils/tutorSubjects';
 import { buildTopicResolverRows } from '../services/topicResolver';
@@ -17,6 +17,7 @@ const paperStatusStyles = {
   Analyzing: 'bg-amber-400/15 text-amber-300 border border-amber-400/30',
   Analyzed: 'bg-lime-400/15 text-lime-300 border border-lime-400/30',
   Failed: 'bg-rose-400/15 text-rose-300 border border-rose-400/30',
+  'Waiting for Drive JSON': 'bg-amber-400/15 text-amber-200 border border-amber-400/30',
   Cancelled: 'bg-slate-800 text-slate-400 border border-slate-700',
 };
 
@@ -239,6 +240,9 @@ const PaperAnalysisStatus = ({ paper }) => {
       {paper.driveAnalysisJsonStatus === 'review_required' && paper.driveAnalysisJsonReviewReason ? (
         <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">Drive analysis JSON needs review: {paper.driveAnalysisJsonReviewReason}</p>
       ) : null}
+      {status === 'Failed' && paper.analysisError ? (
+        <p className="mt-2 rounded-lg border border-rose-300 bg-rose-50 p-2 text-xs text-rose-900"><span className="font-semibold">Failure reason:</span> {paper.analysisError}</p>
+      ) : null}
     </div>
   );
 };
@@ -248,6 +252,27 @@ const reanalysisButtonLabel = (paper) => paper?.analysisStatus === 'Failed' ? 'R
 const canManagePaperAnalysis = (role) => role === ROLES.ADMIN || role === ROLES.TUTOR;
 const canStopPaperAnalysis = (paper) =>
   paper?.analysisStatus === 'Analyzing' || Boolean(paper?.activeAnalysisRunId || paper?.queuedAnalysisRunId);
+const makeAnalysisRetryPatch = () => ({
+  analysisStatus: 'Analyzing',
+  availableForGeneration: false,
+  analysisSource: 'checking_drive_json',
+  analysisProgressMessage: 'Queued to check for matching Google Drive analysis JSON',
+  analysisProgressCurrent: 0,
+  analysisProgressTotal: 1,
+  analysisError: '',
+  driveAnalysisJsonStatus: 'pending',
+  driveAnalysisJsonReviewReason: '',
+  analysisRevision: Date.now(),
+  questions: [],
+  topics: [],
+  questionCount: 0,
+  paperMetadata: {},
+  paperAnalysisSummary: '',
+  paperDocumentAnalysis: '',
+  paperDocumentAnalysisModel: '',
+  analysisVisionModels: [],
+  analysisBatchOutputs: [],
+});
 const getPaperTitle = (paper) => paper.title || paper.paperName || paper.paperFileName?.replace(/\.[^.]+$/, '') ||
   paper.paperTitle || paper.paperMetadata?.paperTitle || paper.displayName || `${paper.subject || 'Question paper'} • ${paper.grade || ''}`;
 const getPaperDateValue = (value) => value?.toMillis?.() ?? new Date(value?.toDate?.() ?? value ?? 0).getTime();
@@ -292,6 +317,10 @@ export const PastExamPapersPage = () => {
   const [analysisQueueControlFailed, setAnalysisQueueControlFailed] = useState(false);
   const [analysisQueueControlSaving, setAnalysisQueueControlSaving] = useState(false);
   const [analysisQueueMessage, setAnalysisQueueMessage] = useState('');
+  const [driveTopicAllSyncJob, setDriveTopicAllSyncJob] = useState(null);
+  const [driveTopicAllSyncStarting, setDriveTopicAllSyncStarting] = useState(false);
+  const [driveTopicAllSyncError, setDriveTopicAllSyncError] = useState('');
+  const [failedRetryAllLoading, setFailedRetryAllLoading] = useState(false);
   const [uploadTab, setUploadTab] = useState('single');
   const [singleForm, setSingleForm] = useState(defaultPaperForm(profile));
   const [bulkRows, setBulkRows] = useState([]);
@@ -302,6 +331,7 @@ export const PastExamPapersPage = () => {
     analyzing: { search: '', subject: 'all', year: 'all' },
     analyzed: { search: '', subject: 'all', year: 'all' },
     failed: { search: '', subject: 'all', year: 'all' },
+    waiting: { search: '', subject: 'all', year: 'all' },
   });
   const [studentFilterOverrides, setStudentFilterOverrides] = useState({});
   const [searchTerm, setSearchTerm] = useState('');
@@ -353,6 +383,31 @@ export const PastExamPapersPage = () => {
     });
     return () => { active = false; };
   }, [role]);
+  useEffect(() => {
+    if (role !== ROLES.ADMIN) return undefined;
+    let active = true;
+    getDriveTopicCatalogAllSyncStatus().then((job) => {
+      if (active && job?.jobId) setDriveTopicAllSyncJob(job);
+    }).catch((error) => {
+      if (active) setDriveTopicAllSyncError(error.message || 'Could not load the latest topic-sync status.');
+    });
+    return () => { active = false; };
+  }, [role]);
+  useEffect(() => {
+    if (role !== ROLES.ADMIN || driveTopicAllSyncJob?.status !== 'running' || !driveTopicAllSyncJob?.jobId) return undefined;
+    let active = true;
+    const interval = setInterval(() => {
+      getDriveTopicCatalogAllSyncStatus({ jobId: driveTopicAllSyncJob.jobId }).then((job) => {
+        if (active) setDriveTopicAllSyncJob(job);
+      }).catch((error) => {
+        if (active) setDriveTopicAllSyncError(error.message || 'Could not refresh the topic-sync status.');
+      });
+    }, 10000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [role, driveTopicAllSyncJob?.jobId, driveTopicAllSyncJob?.status]);
   const allowedSubjects = useMemo(() => {
     if (role === ROLES.ADMIN) return SUBJECTS;
     if (role === ROLES.TUTOR) return getApprovedTutorSubjects(profile);
@@ -378,6 +433,20 @@ export const PastExamPapersPage = () => {
       setAnalysisQueueMessage(error.message || `Could not ${paused ? 'pause' : 'resume'} question-paper analysis.`);
     } finally {
       setAnalysisQueueControlSaving(false);
+    }
+  };
+
+  const handleStartDriveTopicAllSync = async () => {
+    if (driveTopicAllSyncStarting || driveTopicAllSyncJob?.status === 'running') return;
+    setDriveTopicAllSyncStarting(true);
+    setDriveTopicAllSyncError('');
+    try {
+      const job = await startDriveTopicCatalogAllSync();
+      setDriveTopicAllSyncJob(job);
+    } catch (error) {
+      setDriveTopicAllSyncError(error.message || 'Could not start the all-topic Drive sync.');
+    } finally {
+      setDriveTopicAllSyncStarting(false);
     }
   };
 
@@ -435,14 +504,16 @@ export const PastExamPapersPage = () => {
       .filter((paper) => filters.year === 'all' || String(paper.year) === String(filters.year));
   }, [papers, role, visibleSubjects, filters, isStudentExploring, studentFilterOverrides, searchTerm]);
   const adminPaperGroups = useMemo(() => {
-    const groups = { analyzing: [], analyzed: [], failed: [] };
+    const groups = { analyzing: [], analyzed: [], failed: [], waiting: [] };
     const orderedPapers = [...papers].sort((left, right) =>
       Number(getPaperField(right, 'year') || 0) - Number(getPaperField(left, 'year') || 0) ||
       getPaperDateValue(right.createdAt) - getPaperDateValue(left.createdAt));
 
     orderedPapers.forEach((paper) => {
       const status = paper.analysisStatus;
-      const group = status === 'Failed' || status === 'Cancelled'
+      const group = status === 'Waiting for Drive JSON'
+        ? 'waiting'
+        : status === 'Failed' || status === 'Cancelled'
         ? 'failed'
         : status === 'Analyzed' || (!status && paper.availableForGeneration)
           ? 'analyzed'
@@ -708,24 +779,7 @@ export const PastExamPapersPage = () => {
     if (!paper?.id) return;
     const succeeded = paper.analysisStatus === 'Analyzed' || paper.availableForGeneration;
     if (succeeded && !window.confirm(`This paper has already been analyzed. Run the analysis again for ${paper.displayName || paper.paperFileName || 'this paper'}?`)) return;
-    const patch = {
-      analysisStatus: 'Analyzing',
-      availableForGeneration: false,
-      analysisProgressMessage: 'Queued for re-analysis',
-      analysisProgressCurrent: 0,
-      analysisProgressTotal: 1,
-      analysisError: '',
-      analysisRevision: Date.now(),
-      questions: [],
-      topics: [],
-      questionCount: 0,
-      paperMetadata: {},
-      paperAnalysisSummary: '',
-      paperDocumentAnalysis: '',
-      paperDocumentAnalysisModel: '',
-      analysisVisionModels: [],
-      analysisBatchOutputs: [],
-    };
+    const patch = makeAnalysisRetryPatch();
     setStatus(`Adding ${paper.displayName || paper.paperFileName || 'paper'} to the analysis queue...`);
     try {
       await runOperation({ operationName: 'Queuing paper analysis', successMessage: 'The paper was added to the analysis queue.' }, () => updateQuestionPaper(paper.id, patch));
@@ -733,6 +787,41 @@ export const PastExamPapersPage = () => {
       setStatus('Analysis retry queued. It will start immediately if the queue is idle; otherwise it will wait for earlier papers to finish.');
     } catch (error) {
       setStatus(error.message || 'Could not queue paper analysis.');
+    }
+  };
+
+  const retryAllFailedPapers = async (failedPapers) => {
+    if (failedRetryAllLoading || !failedPapers.length) return;
+    setFailedRetryAllLoading(true);
+    setStatus('Adding failed papers to the analysis queue one at a time...');
+    const queuedPatches = new Map();
+    try {
+      await runOperation({
+        operationName: 'Retrying failed paper analyses',
+        successMessage: 'All failed papers were added to the normal analysis queue.',
+        failureMessage: 'Some failed papers could not be added to the analysis queue.',
+      }, async () => {
+        for (const paper of failedPapers) {
+          const patch = makeAnalysisRetryPatch();
+          await updateQuestionPaper(paper.id, patch);
+          queuedPatches.set(paper.id, patch);
+        }
+      });
+      setPapers((current) => current.map((paper) => queuedPatches.has(paper.id)
+        ? { ...paper, ...queuedPatches.get(paper.id) }
+        : paper));
+      setStatus(`${queuedPatches.size} failed paper${queuedPatches.size === 1 ? '' : 's'} added to the analysis queue in order.${analysisQueuePaused ? ' The queue is paused, so they will wait until resumed.' : ''}`);
+    } catch (error) {
+      if (queuedPatches.size) {
+        setPapers((current) => current.map((paper) => queuedPatches.has(paper.id)
+          ? { ...paper, ...queuedPatches.get(paper.id) }
+          : paper));
+      }
+      setStatus(queuedPatches.size
+        ? `Queued ${queuedPatches.size} of ${failedPapers.length} failed papers before stopping: ${error.message || 'queue update failed'}`
+        : error.message || 'Could not queue failed paper analyses.');
+    } finally {
+      setFailedRetryAllLoading(false);
     }
   };
 
@@ -1192,8 +1281,42 @@ export const PastExamPapersPage = () => {
                   : 'Checking the analysis queue status…'}
             </p>
             {analysisQueueMessage ? <p className="mt-2 text-sm text-slate-700" role="status">{analysisQueueMessage}</p> : null}
+            {driveTopicAllSyncError ? <p className="mt-2 text-sm text-rose-700" role="alert">{driveTopicAllSyncError}</p> : null}
+            {driveTopicAllSyncJob?.jobId ? (
+              <div className={`mt-3 rounded-xl border p-3 text-sm ${driveTopicAllSyncJob.status === 'running' ? 'border-lime-300 bg-lime-50 text-lime-950' : driveTopicAllSyncJob.status === 'completed_with_errors' || driveTopicAllSyncJob.status === 'failed' ? 'border-amber-300 bg-amber-50 text-amber-950' : 'border-slate-200 bg-slate-50 text-slate-800'}`} role="status">
+                <p className="font-semibold">
+                  {driveTopicAllSyncJob.status === 'running'
+                    ? `Syncing ${driveTopicAllSyncJob.currentSubject || 'topic catalogs'}${driveTopicAllSyncJob.currentGrade ? ` · ${driveTopicAllSyncJob.currentGrade}` : ''}`
+                    : driveTopicAllSyncJob.status === 'completed_with_errors'
+                      ? 'Topic sync finished with some folder errors.'
+                      : driveTopicAllSyncJob.status === 'failed'
+                        ? 'Topic sync could not be started.'
+                        : 'All topic catalogs have been synced.'}
+                </p>
+                {driveTopicAllSyncJob.totalCount ? <p className="mt-1">{Math.min(driveTopicAllSyncJob.currentIndex ?? 0, driveTopicAllSyncJob.totalCount)} of {driveTopicAllSyncJob.totalCount} grades processed · {driveTopicAllSyncJob.completedCount ?? 0} synced · {driveTopicAllSyncJob.failedCount ?? 0} with errors</p> : null}
+                {driveTopicAllSyncJob.failures?.length ? (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer font-semibold">Show folder errors</summary>
+                    <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
+                      {driveTopicAllSyncJob.failures.map((failure) => <li key={`${failure.subject}-${failure.grade}`}>{failure.subject} · {failure.grade}: {failure.error}</li>)}
+                    </ul>
+                  </details>
+                ) : null}
+              </div>
+            ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn-secondary inline-flex shrink-0 items-center justify-center gap-2"
+              onClick={handleStartDriveTopicAllSync}
+              disabled={driveTopicAllSyncStarting || driveTopicAllSyncJob?.status === 'running'}
+            >
+              {driveTopicAllSyncStarting || driveTopicAllSyncJob?.status === 'running'
+                ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+                : <ListChecks className="h-4 w-4" aria-hidden="true" />}
+              {driveTopicAllSyncStarting ? 'Starting sync…' : driveTopicAllSyncJob?.status === 'running' ? 'Syncing topics…' : 'Sync all topics to Drive'}
+            </button>
             <button
               type="button"
               className="btn-secondary inline-flex shrink-0 items-center justify-center gap-2"
@@ -1439,9 +1562,11 @@ export const PastExamPapersPage = () => {
           {[
             { key: 'analyzing', title: 'Analyzing', emptyMessage: 'No papers are currently analyzing.' },
             { key: 'analyzed', title: 'Analyzed', emptyMessage: 'No completed paper analyses.' },
+            { key: 'waiting', title: 'Waiting for Drive JSON', emptyMessage: 'No papers are waiting for Drive analysis JSON.' },
             { key: 'failed', title: 'Failed', emptyMessage: 'No failed or cancelled paper analyses.' },
           ].map(({ key, title, emptyMessage }) => {
             const sectionPapers = adminPaperGroups[key];
+            const failedPapers = key === 'failed' ? sectionPapers.filter((paper) => paper.analysisStatus === 'Failed') : [];
             const sectionFilter = adminPaperFilters[key];
             const sectionSubjects = paperSubjects;
             const sectionYears = [...new Set(sectionPapers.map((paper) => getPaperField(paper, 'year')).filter(Boolean))]
@@ -1466,6 +1591,23 @@ export const PastExamPapersPage = () => {
                   </span>
                 </summary>
                 <div className="space-y-4 border-t border-slate-200 p-4 md:p-5">
+                  {key === 'failed' && failedPapers.length ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 p-3">
+                      <div>
+                        <p className="text-sm font-semibold text-rose-950">{failedPapers.length} failed paper{failedPapers.length === 1 ? '' : 's'} can be retried.</p>
+                        <p className="mt-1 text-xs text-rose-800">Retry All adds them to the normal analysis queue in order. Individual retry buttons remain available on each paper.</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-primary inline-flex shrink-0 items-center justify-center gap-2"
+                        disabled={failedRetryAllLoading}
+                        onClick={() => retryAllFailedPapers(failedPapers)}
+                      >
+                        {failedRetryAllLoading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RotateCcw className="h-4 w-4" aria-hidden="true" />}
+                        {failedRetryAllLoading ? 'Queueing retries…' : 'Retry All'}
+                      </button>
+                    </div>
+                  ) : null}
                   <div className="grid gap-3 md:grid-cols-[minmax(12rem,2fr)_minmax(10rem,1fr)_minmax(8rem,1fr)]">
                     <label>
                       <span className="sr-only">Search {title.toLowerCase()} papers</span>

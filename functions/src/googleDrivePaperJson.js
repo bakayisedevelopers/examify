@@ -120,6 +120,40 @@ export const findDrivePastPaperGradeFolder = async ({ subject, grade } = {}) => 
   return gradeFolders.length ? { ...gradeFolders[0], subjectFolderId: subjectFolders[0].id, rootId } : null;
 };
 
+export const listDrivePastPaperGradeFolders = async () => {
+  const rootId = configuredRoot();
+  let root;
+  try {
+    root = await getDriveFolder(rootId);
+  } catch (error) {
+    if ([403, 404].includes(error.status)) {
+      throw new Error(`The configured Drive root is unavailable to the function runtime identity. Confirm folder sharing and ${DRIVE_ROOT_ENV}. (Drive HTTP ${error.status})`);
+    }
+    throw error;
+  }
+  if (root.trashed || root.mimeType !== DRIVE_FOLDER_MIME) {
+    throw new Error(`${DRIVE_ROOT_ENV} must identify an available Google Drive folder.`);
+  }
+
+  const subjectFolders = (await listDriveFolderChildren(root.id))
+    .filter((file) => file.mimeType === DRIVE_FOLDER_MIME);
+  const gradeFolders = [];
+  for (const subjectFolder of subjectFolders) {
+    const children = await listDriveFolderChildren(subjectFolder.id);
+    children.filter((file) => file.mimeType === DRIVE_FOLDER_MIME).forEach((gradeFolder) => {
+      gradeFolders.push({
+        subject: subjectFolder.name,
+        grade: gradeFolder.name,
+        id: gradeFolder.id,
+        name: gradeFolder.name,
+        subjectFolderId: subjectFolder.id,
+        rootId: root.id,
+      });
+    });
+  }
+  return gradeFolders;
+};
+
 export const listDriveJsonFilesInGradeFolder = async (folderId) => (await listDriveFolderChildren(folderId))
   .filter((file) => file.mimeType !== DRIVE_FOLDER_MIME && String(file.name ?? '').toLowerCase().endsWith('.json'));
 
@@ -206,8 +240,8 @@ const writeJsonFile = async ({ folderId, existingFile, fileName, document }) => 
   });
 };
 
-export const writeDriveTopicsJson = async ({ subject, grade, document } = {}) => {
-  const folder = await findDrivePastPaperGradeFolder({ subject, grade });
+export const writeDriveTopicsJson = async ({ subject, grade, document, folder: knownFolder = null } = {}) => {
+  const folder = knownFolder ?? await findDrivePastPaperGradeFolder({ subject, grade });
   if (!folder) throw new Error(`No ${grade} folder for ${subject} was found under the configured past-papers Drive root.`);
   const existingFile = await findUniqueNamedJsonFile(folder.id, 'topics.json');
   const savedFile = await writeJsonFile({ folderId: folder.id, existingFile, fileName: 'topics.json', document });

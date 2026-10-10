@@ -2227,6 +2227,20 @@ export const syncDriveTopicCatalog = async ({ subject, grade, previewToken } = {
   return response.data;
 };
 
+export const startDriveTopicCatalogAllSync = async () => {
+  if (!isFirebaseConfigured || !functions) throw new Error('Firebase Functions are not configured.');
+  const callable = httpsCallable(functions, 'startDriveTopicCatalogAllSync', { timeout: 120000 });
+  const response = await callable({});
+  return response.data;
+};
+
+export const getDriveTopicCatalogAllSyncStatus = async ({ jobId = '' } = {}) => {
+  if (!isFirebaseConfigured || !functions) throw new Error('Firebase Functions are not configured.');
+  const callable = httpsCallable(functions, 'getDriveTopicCatalogAllSyncStatus', { timeout: 30000 });
+  const response = await callable(jobId ? { jobId } : {});
+  return response.data;
+};
+
 export const queueLegacyDriveJsonAnalyses = async ({ subject, grade, maxPapers = 50 } = {}) => {
   if (!isFirebaseConfigured || !functions) throw new Error('Firebase Functions are not configured.');
   if (!subject || !grade) throw new Error('Choose a subject and grade before checking legacy Drive analysis JSON files.');

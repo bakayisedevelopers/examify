@@ -73,6 +73,9 @@ export {
   cleanupGlobalTopicCatalog,
   previewDriveTopicCatalogSync,
   syncDriveTopicCatalog,
+  startDriveTopicCatalogAllSync,
+  getDriveTopicCatalogAllSyncStatus,
+  syncAllDriveTopicCatalogsTask,
 } from './globalTopicCatalog.js';
 
 export {
