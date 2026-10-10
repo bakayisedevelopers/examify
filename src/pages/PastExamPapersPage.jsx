@@ -1290,9 +1290,10 @@ export const PastExamPapersPage = () => {
                     : driveTopicAllSyncJob.status === 'completed_with_errors'
                       ? 'Topic sync finished with some folder errors.'
                       : driveTopicAllSyncJob.status === 'failed'
-                        ? 'Topic sync could not be started.'
+                        ? 'Topic sync stopped after an error.'
                         : 'All topic catalogs have been synced.'}
                 </p>
+                {driveTopicAllSyncJob.error ? <p className="mt-1">{driveTopicAllSyncJob.error}</p> : null}
                 {driveTopicAllSyncJob.totalCount ? <p className="mt-1">{Math.min(driveTopicAllSyncJob.currentIndex ?? 0, driveTopicAllSyncJob.totalCount)} of {driveTopicAllSyncJob.totalCount} grades processed · {driveTopicAllSyncJob.completedCount ?? 0} synced · {driveTopicAllSyncJob.failedCount ?? 0} with errors</p> : null}
                 {driveTopicAllSyncJob.failures?.length ? (
                   <details className="mt-2">
@@ -1323,7 +1324,7 @@ export const PastExamPapersPage = () => {
               onClick={() => { setDriveTopicSyncPreview(null); setTopicResolverStatus('Choose a subject and grade to preview a Drive and Firestore topic sync.'); setTopicResolverOpen(true); }}
             >
               <ListChecks className="h-4 w-4" aria-hidden="true" />
-              Topic JSON sync
+              Topic review tools
             </button>
             <button
               type="button"
@@ -1348,6 +1349,7 @@ export const PastExamPapersPage = () => {
                     ? 'Resume analysis'
                     : 'Pause analysis queue'}
             </button>
+            <p className="basis-full text-xs leading-5 text-slate-500">The all-topic sync processes each subject and grade in order, keeps only topics backed by analyzed questions, and writes the same catalog to Firestore and Drive. It creates an empty topics.json for a grade with no analyzed topics.</p>
           </div>
         </section>
       ) : null}
