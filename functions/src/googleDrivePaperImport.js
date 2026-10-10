@@ -16,9 +16,9 @@ import {
 } from './googleDrivePaperImportCore.js';
 import { DRIVE_PAPER_SUBJECT_QUERY_VALUES } from './drivePaperSubjects.js';
 import { enqueueTaskOnce, stableTaskId } from './taskQueueUtils.js';
+import { getGoogleDriveAccessToken } from './googleDriveAuth.js';
 
 const GOOGLE_DRIVE_ROOT_ENV = 'GOOGLE_DRIVE_PAPERS_ROOT_ID';
-const DRIVE_READ_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 const TRACKING_COLLECTION = 'googleDrivePaperImports';
 const LOCK_DOCUMENT = 'googleDrivePaperImportLocks/active';
@@ -26,27 +26,8 @@ const LOCK_DURATION_MS = 12 * 60 * 1000;
 const MAX_PDF_BYTES = 50 * 1024 * 1024;
 const FOLDER_IMPORT_TASK = 'importGoogleDrivePastPaperFolderTask';
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
-let driveTokenCache = { token: '', expiresAt: 0 };
-
-const getRuntimeDriveToken = async () => {
-  if (driveTokenCache.token && driveTokenCache.expiresAt > Date.now() + 60_000) return driveTokenCache.token;
-  const metadataUrl = new URL('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token');
-  metadataUrl.searchParams.set('scopes', DRIVE_READ_SCOPE);
-  const response = await fetch(metadataUrl, { headers: { 'Metadata-Flavor': 'Google' } });
-  if (!response.ok) {
-    throw new Error('Could not obtain a Google Drive access token from the function runtime identity. Confirm the function runs on Google Cloud and has a runtime service account.');
-  }
-  const tokenData = await response.json();
-  if (!tokenData.access_token) throw new Error('The function runtime identity returned no Google Drive access token.');
-  driveTokenCache = {
-    token: tokenData.access_token,
-    expiresAt: Date.now() + Number(tokenData.expires_in ?? 3600) * 1000,
-  };
-  return driveTokenCache.token;
-};
-
 const driveRequest = async (url, { download = false, maxBytes = MAX_PDF_BYTES } = {}) => {
-  const token = await getRuntimeDriveToken();
+  const token = await getGoogleDriveAccessToken();
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, ...(download ? {} : { Accept: 'application/json' }) },
   });
@@ -122,7 +103,7 @@ const getFolderWithinConfiguredRoot = async (folderId) => {
     folder = await getDriveFolder(folderId);
   } catch (error) {
     if (error.status === 403 || error.status === 404) {
-      throw new Error(`The selected Google Drive folder is unavailable to the Function runtime identity. Verify folder sharing and GOOGLE_DRIVE_PAPERS_ROOT_ID. (Drive HTTP ${error.status})`);
+      throw new Error(`The selected Google Drive folder is unavailable to the Google identity configured for the Function. Verify its access and GOOGLE_DRIVE_PAPERS_ROOT_ID. (Drive HTTP ${error.status})`);
     }
     throw error;
   }
@@ -156,7 +137,7 @@ const listConfiguredDriveTree = async (rootFolderId) => {
     root = await getDriveFolder(rootFolderId);
   } catch (error) {
     if (error.status === 403 || error.status === 404) {
-      throw new Error(`The configured Google Drive folder is unavailable to the function runtime identity. Share only this folder with the function service account as Viewer, confirm the Drive API is enabled, and check GOOGLE_DRIVE_PAPERS_ROOT_ID. (Drive HTTP ${error.status})`);
+      throw new Error(`The configured Google Drive folder is unavailable to the Google identity configured for the Function. Confirm its access, the Drive API, and GOOGLE_DRIVE_PAPERS_ROOT_ID. (Drive HTTP ${error.status})`);
     }
     throw error;
   }
@@ -193,9 +174,18 @@ const extractPdfTextSignals = async (buffer) => {
       pageTexts.push(content.items.map((item) => item.str).join(' '));
       page.cleanup();
     }
-    const memoPage = /\b(?:memorandum|marking memo(?:randum)?|memo answers|suggested answers)\b/i;
+    const memoPageHeader = /\b(?:marking principles|marking guidelines|memo answers|suggested answers|marking memo(?:randum)?)\b/i;
+    const memoTitle = /\b(?:memorandum|memo)\b/i;
     const questionOnlyPage = /\b(?:answer all questions|all questions must be answered|show all working|question paper)\b/i;
-    const hasMemoPage = pageTexts.some((text) => memoPage.test(text));
+    const hasMemoPage = pageTexts.some((text) => {
+      const pageOpening = text.slice(0, 450);
+      if (memoPageHeader.test(pageOpening)) return true;
+
+      const memoTitleIndex = pageOpening.search(memoTitle);
+      if (memoTitleIndex < 0 || memoTitleIndex > 140 || /\bmemorandum of incorporation\b/i.test(pageOpening)) return false;
+      const questionHeadingIndex = pageOpening.search(/\bquestion\s+\d/i);
+      return questionHeadingIndex < 0 || questionHeadingIndex > memoTitleIndex;
+    });
     const hasQuestionPage = pageTexts.some((text) => questionOnlyPage.test(text));
     if (hasMemoPage && hasQuestionPage) {
       return {

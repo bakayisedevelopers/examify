@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 31977)
+Total output lines: 2009
+
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FileText, Folder, HardDriveDownload, ListChecks, LoaderCircle, Pause, Play, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -321,6 +324,7 @@ export const PastExamPapersPage = () => {
   const [driveTopicAllSyncStarting, setDriveTopicAllSyncStarting] = useState(false);
   const [driveTopicAllSyncError, setDriveTopicAllSyncError] = useState('');
   const [failedRetryAllLoading, setFailedRetryAllLoading] = useState(false);
+  const [waitingRetryAllLoading, setWaitingRetryAllLoading] = useState(false);
   const [uploadTab, setUploadTab] = useState('single');
   const [singleForm, setSingleForm] = useState(defaultPaperForm(profile));
   const [bulkRows, setBulkRows] = useState([]);
@@ -825,6 +829,41 @@ export const PastExamPapersPage = () => {
     }
   };
 
+  const resumeAllWaitingPapers = async (waitingPapers) => {
+    if (waitingRetryAllLoading || !waitingPapers.length) return;
+    setWaitingRetryAllLoading(true);
+    setStatus('Rechecking waiting papers against their Google Drive analysis JSON files one at a time...');
+    const queuedPatches = new Map();
+    try {
+      await runOperation({
+        operationName: 'Resuming papers waiting for Drive JSON',
+        successMessage: 'All waiting papers were added to the normal analysis queue.',
+        failureMessage: 'Some waiting papers could not be added to the analysis queue.',
+      }, async () => {
+        for (const paper of waitingPapers) {
+          const patch = makeAnalysisRetryPatch();
+          await updateQuestionPaper(paper.id, patch);
+          queuedPatches.set(paper.id, patch);
+        }
+      });
+      setPapers((current) => current.map((paper) => queuedPatches.has(paper.id)
+        ? { ...paper, ...queuedPatches.get(paper.id) }
+        : paper));
+      setStatus(`${queuedPatches.size} waiting paper${queuedPatches.size === 1 ? '' : 's'} added to the analysis queue in order.${analysisQueuePaused ? ' The queue is paused, so they will wait until resumed.' : ''}`);
+    } catch (error) {
+      if (queuedPatches.size) {
+        setPapers((current) => current.map((paper) => queuedPatches.has(paper.id)
+          ? { ...paper, ...queuedPatches.get(paper.id) }
+          : paper));
+      }
+      setStatus(queuedPatches.size
+        ? `Queued ${queuedPatches.size} of ${waitingPapers.length} waiting papers before stopping: ${error.message || 'queue update failed'}`
+        : error.message || 'Could not resume waiting paper analyses.');
+    } finally {
+      setWaitingRetryAllLoading(false);
+    }
+  };
+
   const stopPaperAnalysis = async (paper) => {
     if (!paper?.id) return;
     if (!window.confirm(`Stop the analysis for ${paper.displayName || paper.paperFileName || 'this paper'}? Any queued work for this paper will be cancelled.`)) return;
@@ -1166,138 +1205,28 @@ export const PastExamPapersPage = () => {
     const row = bulkRows.find((item) => item.id === id);
     setBulkRows((current) => current.filter((item) => item.id !== id));
     if (row?.memoFileId && row.memoFile) {
-      setBulkMemoFiles((current) => [...current.filter((entry) => entry.id !== row.memoFileId), { id: row.memoFileId, file: row.memoFile }]);
-    }
-  };
-
-  const handleBulkSubmit = async () => {
-    if (!bulkRows.length) {
-      setStatus('Choose bulk files first.');
-      return;
-    }
-    try {
-      await runOperation({ operationName: `Uploading ${bulkRows.length} question papers`, successMessage: 'The question papers were saved and queued for analysis.' }, async () => {
-        const saved = [];
-        for (let index = 0; index < bulkRows.length; index += 1) {
-          saved.push(await saveReviewedPaper({ row: bulkRows[index], index, total: bulkRows.length }));
-        }
-        setPapers((current) => [...saved, ...current.filter((paper) => !saved.some((item) => item.id === paper.id))]);
-        setBulkRows([]);
-        setBulkMemoFiles([]);
-        setStatus(`${saved.length} paper${saved.length === 1 ? '' : 's'} saved. Papers will be analyzed one at a time in upload order.`);
-      });
-    } catch (error) {
-      setStatus(error.message || 'Bulk upload failed.');
-    }
-  };
-
-  const renderPaperCard = (paper) => (
-    <div key={paper.id}>
-      {role === ROLES.STUDENT ? (
-        <div className="panel p-3 md:hidden">
-          <div className="flex items-start gap-3">
-            <div className="min-w-0 flex-1">
-              <h3 className="break-words text-sm font-semibold text-slate-950">{getPaperTitle(paper)}</h3>
-              <span className="mt-2 inline-flex max-w-full truncate rounded-full border border-lime-400/20 bg-lime-400/10 px-2.5 py-1 text-xs font-medium text-lime-300">{getPaperField(paper, 'subject') || 'Subject not listed'}</span>
-            </div>
-            <button
-              type="button"
-              className="btn-secondary h-10 w-10 flex-none p-0"
-              aria-label={`${expandedPaperIds[paper.id] ? 'Hide' : 'Show'} ${paper.displayName || 'paper'} details`}
-              aria-expanded={Boolean(expandedPaperIds[paper.id])}
-              title={expandedPaperIds[paper.id] ? 'Hide paper details' : 'Show paper details'}
-              onClick={() => setExpandedPaperIds((current) => ({ ...current, [paper.id]: !current[paper.id] }))}
-            >
-              <ChevronDown className={`mx-auto h-4 w-4 transition-transform ${expandedPaperIds[paper.id] ? 'rotate-180' : ''}`} aria-hidden="true" />
-            </button>
-          </div>
-          {expandedPaperIds[paper.id] ? (
-            <div className="mt-3 border-t border-slate-200 pt-3">
-              <p className="text-xs text-slate-600">{getPaperField(paper, 'grade') || 'Grade not listed'} • {getPaperField(paper, 'region') || 'Region not listed'} • {getPaperField(paper, 'month')} {getPaperField(paper, 'year')} • {getPaperField(paper, 'paperNumber') || 'Paper 1'}</p>
-              {paper.notes ? <p className="mt-2 text-sm text-slate-600">{paper.notes}</p> : null}
-              <div className="mt-3 flex flex-wrap gap-2">
-                {paper.paperUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Paper</Link> : null}
-                {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-sm text-slate-500">No memo uploaded</span>}
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      <div className={`${role === ROLES.STUDENT ? 'hidden md:block ' : ''}panel p-5`}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h3 className="text-lg font-semibold text-slate-950">{paper.displayName || getPaperTitle(paper)}</h3>
-            <p className="mt-1 text-sm text-slate-500">{paper.region} • {paper.month} {paper.year} • {paper.paperNumber ?? 'Paper 1'}</p>
-          </div>
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.25em] text-slate-600">{paper.subject}</span>
-        </div>
-        {role !== ROLES.STUDENT ? <PaperAnalysisStatus paper={paper} /> : null}
-        <div className="mt-4 flex flex-wrap gap-3 text-sm">
-          <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Open paper</Link>
-          {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Open memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-slate-500">No memo uploaded</span>}
-          {canManagePaperAnalysis(role) ? <button type="button" className="btn-secondary" onClick={() => startEditPaper(paper)}>Edit</button> : null}
-          {canManagePaperAnalysis(role) && canQueuePaperAnalysis(paper) ? <button type="button" className="btn-primary" onClick={() => queuePaperReanalysis(paper)}>{reanalysisButtonLabel(paper)}</button> : null}
-          {canManagePaperAnalysis(role) && canStopPaperAnalysis(paper) ? <button type="button" className="btn-secondary text-rose-700 hover:text-rose-800" onClick={() => stopPaperAnalysis(paper).catch((error) => setStatus(error.message || 'Could not stop analysis.'))}>Stop analysis</button> : null}
-        </div>
-      </div>
-    </div>
-  );
-
-  return (
-    <AppShell title="Past exam papers" subtitle={canManagePaperAnalysis(role) ? 'Browse, upload, and manage question papers for analysis.' : 'Browse question papers and memoranda for your subjects.'} role={role} user={profile} onLogout={logout}>
-      <SectionHeader
-        eyebrow="Repository"
-        title="Question papers"
-        description={role === ROLES.STUDENT
-          ? isStudentExploring
-            ? 'Search and filter all Examifying question papers.'
-            : 'Showing recent papers across all subjects. Search or filter to explore the full Examifying collection.'
-          : role === ROLES.ADMIN
-            ? 'Review papers grouped by analysis status. Each section has separate filters.'
-            : 'Browse papers across all subjects. Use filters to narrow by subject or year.'}
-      />
-      {role === ROLES.ADMIN ? (
-        <section className="panel mb-4 flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between" aria-label="Question-paper analysis queue controls">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="font-semibold text-slate-900">Question-paper analysis queue</h2>
-              {analysisQueueControlReady ? (
-                <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${analysisQueuePaused
-                  ? 'border-amber-300 bg-amber-100 text-amber-900'
-                  : 'border-lime-300 bg-lime-100 text-lime-900'}`}>
-                  {analysisQueuePaused ? 'Paused' : 'Running'}
-                </span>
-              ) : null}
-            </div>
-            <p className="mt-1 text-sm text-slate-600">
-              {analysisQueueControlReady
-                ? analysisQueuePaused
-                  ? analysisQueueActivePaperId
-                    ? 'The current paper may finish. Remaining papers stay queued until you resume.'
-                    : 'Queued papers are being held until you resume analysis.'
-                  : 'Pause after the current paper finishes; queued papers will be kept.'
-                : analysisQueueControlFailed
-                  ? 'The queue status could not be loaded. Refresh the page before changing the queue.'
-                  : 'Checking the analysis queue status…'}
-            </p>
-            {analysisQueueMessage ? <p className="mt-2 text-sm text-slate-700" role="status">{analysisQueueMessage}</p> : null}
-            {driveTopicAllSyncError ? <p className="mt-2 text-sm text-rose-700" role="alert">{driveTopicAllSyncError}</p> : null}
-            {driveTopicAllSyncJob?.jobId ? (
-              <div className={`mt-3 rounded-xl border p-3 text-sm ${driveTopicAllSyncJob.status === 'running' ? 'border-lime-300 bg-lime-50 text-lime-950' : driveTopicAllSyncJob.status === 'completed_with_errors' || driveTopicAllSyncJob.status === 'failed' ? 'border-amber-300 bg-amber-50 text-amber-950' : 'border-slate-200 bg-slate-50 text-slate-800'}`} role="status">
+      setBulkMemoFiles((current) => [...current.filter((entry) => entry.id !== row.memoFileId), { id: row.memoFileId, fil…1977 tokens truncated…eted_with_errors' || driveTopicAllSyncJob.status === 'failed' ? 'border-amber-300 bg-amber-50 text-amber-950' : 'border-slate-200 bg-slate-50 text-slate-800'}`} role="status">
                 <p className="font-semibold">
                   {driveTopicAllSyncJob.status === 'running'
                     ? `Syncing ${driveTopicAllSyncJob.currentSubject || 'topic catalogs'}${driveTopicAllSyncJob.currentGrade ? ` · ${driveTopicAllSyncJob.currentGrade}` : ''}`
                     : driveTopicAllSyncJob.status === 'completed_with_errors'
-                      ? 'Topic sync finished with some folder errors.'
+                      ? 'Topic sync finished with some folder or paper export errors.'
                       : driveTopicAllSyncJob.status === 'failed'
                         ? 'Topic sync stopped after an error.'
                         : 'All topic catalogs have been synced.'}
                 </p>
                 {driveTopicAllSyncJob.error ? <p className="mt-1">{driveTopicAllSyncJob.error}</p> : null}
-                {driveTopicAllSyncJob.totalCount ? <p className="mt-1">{Math.min(driveTopicAllSyncJob.currentIndex ?? 0, driveTopicAllSyncJob.totalCount)} of {driveTopicAllSyncJob.totalCount} grades processed · {driveTopicAllSyncJob.completedCount ?? 0} synced · {driveTopicAllSyncJob.failedCount ?? 0} with errors</p> : null}
+                {driveTopicAllSyncJob.totalCount ? (
+                  <>
+                    <p className="mt-1">{Math.min(driveTopicAllSyncJob.currentIndex ?? 0, driveTopicAllSyncJob.totalCount)} of {driveTopicAllSyncJob.totalCount} grades processed · {driveTopicAllSyncJob.completedCount ?? 0} synced · {driveTopicAllSyncJob.failedCount ?? 0} with errors</p>
+                    <p className="mt-1 text-xs">
+                      Drive exports: {driveTopicAllSyncJob.paperUploadedCount ?? 0} papers · {driveTopicAllSyncJob.memoUploadedCount ?? 0} memos · {driveTopicAllSyncJob.analysisJsonWrittenCount ?? 0} analysis JSON files created/updated · {driveTopicAllSyncJob.exportFailureCount ?? 0} paper export issues
+                    </p>
+                  </>
+                ) : null}
                 {driveTopicAllSyncJob.failures?.length ? (
                   <details className="mt-2">
-                    <summary className="cursor-pointer font-semibold">Show folder errors</summary>
+                    <summary className="cursor-pointer font-semibold">Show folder and paper export errors</summary>
                     <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
                       {driveTopicAllSyncJob.failures.map((failure) => <li key={`${failure.subject}-${failure.grade}`}>{failure.subject} · {failure.grade}: {failure.error}</li>)}
                     </ul>
@@ -1569,6 +1498,7 @@ export const PastExamPapersPage = () => {
           ].map(({ key, title, emptyMessage }) => {
             const sectionPapers = adminPaperGroups[key];
             const failedPapers = key === 'failed' ? sectionPapers.filter((paper) => paper.analysisStatus === 'Failed') : [];
+            const waitingPapers = key === 'waiting' ? sectionPapers.filter((paper) => paper.analysisStatus === 'Waiting for Drive JSON') : [];
             const sectionFilter = adminPaperFilters[key];
             const sectionSubjects = paperSubjects;
             const sectionYears = [...new Set(sectionPapers.map((paper) => getPaperField(paper, 'year')).filter(Boolean))]
@@ -1607,6 +1537,23 @@ export const PastExamPapersPage = () => {
                       >
                         {failedRetryAllLoading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RotateCcw className="h-4 w-4" aria-hidden="true" />}
                         {failedRetryAllLoading ? 'Queueing retries…' : 'Retry All'}
+                      </button>
+                    </div>
+                  ) : null}
+                  {key === 'waiting' && waitingPapers.length ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                      <div>
+                        <p className="text-sm font-semibold text-amber-950">{waitingPapers.length} paper{waitingPapers.length === 1 ? '' : 's'} are waiting for Drive JSON.</p>
+                        <p className="mt-1 text-xs text-amber-900">Resume All retries them through the normal Drive-JSON-first queue, in order. Papers without a matching JSON will remain waiting. If the queue is paused, they will wait until you resume it.</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-primary inline-flex shrink-0 items-center justify-center gap-2"
+                        disabled={waitingRetryAllLoading}
+                        onClick={() => resumeAllWaitingPapers(waitingPapers)}
+                      >
+                        {waitingRetryAllLoading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" aria-hidden="true" />}
+                        {waitingRetryAllLoading ? 'Queueing retries…' : 'Resume All'}
                       </button>
                     </div>
                   ) : null}
