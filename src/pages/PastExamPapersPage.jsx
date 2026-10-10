@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 31977)
-Total output lines: 2009
-
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FileText, Folder, HardDriveDownload, ListChecks, LoaderCircle, Pause, Play, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -1205,7 +1202,124 @@ export const PastExamPapersPage = () => {
     const row = bulkRows.find((item) => item.id === id);
     setBulkRows((current) => current.filter((item) => item.id !== id));
     if (row?.memoFileId && row.memoFile) {
-      setBulkMemoFiles((current) => [...current.filter((entry) => entry.id !== row.memoFileId), { id: row.memoFileId, fil…1977 tokens truncated…eted_with_errors' || driveTopicAllSyncJob.status === 'failed' ? 'border-amber-300 bg-amber-50 text-amber-950' : 'border-slate-200 bg-slate-50 text-slate-800'}`} role="status">
+      setBulkMemoFiles((current) => [...current.filter((entry) => entry.id !== row.memoFileId), { id: row.memoFileId, file: row.memoFile }]);
+    }
+  };
+
+  const handleBulkSubmit = async () => {
+    if (!bulkRows.length) {
+      setStatus('Choose bulk files first.');
+      return;
+    }
+    try {
+      await runOperation({ operationName: `Uploading ${bulkRows.length} question papers`, successMessage: 'The question papers were saved and queued for analysis.' }, async () => {
+        const saved = [];
+        for (let index = 0; index < bulkRows.length; index += 1) {
+          saved.push(await saveReviewedPaper({ row: bulkRows[index], index, total: bulkRows.length }));
+        }
+        setPapers((current) => [...saved, ...current.filter((paper) => !saved.some((item) => item.id === paper.id))]);
+        setBulkRows([]);
+        setBulkMemoFiles([]);
+        setStatus(`${saved.length} paper${saved.length === 1 ? '' : 's'} saved. Papers will be analyzed one at a time in upload order.`);
+      });
+    } catch (error) {
+      setStatus(error.message || 'Bulk upload failed.');
+    }
+  };
+
+  const renderPaperCard = (paper) => (
+    <div key={paper.id}>
+      {role === ROLES.STUDENT ? (
+        <div className="panel p-3 md:hidden">
+          <div className="flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <h3 className="break-words text-sm font-semibold text-slate-950">{getPaperTitle(paper)}</h3>
+              <span className="mt-2 inline-flex max-w-full truncate rounded-full border border-lime-400/20 bg-lime-400/10 px-2.5 py-1 text-xs font-medium text-lime-300">{getPaperField(paper, 'subject') || 'Subject not listed'}</span>
+            </div>
+            <button
+              type="button"
+              className="btn-secondary h-10 w-10 flex-none p-0"
+              aria-label={`${expandedPaperIds[paper.id] ? 'Hide' : 'Show'} ${paper.displayName || 'paper'} details`}
+              aria-expanded={Boolean(expandedPaperIds[paper.id])}
+              title={expandedPaperIds[paper.id] ? 'Hide paper details' : 'Show paper details'}
+              onClick={() => setExpandedPaperIds((current) => ({ ...current, [paper.id]: !current[paper.id] }))}
+            >
+              <ChevronDown className={`mx-auto h-4 w-4 transition-transform ${expandedPaperIds[paper.id] ? 'rotate-180' : ''}`} aria-hidden="true" />
+            </button>
+          </div>
+          {expandedPaperIds[paper.id] ? (
+            <div className="mt-3 border-t border-slate-200 pt-3">
+              <p className="text-xs text-slate-600">{getPaperField(paper, 'grade') || 'Grade not listed'} • {getPaperField(paper, 'region') || 'Region not listed'} • {getPaperField(paper, 'month')} {getPaperField(paper, 'year')} • {getPaperField(paper, 'paperNumber') || 'Paper 1'}</p>
+              {paper.notes ? <p className="mt-2 text-sm text-slate-600">{paper.notes}</p> : null}
+              <div className="mt-3 flex flex-wrap gap-2">
+                {paper.paperUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Paper</Link> : null}
+                {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-sm text-slate-500">No memo uploaded</span>}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <div className={`${role === ROLES.STUDENT ? 'hidden md:block ' : ''}panel p-5`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-950">{paper.displayName || getPaperTitle(paper)}</h3>
+            <p className="mt-1 text-sm text-slate-500">{paper.region} • {paper.month} {paper.year} • {paper.paperNumber ?? 'Paper 1'}</p>
+          </div>
+          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.25em] text-slate-600">{paper.subject}</span>
+        </div>
+        {role !== ROLES.STUDENT ? <PaperAnalysisStatus paper={paper} /> : null}
+        <div className="mt-4 flex flex-wrap gap-3 text-sm">
+          <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Open paper</Link>
+          {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Open memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-slate-500">No memo uploaded</span>}
+          {canManagePaperAnalysis(role) ? <button type="button" className="btn-secondary" onClick={() => startEditPaper(paper)}>Edit</button> : null}
+          {canManagePaperAnalysis(role) && canQueuePaperAnalysis(paper) ? <button type="button" className="btn-primary" onClick={() => queuePaperReanalysis(paper)}>{reanalysisButtonLabel(paper)}</button> : null}
+          {canManagePaperAnalysis(role) && canStopPaperAnalysis(paper) ? <button type="button" className="btn-secondary text-rose-700 hover:text-rose-800" onClick={() => stopPaperAnalysis(paper).catch((error) => setStatus(error.message || 'Could not stop analysis.'))}>Stop analysis</button> : null}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <AppShell title="Past exam papers" subtitle={canManagePaperAnalysis(role) ? 'Browse, upload, and manage question papers for analysis.' : 'Browse question papers and memoranda for your subjects.'} role={role} user={profile} onLogout={logout}>
+      <SectionHeader
+        eyebrow="Repository"
+        title="Question papers"
+        description={role === ROLES.STUDENT
+          ? isStudentExploring
+            ? 'Search and filter all Examifying question papers.'
+            : 'Showing recent papers across all subjects. Search or filter to explore the full Examifying collection.'
+          : role === ROLES.ADMIN
+            ? 'Review papers grouped by analysis status. Each section has separate filters.'
+            : 'Browse papers across all subjects. Use filters to narrow by subject or year.'}
+      />
+      {role === ROLES.ADMIN ? (
+        <section className="panel mb-4 flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between" aria-label="Question-paper analysis queue controls">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="font-semibold text-slate-900">Question-paper analysis queue</h2>
+              {analysisQueueControlReady ? (
+                <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${analysisQueuePaused
+                  ? 'border-amber-300 bg-amber-100 text-amber-900'
+                  : 'border-lime-300 bg-lime-100 text-lime-900'}`}>
+                  {analysisQueuePaused ? 'Paused' : 'Running'}
+                </span>
+              ) : null}
+            </div>
+            <p className="mt-1 text-sm text-slate-600">
+              {analysisQueueControlReady
+                ? analysisQueuePaused
+                  ? analysisQueueActivePaperId
+                    ? 'The current paper may finish. Remaining papers stay queued until you resume.'
+                    : 'Queued papers are being held until you resume analysis.'
+                  : 'Pause after the current paper finishes; queued papers will be kept.'
+                : analysisQueueControlFailed
+                  ? 'The queue status could not be loaded. Refresh the page before changing the queue.'
+                  : 'Checking the analysis queue status…'}
+            </p>
+            {analysisQueueMessage ? <p className="mt-2 text-sm text-slate-700" role="status">{analysisQueueMessage}</p> : null}
+            {driveTopicAllSyncError ? <p className="mt-2 text-sm text-rose-700" role="alert">{driveTopicAllSyncError}</p> : null}
+            {driveTopicAllSyncJob?.jobId ? (
+              <div className={`mt-3 rounded-xl border p-3 text-sm ${driveTopicAllSyncJob.status === 'running' ? 'border-lime-300 bg-lime-50 text-lime-950' : driveTopicAllSyncJob.status === 'completed_with_errors' || driveTopicAllSyncJob.status === 'failed' ? 'border-amber-300 bg-amber-50 text-amber-950' : 'border-slate-200 bg-slate-50 text-slate-800'}`} role="status">
                 <p className="font-semibold">
                   {driveTopicAllSyncJob.status === 'running'
                     ? `Syncing ${driveTopicAllSyncJob.currentSubject || 'topic catalogs'}${driveTopicAllSyncJob.currentGrade ? ` · ${driveTopicAllSyncJob.currentGrade}` : ''}`
